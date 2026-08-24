@@ -1,7 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 import { rmSync, mkdirSync, existsSync, writeFileSync } from "fs";
 import { join } from "path";
+import { randomUUID } from "crypto";
 import { Database } from "bun:sqlite";
+import { computeChecksum } from "../src/orchestration/persistence/migrations/migration-checksum";
+import {
+  MIGRATION_V13_ALGORITHM_VERSION,
+  MIGRATION_V13_CONVERGENCE_INTEGRITY_CHECKSUM_SOURCE,
+} from "../src/orchestration/persistence/migrations/migration-v13-convergence-integrity";
+import { classifyTask } from "../src/services/heidi-fast-router";
 import {
   acquireProjectRuntime,
   releaseProjectRuntime,
@@ -2204,23 +2211,31 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     const ctx1 = acquireProjectRuntime(TEST_DIR);
     const sessionID = "sess-rec-before-create";
 
-    // Insert a record stuck in 'resuming' before replacement Run was created
+    const goal = "Refactor backend telemetry architecture and rewrite services";
+    const decision = classifyTask(goal, { hasExplicitDomainSignal: false });
     ctx1.runtime.db.query(`
       INSERT INTO deferred_replacements (
         id, parent_session_id, old_run_id, source_intent, agent_id,
         effective_goal, message_hash, message_id, correlation_id,
         routing_decision, status, created_at, updated_at
-      ) VALUES ('def-crash-1', ?, 'old-run-1', 'REPLACE', 'heidi', 'Goal crash 1', 'h1', 'm1', 'corr-crash-1', '{"executionClass":"STANDARD"}', 'resuming', datetime('now'), datetime('now'))
-    `).run(sessionID);
+      ) VALUES ('def-crash-1', ?, 'old-run-1', 'REPLACE', 'heidi', ?, 'h1', 'm1', 'corr-crash-1', ?, 'resuming', datetime('now'), datetime('now'))
+    `).run(sessionID, goal, JSON.stringify(decision));
 
     await releaseProjectRuntime(TEST_DIR);
 
-    // Restart runtime: reconciliation should reset it to pending_termination since no Run exists with correlationId
-    const ctx2 = acquireProjectRuntime(TEST_DIR);
-    const def = ctx2.runtime.deferredReplacementRepo.findCurrentForSession(sessionID);
+    // Restart runtime: reconciliation resets it to pending_termination, and because old-run-1 has no pending child terminations, startup drain actively resumes it
+    const mockClient = { session: { promptAsync: mock(() => Promise.resolve(true)) } };
+    const ctx2 = acquireProjectRuntime(TEST_DIR, mockClient);
+    await ctx2.adapter.drainSafeDeferredReplacements();
+
+    const def = ctx2.runtime.deferredReplacementRepo.findById("def-crash-1");
     expect(def).not.toBeNull();
-    expect(def?.status).toBe("pending_termination");
-    expect(def?.id).toBe("def-crash-1");
+    expect(def?.status).toBe("resumed");
+    expect(def?.replacementRunId).toBeDefined();
+
+    // Verify replacement Run was actually created and exists in task_runs
+    const repRun = ctx2.runtime.taskRunsRepo.findById(def!.replacementRunId!);
+    expect(repRun).toBeDefined();
 
     await releaseProjectRuntime(TEST_DIR);
   });
@@ -2322,25 +2337,35 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
   // 62. deferred-replacement-create-is-idempotent-by-correlation
   it("62. deferred-replacement-create-is-idempotent-by-correlation", async () => {
     const ctx = acquireProjectRuntime(TEST_DIR);
-    const correlationId = "corr-idem-test";
+    const correlationId = "corr-idem-competing-" + randomUUID();
 
-    const runA = await ctx.runtime.services.runService.createOrGetRunByCorrelationId({
-      runType: "simple",
-      correlationId,
-      sessionId: "sess-idem",
-      agentId: "heidi",
-      metadata: { key: "first" },
-    }, correlationId);
-
-    const runB = await ctx.runtime.services.runService.createOrGetRunByCorrelationId({
-      runType: "simple",
-      correlationId,
-      sessionId: "sess-idem",
-      agentId: "heidi",
-      metadata: { key: "second" },
-    }, correlationId);
+    // Truly concurrent competing creation calls using Promise.all
+    const [runA, runB] = await Promise.all([
+      ctx.runtime.services.runService.createOrGetRunByCorrelationId({
+        runType: "simple",
+        correlationId,
+        sessionId: "sess-idem-competing",
+        agentId: "heidi",
+        metadata: { key: "first" },
+      }, correlationId),
+      ctx.runtime.services.runService.createOrGetRunByCorrelationId({
+        runType: "simple",
+        correlationId,
+        sessionId: "sess-idem-competing",
+        agentId: "heidi",
+        metadata: { key: "second" },
+      }, correlationId),
+    ]);
 
     expect(runA.id).toBe(runB.id);
+
+    // Verify findById preserves the original correlation ID
+    const retrieved = await ctx.runtime.services.runRepo.findById(runA.id);
+    expect(retrieved?.correlationId).toBe(correlationId);
+
+    // Verify findByCorrelationId resolves the same run
+    const byCorr = await ctx.runtime.services.runRepo.findByCorrelationId(correlationId);
+    expect(byCorr?.id).toBe(runA.id);
 
     await releaseProjectRuntime(TEST_DIR);
   });
@@ -2454,6 +2479,16 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     // Barrier check: NO new Run should have been created yet because child is still running!
     const activeRunStillBlocked = await ctx.adapter.resolveActiveRunForSession(sessionID);
     expect(activeRunStillBlocked).toBeNull();
+
+    // Native tool execution barrier: parent-session tool execution MUST fail closed with DEFERRED_REPLACEMENT_BARRIER
+    await expect(
+      ctx.adapter.onToolExecuteBefore({
+        tool: "bash",
+        sessionID,
+        callID: "call-blocked-parent-tool",
+        args: { command: "echo mutating" },
+      })
+    ).rejects.toThrow(/DEFERRED_REPLACEMENT_BARRIER/);
 
     // Current deferred replacement should now be R2 (superseding R1)
     const curDef = ctx.runtime.deferredReplacementRepo.findCurrentForSession(sessionID);
@@ -2579,16 +2614,15 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     expect(savedDef).not.toBeNull();
     expect(savedDef?.status).toBe("pending_termination");
 
-    // Child termination event arrives in new runtime instance
-    await ctx2.adapter.onEvent({
-      type: "session.deleted",
-      properties: { sessionID: "child-fd-sess" },
-    } as any);
+    // Simulate crash during handoff: status was 'handoff_pending'
+    ctx2.runtime.db.query("UPDATE deferred_replacements SET status = 'handoff_pending' WHERE id = ?").run(savedDef!.id);
 
-    // Deferred is marked resumed
-    const resumedDef = ctx2.runtime.deferredReplacementRepo.findById(savedDef!.id);
-    expect(resumedDef?.status).toBe("resumed");
-    expect(resumedDef?.replacementRunId).toBeUndefined(); // FAST_DIRECT has no replacementRunId
+    await releaseProjectRuntime(TEST_DIR);
+
+    // Restart runtime: handoff_pending reconciles to handoff_outcome_unknown to prevent blind replay
+    const ctx3 = acquireProjectRuntime(TEST_DIR, mockClient);
+    const defAfterCrash = ctx3.runtime.deferredReplacementRepo.findById(savedDef!.id);
+    expect(defAfterCrash?.status).toBe("handoff_outcome_unknown");
 
     await releaseProjectRuntime(TEST_DIR);
   });
@@ -2700,18 +2734,103 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
 
   // 68. v13-checksum-covers-schema-aware-migration-contract-and-rejects-changed-behavior
   it("68. v13-checksum-covers-schema-aware-migration-contract-and-rejects-changed-behavior", () => {
+    const originalChecksum = computeChecksum(MIGRATION_V13_CONVERGENCE_INTEGRITY_CHECKSUM_SOURCE);
+
+    // 1. Changing contract algorithm version changes checksum
+    const changedAlgorithmContract = MIGRATION_V13_CONVERGENCE_INTEGRITY_CHECKSUM_SOURCE.replace(
+      "algorithm-version: " + MIGRATION_V13_ALGORITHM_VERSION,
+      "algorithm-version: 2.0.0-alpha.convergence-v13.changed"
+    );
+    expect(computeChecksum(changedAlgorithmContract)).not.toBe(originalChecksum);
+
+    // 2. Changing schema SQL changes checksum
+    const changedSchemaContract = MIGRATION_V13_CONVERGENCE_INTEGRITY_CHECKSUM_SOURCE.replace(
+      "session_turn_messages",
+      "session_turn_messages_altered"
+    );
+    expect(computeChecksum(changedSchemaContract)).not.toBe(originalChecksum);
+
+    // 3. Verifies tamper with ledger throws MigrationChecksumError
     const db = new Database(":memory:");
     runMigrations(db);
     expect(getCurrentVersion(db)).toBe(13);
 
-    // Tamper with migration 13 checksum in ledger
     db.query("UPDATE schema_migrations SET checksum = 'tampered_v13_checksum' WHERE version = 13").run();
-
     expect(() => {
       runMigrations(db);
     }).toThrow(MigrationChecksumError);
 
     db.close();
+  });
+
+  // 70. deferred-intent-semantics-replay-continue-query-ack-modify
+  it("70. deferred-intent-semantics-replay-continue-query-ack-modify", async () => {
+    const abortMock = mock(() => Promise.reject(new Error("Native process stuck")));
+    const mockClient = { session: { abort: abortMock, promptAsync: mock(() => Promise.resolve(true)) } };
+    const ctx = acquireProjectRuntime(TEST_DIR, mockClient);
+    const sessionID = "sess-deferred-intent-matrix";
+
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "m-im-1" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m-im-1" }] }
+    );
+    const run1 = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
+
+    const del = await ctx.runtime.childExecutionLifecycleService.registerDelegation({
+      runId: run1.id,
+      parentSessionId: sessionID,
+      taskCallId: "call-im-1",
+      targetAgent: "coder",
+    });
+    ctx.runtime.childExecutionLifecycleService.bindChildSession({
+      parentSessionId: sessionID,
+      childSessionId: "child-im-sess",
+      agentId: "coder",
+      taskCallId: del.taskCallId,
+    });
+    await ctx.runtime.childExecutionLifecycleService.markStarted({ childSessionId: "child-im-sess" });
+
+    // User sends REPLACE -> deferred replacement created
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "m-im-2" },
+      { message: {} as any, parts: [{ type: "text", text: "Forget that, do initial deferred task", id: "2", sessionID, messageID: "m-im-2" }] }
+    );
+
+    const initialDef = ctx.runtime.deferredReplacementRepo.findCurrentForSession(sessionID);
+    expect(initialDef?.effectiveGoal).toContain("initial deferred task");
+
+    // 1. QUERY while deferred does not supersede or change goal
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "m-im-query" },
+      { message: {} as any, parts: [{ type: "text", text: "what is the current status?", id: "3", sessionID, messageID: "m-im-query" }] }
+    );
+    expect(ctx.runtime.deferredReplacementRepo.findCurrentForSession(sessionID)?.effectiveGoal).toContain("initial deferred task");
+
+    // 2. ACKNOWLEDGE while deferred does not supersede or change goal
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "m-im-ack" },
+      { message: {} as any, parts: [{ type: "text", text: "ok sounds good", id: "4", sessionID, messageID: "m-im-ack" }] }
+    );
+    expect(ctx.runtime.deferredReplacementRepo.findCurrentForSession(sessionID)?.effectiveGoal).toContain("initial deferred task");
+
+    // 3. CONTINUE while deferred does not supersede or change goal
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "m-im-cont" },
+      { message: {} as any, parts: [{ type: "text", text: "continue", id: "5", sessionID, messageID: "m-im-cont" }] }
+    );
+    expect(ctx.runtime.deferredReplacementRepo.findCurrentForSession(sessionID)?.effectiveGoal).toContain("initial deferred task");
+
+    // 4. MODIFY updates and refines the current deferred goal intentionally
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "m-im-mod" },
+      { message: {} as any, parts: [{ type: "text", text: "also add strict types", id: "6", sessionID, messageID: "m-im-mod" }] }
+    );
+    const modDef = ctx.runtime.deferredReplacementRepo.findCurrentForSession(sessionID);
+    expect(modDef?.effectiveGoal).toContain("initial deferred task");
+    expect(modDef?.effectiveGoal).toContain("also add strict types");
+    expect(modDef?.sourceIntent).toBe("MODIFY_RECLASSIFICATION");
+
+    await releaseProjectRuntime(TEST_DIR);
   });
 
   // 69. historical-v12-byte-identity-remains-valid
