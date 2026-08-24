@@ -6,6 +6,8 @@ import type { Run } from "../../types/runs"
 export type DeferredReplacementStatus =
   | "pending_termination"
   | "resuming"
+  | "handoff_pending"
+  | "handoff_outcome_unknown"
   | "resumed"
   | "superseded"
   | "blocked"
@@ -136,12 +138,34 @@ export class SqliteDeferredReplacementRepository {
     return res.changes > 0
   }
 
+  markHandoffPending(id: string): boolean {
+    const now = new Date().toISOString()
+    const res = this.db.query(`
+      UPDATE deferred_replacements
+      SET status = 'handoff_pending', updated_at = ?
+      WHERE id = ? AND status = 'resuming'
+    `).run(now, id)
+
+    return res.changes > 0
+  }
+
+  markHandoffOutcomeUnknown(id: string): boolean {
+    const now = new Date().toISOString()
+    const res = this.db.query(`
+      UPDATE deferred_replacements
+      SET status = 'handoff_outcome_unknown', updated_at = ?
+      WHERE id = ? AND status IN ('resuming', 'handoff_pending')
+    `).run(now, id)
+
+    return res.changes > 0
+  }
+
   markResumed(id: string, replacementRunId?: string): boolean {
     const now = new Date().toISOString()
     const res = this.db.query(`
       UPDATE deferred_replacements
       SET status = 'resumed', replacement_run_id = ?, resumed_at = ?, updated_at = ?
-      WHERE id = ? AND status = 'resuming'
+      WHERE id = ? AND status IN ('resuming', 'handoff_pending')
     `).run(replacementRunId ?? null, now, now, id)
 
     return res.changes > 0
@@ -217,15 +241,31 @@ export class SqliteDeferredReplacementRepository {
    */
   reconcileAfterRestart(
     runLookup?: (correlationId: string) => Run | null
-  ): { recoveredResumed: number; recoveredPending: number } {
+  ): { recoveredResumed: number; recoveredPending: number; recoveredOutcomeUnknown: number } {
     const resumingRecords = this.listResuming()
     let recoveredResumed = 0
     let recoveredPending = 0
+    let recoveredOutcomeUnknown = 0
     const now = new Date().toISOString()
+
+    // Reconcile any handoff_pending records that crashed during handoff -> handoff_outcome_unknown
+    try {
+      const pendingHandoffRows = this.db.query(`
+        SELECT id FROM deferred_replacements WHERE status = 'handoff_pending'
+      `).all() as { id: string }[]
+      for (const row of pendingHandoffRows) {
+        this.db.query(`
+          UPDATE deferred_replacements
+          SET status = 'handoff_outcome_unknown', updated_at = ?
+          WHERE id = ? AND status = 'handoff_pending'
+        `).run(now, row.id)
+        recoveredOutcomeUnknown++
+      }
+    } catch {}
 
     for (const record of resumingRecords) {
       if (record.routingDecision.executionClass === "FAST_DIRECT") {
-        // For FAST_DIRECT, no Run is created; return to pending_termination for safe replay
+        // For FAST_DIRECT interrupted before handoff began: revert to pending_termination for safe resume
         this.db.query(`
           UPDATE deferred_replacements
           SET status = 'pending_termination', updated_at = ?
@@ -242,17 +282,17 @@ export class SqliteDeferredReplacementRepository {
         if (found) existingRunId = found.id
       }
       if (!existingRunId) {
-        const eventRow = this.db.query(
-          "SELECT aggregate_id FROM events WHERE correlation_id = ? AND aggregate_type = 'task_run' LIMIT 1"
-        ).get(record.correlationId) as { aggregate_id: string } | null
-        if (eventRow?.aggregate_id) {
-          existingRunId = eventRow.aggregate_id
+        const metaRow = this.db.query(
+          "SELECT run_id FROM execution_metadata WHERE key = ? LIMIT 1"
+        ).get("run_correlation:" + record.correlationId) as { run_id: string } | null
+        if (metaRow?.run_id) {
+          existingRunId = metaRow.run_id
         } else {
-          const metaRow = this.db.query(
-            "SELECT run_id FROM execution_metadata WHERE key = ? LIMIT 1"
-          ).get("run_correlation:" + record.correlationId) as { run_id: string } | null
-          if (metaRow?.run_id) {
-            existingRunId = metaRow.run_id
+          const eventRow = this.db.query(
+            "SELECT aggregate_id FROM events WHERE correlation_id = ? AND aggregate_type = 'task_run' LIMIT 1"
+          ).get(record.correlationId) as { aggregate_id: string } | null
+          if (eventRow?.aggregate_id) {
+            existingRunId = eventRow.aggregate_id
           } else {
             const runRow = this.db.query(
               "SELECT run_id FROM task_runs WHERE run_id = ? LIMIT 1"
@@ -281,7 +321,7 @@ export class SqliteDeferredReplacementRepository {
       }
     }
 
-    return { recoveredResumed, recoveredPending }
+    return { recoveredResumed, recoveredPending, recoveredOutcomeUnknown }
   }
 
   private mapRow(row: any): DeferredReplacementRecord {
