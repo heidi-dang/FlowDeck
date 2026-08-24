@@ -118,7 +118,14 @@ pub fn diff_against(
 
     // Build git diff command
     let mut cmd = Command::new("git");
-    cmd.arg("diff")
+    // This stdout is consumed by a unified-diff parser.  Force deterministic
+    // machine output instead of inheriting user, repository, or global colour
+    // configuration such as `color.ui=always`.  Quote Unicode paths as UTF-8
+    // so the parser sees the same path identity as the caller.
+    cmd.arg("-c")
+        .arg("core.quotePath=false")
+        .arg("diff")
+        .arg("--no-color")
         .arg("--unified=3")
         .current_dir(&options.root);
 
@@ -257,7 +264,10 @@ fn analyze_file_changes(
     // Attempt to fetch base ref source via git show
     let rel_path = file_path.strip_prefix(root).unwrap_or(file_path);
     let git_show = Command::new("git")
+        // Base source is parsed as code below, so it must also be independent
+        // of inherited Git colour configuration.
         .arg("show")
+        .arg("--no-color")
         .arg(format!(
             "{}:{}",
             commit,

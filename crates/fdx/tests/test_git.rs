@@ -55,7 +55,10 @@ fn test_git_branch() {
         .expect("fdx git branch failed");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let has_branch = stdout.contains("main") || stdout.contains("HEAD");
+    let has_branch = stdout
+        .lines()
+        .any(|line| line.trim_start_matches('\u{1b}').contains("* "))
+        || stdout.contains("HEAD");
     assert!(has_branch, "should show current branch or HEAD: {}", stdout);
     assert!(output.status.success());
 }
