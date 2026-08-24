@@ -308,68 +308,74 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
         }
       }
 
-      // 2. Check if this session has a pending deferred replacement whose old run still has unconfirmed child termination
+      // 2. Check if this session has an unresolved deferred replacement
       const existingDeferred = this.runtime.deferredReplacementRepo?.findCurrentForSession(input.sessionID);
       if (existingDeferred) {
         const diag = this.runtime.childExecutionLifecycleService.getDiagnosticsForRun(existingDeferred.oldRunId);
-        if (diag.currentTerminationPending) {
-          const userIntent = classifyUserTurnIntent({
-            currentGoal: existingDeferred.effectiveGoal,
-            newMessage: text,
-            activeRunStatus: "cancelled" as any,
-            messageHash: msgHash,
-            lastMessageHash: existingDeferred.messageHash,
-          });
+        const userIntent = classifyUserTurnIntent({
+          currentGoal: existingDeferred.effectiveGoal,
+          newMessage: text,
+          activeRunStatus: "cancelled" as any,
+          messageHash: msgHash,
+          lastMessageHash: existingDeferred.messageHash,
+        });
 
-          if (userIntent.intent === "CANCEL") {
-            this.runtime.deferredReplacementRepo.cancelCurrentForSession(input.sessionID);
-            markRouteInactive(input.sessionID);
-            return;
-          }
+        if (userIntent.intent === "CANCEL") {
+          this.runtime.deferredReplacementRepo.cancelCurrentForSession(input.sessionID);
+          markRouteInactive(input.sessionID);
+          return;
+        }
 
-          if (userIntent.intent === "REPLAY") {
-            // Replay of existing message; ignore idempotently
-            return;
-          }
+        if (userIntent.intent === "REPLAY") {
+          // Replay of existing message; preserve current deferred state and ignore idempotently
+          noteInternalContinuation(input.sessionID);
+          return;
+        }
 
-          if (userIntent.intent === "CONTINUE" || userIntent.intent === "QUERY" || userIntent.intent === "ACKNOWLEDGE") {
-            // Conversational, query, or acknowledgement; preserve current deferred goal unchanged
-            return;
-          }
+        if (userIntent.intent === "CONTINUE" || userIntent.intent === "QUERY" || userIntent.intent === "ACKNOWLEDGE") {
+          // Conversational, query, or acknowledgement; preserve current deferred goal unchanged
+          noteInternalContinuation(input.sessionID);
+          return;
+        }
 
-          if (userIntent.intent === "MODIFY") {
-            // Requirement refinement: intentionally update/reclassify current deferred goal
-            const modifiedGoal = `${existingDeferred.effectiveGoal}\n\n[User Modification]: ${text}`;
-            const decision = classifyTask(modifiedGoal, { hasExplicitDomainSignal: false });
-            this.runtime.deferredReplacementRepo.savePending({
-              parentSessionId: input.sessionID,
-              oldRunId: existingDeferred.oldRunId,
-              sourceIntent: "MODIFY_RECLASSIFICATION",
-              agentId: input.agent ?? "heidi",
-              effectiveGoal: modifiedGoal,
-              messageHash: msgHash,
-              messageId: correlationId,
-              correlationId,
-              routingDecision: decision,
-            });
-            return;
-          }
-
-          // Default / REPLACE: Newer genuine user intent wins and supersedes older deferred replacement while remaining blocked on native termination
-          const decision = classifyTask(text, { hasExplicitDomainSignal: false });
+        if (userIntent.intent === "MODIFY") {
+          // Requirement refinement: intentionally update/reclassify current deferred goal
+          const modifiedGoal = `${existingDeferred.effectiveGoal}\n\n[User Modification]: ${text}`;
+          const decision = classifyTask(modifiedGoal, { hasExplicitDomainSignal: false });
           this.runtime.deferredReplacementRepo.savePending({
             parentSessionId: input.sessionID,
             oldRunId: existingDeferred.oldRunId,
-            sourceIntent: "REPLACE",
+            sourceIntent: "MODIFY_RECLASSIFICATION",
             agentId: input.agent ?? "heidi",
-            effectiveGoal: text,
+            effectiveGoal: modifiedGoal,
             messageHash: msgHash,
             messageId: correlationId,
             correlationId,
             routingDecision: decision,
           });
+          if (!diag?.currentTerminationPending) {
+            this.drainSafeDeferredReplacements().catch(() => {});
+          }
           return;
         }
+
+        // Default / REPLACE: Newer genuine user intent wins and supersedes older deferred replacement
+        const decision = classifyTask(text, { hasExplicitDomainSignal: false });
+        this.runtime.deferredReplacementRepo.savePending({
+          parentSessionId: input.sessionID,
+          oldRunId: existingDeferred.oldRunId,
+          sourceIntent: "REPLACE",
+          agentId: input.agent ?? "heidi",
+          effectiveGoal: text,
+          messageHash: msgHash,
+          messageId: correlationId,
+          correlationId,
+          routingDecision: decision,
+        });
+        if (!diag?.currentTerminationPending) {
+          this.drainSafeDeferredReplacements().catch(() => {});
+        }
+        return;
       }
 
       // 3. Check for exact duplicate of ephemeral/initial turn
@@ -523,7 +529,8 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
           deferred.status === "pending_termination" ||
           deferred.status === "resuming" ||
           deferred.status === "handoff_pending" ||
-          deferred.status === "handoff_outcome_unknown";
+          deferred.status === "handoff_outcome_unknown" ||
+          deferred.status === "blocked";
 
         if (unresolvedBarrier) {
           throw new Error(
@@ -982,6 +989,7 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
         transitionReason: "PROGRESS_CONFIRMED",
         currentWorkItemId: "fast_direct:" + current.id,
         stateFingerprint: "deferred_resume:" + current.id,
+        identityKey: "deferred:" + current.id,
       };
 
       noteInternalContinuation(parentSessionId);
@@ -990,9 +998,13 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
       const dispatchRes = await this.continuationDispatcher.dispatch(token, {
         client: this.client,
         promptText,
-        statePort: {
-          getUserTurnVersion: (sId) => this.runtime.sessionTurnRepo.getTurnVersion(sId),
-          getRunAggregateVersion: () => 1,
+        validateAuthority: () => {
+          const fresh = this.runtime.deferredReplacementRepo.findById(current.id);
+          if (!fresh) return false;
+          if (fresh.id !== current.id) return false;
+          if (fresh.status !== "handoff_pending" && fresh.status !== "resuming") return false;
+          if (fresh.messageHash !== current.messageHash) return false;
+          return true;
         },
       });
 
@@ -1000,10 +1012,12 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
         this.runtime.deferredReplacementRepo.markResumed(current.id, undefined);
       } else if (dispatchRes.reason === "dispatch_outcome_unknown") {
         this.runtime.deferredReplacementRepo.markHandoffOutcomeUnknown(current.id);
-      } else if (dispatchRes.reason === "stale_user_turn_version") {
-        const latest = this.runtime.deferredReplacementRepo.findById(current.id);
-        if (latest?.status === "cancelled" || latest?.status === "superseded") {
-          return;
+      } else if (dispatchRes.reason === "native_dispatch_failed") {
+        const dispatchRow = this.runtime.db.query(
+          "SELECT status, attempt_count FROM continuation_dispatches WHERE identity = ?"
+        ).get(this.continuationDispatcher.computeTokenIdentity(token)) as { status: string; attempt_count: number } | null;
+        if (dispatchRow?.status === "blocked" || (dispatchRow?.status === "failed" && dispatchRow.attempt_count >= 2)) {
+          this.runtime.deferredReplacementRepo.markBlocked(current.id);
         }
       }
     } else {
@@ -1063,6 +1077,7 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
         transitionReason: "PROGRESS_CONFIRMED",
         currentWorkItemId: "root:" + replacement.id,
         stateFingerprint: "deferred_resume:" + current.id,
+        identityKey: "deferred:" + current.id,
       };
 
       noteInternalContinuation(parentSessionId);
@@ -1071,9 +1086,13 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
       const dispatchRes = await this.continuationDispatcher.dispatch(token, {
         client: this.client,
         promptText,
-        statePort: {
-          getUserTurnVersion: (sId) => this.runtime.sessionTurnRepo.getTurnVersion(sId),
-          getRunAggregateVersion: () => 1,
+        validateAuthority: () => {
+          const fresh = this.runtime.deferredReplacementRepo.findById(current.id);
+          if (!fresh) return false;
+          if (fresh.id !== current.id) return false;
+          if (fresh.status !== "handoff_pending" && fresh.status !== "resuming") return false;
+          if (fresh.messageHash !== current.messageHash) return false;
+          return true;
         },
       });
 
@@ -1081,10 +1100,12 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
         this.runtime.deferredReplacementRepo.markResumed(current.id, replacement.id);
       } else if (dispatchRes.reason === "dispatch_outcome_unknown") {
         this.runtime.deferredReplacementRepo.markHandoffOutcomeUnknown(current.id);
-      } else if (dispatchRes.reason === "stale_user_turn_version") {
-        const latest = this.runtime.deferredReplacementRepo.findById(current.id);
-        if (latest?.status === "cancelled" || latest?.status === "superseded") {
-          return;
+      } else if (dispatchRes.reason === "native_dispatch_failed") {
+        const dispatchRow = this.runtime.db.query(
+          "SELECT status, attempt_count FROM continuation_dispatches WHERE identity = ?"
+        ).get(this.continuationDispatcher.computeTokenIdentity(token)) as { status: string; attempt_count: number } | null;
+        if (dispatchRow?.status === "blocked" || (dispatchRow?.status === "failed" && dispatchRow.attempt_count >= 2)) {
+          this.runtime.deferredReplacementRepo.markBlocked(current.id);
         }
       }
     }
