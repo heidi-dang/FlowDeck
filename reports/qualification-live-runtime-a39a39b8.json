@@ -1,0 +1,188 @@
+{
+  "schemaVersion": 1,
+  "kind": "flowdeck-live-runtime-qualification",
+  "startedAt": "2026-08-24T21:10:16.760Z",
+  "finishedAt": "2026-08-24T21:11:11.021Z",
+  "functionalSha": "a39a39b86178e0ca54d22644436894e1c8a6574d",
+  "branch": "feat/live-orchestration-runtime",
+  "overallPassed": true,
+  "checks": [
+    {
+      "label": "clean-functional-sha",
+      "passed": true,
+      "head": "a39a39b86178e0ca54d22644436894e1c8a6574d",
+      "branch": "feat/live-orchestration-runtime",
+      "detail": "working tree clean"
+    },
+    {
+      "label": "frozen-v1-v14-migrations",
+      "passed": true,
+      "compared": [
+        {
+          "path": "/home/ubuntu/FlowDeck-audit/src/orchestration/persistence/migrations/migration-checksum.ts",
+          "expected": "919392b7808b744fa64f30b5a845a17c6b0f2c8220e7abc72853c4e3ee85e618",
+          "actual": "919392b7808b744fa64f30b5a845a17c6b0f2c8220e7abc72853c4e3ee85e618",
+          "matches": true
+        },
+        {
+          "path": "/home/ubuntu/FlowDeck-audit/src/orchestration/persistence/migrations/migration-runner.ts",
+          "expected": "14044b0c6cf763e13cc5a5868a2a6aa8e0bd9e29ad2300ab343d2a823b733ea0",
+          "actual": "14044b0c6cf763e13cc5a5868a2a6aa8e0bd9e29ad2300ab343d2a823b733ea0",
+          "matches": true
+        },
+        {
+          "path": "/home/ubuntu/FlowDeck-audit/src/orchestration/persistence/migrations/migration-v10-heidi-runtime-closure.ts",
+          "expected": "fb3a8cc5f8de84e6937c84d2e033dc1df65b1c868af7dad9ac023c767fe0b1f6",
+          "actual": "fb3a8cc5f8de84e6937c84d2e033dc1df65b1c868af7dad9ac023c767fe0b1f6",
+          "matches": true
+        },
+        {
+          "path": "/home/ubuntu/FlowDeck-audit/src/orchestration/persistence/migrations/migration-v11-heidi-parallel-engine.ts",
+          "expected": "d5d63f70089b727979388052ee0db218cfc93827dc361e1aec3fcdbed870da77",
+          "actual": "d5d63f70089b727979388052ee0db218cfc93827dc361e1aec3fcdbed870da77",
+          "matches": true
+        },
+        {
+          "path": "/home/ubuntu/FlowDeck-audit/src/orchestration/persistence/migrations/migration-v12-orchestration-runtime-integrity.ts",
+          "expected": "361f9ad2e18db2906474afca479019cf92de38bf82c27496c0970bb7fdd1f9b4",
+          "actual": "361f9ad2e18db2906474afca479019cf92de38bf82c27496c0970bb7fdd1f9b4",
+          "matches": true
+        },
+        {
+          "path": "/home/ubuntu/FlowDeck-audit/src/orchestration/persistence/migrations/migration-v13-convergence-integrity.ts",
+          "expected": "90dcd1acc15563c38dac24904780fb6a4370aeee79df1ef942e4eb81d8051389",
+          "actual": "90dcd1acc15563c38dac24904780fb6a4370aeee79df1ef942e4eb81d8051389",
+          "matches": true
+        },
+        {
+          "path": "/home/ubuntu/FlowDeck-audit/src/orchestration/persistence/migrations/migration-v14-live-verification-authority.ts",
+          "expected": "ef3b04ce3ddefd3c3a824587d1adce5a2e18b3edab8525f89ffe0dd3a88871ed",
+          "actual": "ef3b04ce3ddefd3c3a824587d1adce5a2e18b3edab8525f89ffe0dd3a88871ed",
+          "matches": true
+        },
+        {
+          "path": "/home/ubuntu/FlowDeck-audit/src/orchestration/persistence/migrations/migration-v2-replay.ts",
+          "expected": "172e04bca1f83c00eebd98316a581e974640f412bf12693c784beff9c09a33a8",
+          "actual": "172e04bca1f83c00eebd98316a581e974640f412bf12693c784beff9c09a33a8",
+          "matches": true
+        },
+        {
+          "path": "/home/ubuntu/FlowDeck-audit/src/orchestration/persistence/migrations/migration-v3-execution.ts",
+          "expected": "ba56bccde91fbf710805aa43a0284bd26fa242a77c2cde14ae7c8808c43293c8",
+          "actual": "ba56bccde91fbf710805aa43a0284bd26fa242a77c2cde14ae7c8808c43293c8",
+          "matches": true
+        },
+        {
+          "path": "/home/ubuntu/FlowDeck-audit/src/orchestration/persistence/migrations/migration-v4-performance.ts",
+          "expected": "455c18646e0ea284ca98bc74e05010cc920817379a90f94e490830972c662811",
+          "actual": "455c18646e0ea284ca98bc74e05010cc920817379a90f94e490830972c662811",
+          "matches": true
+        },
+        {
+          "path": "/home/ubuntu/FlowDeck-audit/src/orchestration/persistence/migrations/migration-v5-execution-constraints.ts",
+          "expected": "37bc4a64029ba20731e663acf55060fe53c123361ec21bd7f036253b87734052",
+          "actual": "37bc4a64029ba20731e663acf55060fe53c123361ec21bd7f036253b87734052",
+          "matches": true
+        },
+        {
+          "path": "/home/ubuntu/FlowDeck-audit/src/orchestration/persistence/migrations/migration-v6-commands.ts",
+          "expected": "f10774c3f5b83a931611b803f3e01b6eb250b5e27a13287608b0cfa2d19888d9",
+          "actual": "f10774c3f5b83a931611b803f3e01b6eb250b5e27a13287608b0cfa2d19888d9",
+          "matches": true
+        },
+        {
+          "path": "/home/ubuntu/FlowDeck-audit/src/orchestration/persistence/migrations/migration-v7-assignment-binding.ts",
+          "expected": "3ff7d683e3b44d100af3da8b254559983cf7dbde8f779bb3e20f38036b8495ac",
+          "actual": "3ff7d683e3b44d100af3da8b254559983cf7dbde8f779bb3e20f38036b8495ac",
+          "matches": true
+        },
+        {
+          "path": "/home/ubuntu/FlowDeck-audit/src/orchestration/persistence/migrations/migration-v8-heidi-persistent-agent.ts",
+          "expected": "8c9d4bc5004b8afdc913d5671e9b6c496841e4a4e75f66c0915c6432f97a9f24",
+          "actual": "8c9d4bc5004b8afdc913d5671e9b6c496841e4a4e75f66c0915c6432f97a9f24",
+          "matches": true
+        },
+        {
+          "path": "/home/ubuntu/FlowDeck-audit/src/orchestration/persistence/migrations/migration-v9-heidi-learning-runtime.ts",
+          "expected": "9cbba68b48fbe0d1a7a95075161e146cdff16abf83198083567037c92022c1ce",
+          "actual": "9cbba68b48fbe0d1a7a95075161e146cdff16abf83198083567037c92022c1ce",
+          "matches": true
+        },
+        {
+          "path": "/home/ubuntu/FlowDeck-audit/src/orchestration/persistence/migrations/schema-embed.ts",
+          "expected": "3dfb12ec98285310afda3171e9dfabfea953e7a8c0dd6b317cd1ccb77b9dbe97",
+          "actual": "3dfb12ec98285310afda3171e9dfabfea953e7a8c0dd6b317cd1ccb77b9dbe97",
+          "matches": true
+        }
+      ],
+      "excludedByForwardMigration": [
+        "src/orchestration/persistence/migrations/migration-registry.ts"
+      ]
+    },
+    {
+      "label": "frozen-schema",
+      "command": "node scripts/check-schema-generated.mjs",
+      "startedAt": "2026-08-24T21:10:16.779Z",
+      "durationMs": 116.2,
+      "exitCode": 0,
+      "signal": null,
+      "passed": true,
+      "stdout": "Schema checksum OK (dcda41acdffaeae3a58020a019636002ac263ab5ec59434db3d9b97a2916d66c)\nValidation path: bun:sqlite fallback\nTables: 53, Triggers: 36, Indexes: 66, FK violations: 0, Integrity: ok\nSchema validation: ALL PASS\n",
+      "stderr": ""
+    },
+    {
+      "label": "live-schema",
+      "command": "bun scripts/orchestration/verify-schema.mjs",
+      "startedAt": "2026-08-24T21:10:16.902Z",
+      "durationMs": 65.96,
+      "exitCode": 0,
+      "signal": null,
+      "passed": true,
+      "stdout": "Schema Validation:\nTables: 89 (Expected: 89)\nIndexes: 103 (Expected: 103)\nTriggers: 38 (Expected: 38)\nSchema validation passed.\n",
+      "stderr": ""
+    },
+    {
+      "label": "authority-replacement-continuation-regressions",
+      "command": "bun test tests/live-verification-authority.test.ts tests/continuation-dispatch-durability.test.ts tests/orchestration-production-wiring.test.ts",
+      "startedAt": "2026-08-24T21:10:16.969Z",
+      "durationMs": 5814.39,
+      "exitCode": 0,
+      "signal": null,
+      "passed": true,
+      "stdout": "bun test v1.4.0 (34cbb9a40)\n",
+      "stderr": "\ntests/continuation-dispatch-durability.test.ts:\n(pass) Continuation dispatch durability > quarantines a corrupt durable claim and never invokes the native prompt [65.20ms]\n(pass) Continuation dispatch durability > treats a post-native CAS race as outcome unknown and does not claim dispatch success [54.95ms]\n\ntests/live-verification-authority.test.ts:\n(pass) Live Verification Authority > completes exactly once only after one durable live verification pass and policy review [93.50ms]\n(pass) Live Verification Authority > rejects the legacy direct completion service backdoor [49.73ms]\n(pass) Live Verification Authority > fails closed when the CompletionPolicy has no durable passed verification [58.96ms]\n(pass) Live Verification Authority > fails closed when a passed verification becomes stale or its authority JSON is corrupt [61.83ms]\n(pass) Live Verification Authority > persists a verification failure and routes the Run through recovering rather than terminal completion [62.74ms]\n(pass) Live Verification Authority > does not request verification while an unresolved deferred replacement blocks the Run [58.86ms]\n(pass) Live Verification Authority > quarantines corrupt deferred replacement authority and retains its completion barrier [63.67ms]\n(pass) Live Verification Authority > invalidates a verification result when persisted repository artifacts change [62.12ms]\n(pass) Live Verification Authority > preserves passed and pending verification records across restart without duplication [88.60ms]\n(pass) Live Verification Authority > does not allow a late passing verifier result to resurrect a cancelled Run [61.68ms]\n(pass) Live Verification Authority > marks a result stale when the authoritative Run fingerprint changes before application [59.09ms]\n\ntests/orchestration-production-wiring.test.ts:\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 1. plugin-passes-opencode-client-to-runtime [49.94ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 2. shared-runtime-preserves-valid-client [48.97ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 3. continuation-success-reports-dispatched [49.23ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 4. continuation-unavailable-reports-not-dispatched [48.68ms]\n[ContinuationDispatcher] native session.promptAsync call threw: warn: RPC failed\n      at <anonymous> (/home/ubuntu/FlowDeck-audit/tests/orchestration-production-wiring.test.ts:115:80)\n      at dispatch (/home/ubuntu/FlowDeck-audit/src/orchestration/services/continuation-policy.ts:377:45)\n      at <anonymous> (/home/ubuntu/FlowDeck-audit/tests/orchestration-production-wiring.test.ts:128:34)\n\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 5. continuation-error-reports-not-dispatched [51.48ms]\n[ContinuationDispatcher] native session.promptAsync call threw: warn: Transient RPC fail\n      at <anonymous> (/home/ubuntu/FlowDeck-audit/tests/orchestration-production-wiring.test.ts:145:65)\n      at dispatch (/home/ubuntu/FlowDeck-audit/src/orchestration/services/continuation-policy.ts:377:45)\n      at <anonymous> (/home/ubuntu/FlowDeck-audit/tests/orchestration-production-wiring.test.ts:161:35)\n\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 6. failed-dispatch-does-not-consume-success-dedupe [50.85ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 7. successful-dispatch-dedupes [51.48ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 8. dispatch-dedupe-survives-restart [58.30ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 9. user-turn-version-survives-restart [56.85ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 10. user-turn-version-increments-atomically [49.04ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 11. query-user-turn-invalidates-old-token [55.62ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 12. acknowledge-user-turn-invalidates-old-token [91.13ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 13. modify-user-turn-invalidates-old-token [114.33ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 14. stale-run-version-rejected-from-live-db [55.48ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 15. stale-state-fingerprint-rejected [55.62ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 16. token-uses-post-transition-snapshot [57.22ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 17. all-transition-engine-phase-writes-use-cas [55.77ms]\n[RunTransitionEngine] Invalid phase transition rejected: run 642b8258-c8d6-4579-8e95-eb81f41bb55a from 'created' to 'recovering'.\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 18. cas-conflict-does-not-report-phase-changed [59.44ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 19. multi-step-phase-evaluation-does-not-reuse-stale-version [58.95ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 20. real-concurrent-attempt-reservation-unique [57.14ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 21. duplicate-call-id-idempotent-or-conflict [53.28ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 22. durable-call-id-finalizes-after-restart [69.85ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 23. task-attempt-finalized [57.36ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 24. subagent-attempt-finalized [56.95ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 25. child-a-tool-attributed-to-assignment-a [55.43ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 26. child-b-tool-attributed-to-assignment-b [60.28ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 27. optional-child-failure-does-not-force-recovery [59.27ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 28. required-child-failure-enters-recovery [56.56ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 29. optional-active-child-policy [56.04ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 30. production-run-cancel-invokes-native-abort [58.78ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 31. native-abort-success-confirms-child-cancel [57.02ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 32. native-abort-failure-keeps-cancel-unconfirmed [55.90ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 33. parent-cancel-status-truthful-with-unconfirmed-child [59.16ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 34. replace-does-not-overlap-unconfirmed-old-run [60.06ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 35. informational-read-remains-non-progress [56.17ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 36. production-idle-repeated-action-blocks-at-boundary [60.46ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 37. root-strategy-set-blocks-a-b-a-loop [57.04ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 38. assignment-strategy-set-blocks-a-b-a-loop [56.75ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 39. strategy-set-survives-restart [62.38ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 40. change-strategy-continuation-carries-deterministic-constraint [0.35ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 41. concurrent-identical-continuation-dispatches-once [54.79ms]\n[ContinuationDispatcher] native session.promptAsync call threw: warn: RPC failure\n      at <anonymous> (/home/ubuntu/FlowDeck-audit/tests/orchestration-production-wiring.test.ts:1433:54)\n      at dispatch (/home/ubuntu/FlowDeck-audit/src/orchestration/services/continuation-policy.ts:377:45)\n      at <anonymous> (/home/ubuntu/FlowDeck-audit/tests/orchestration-production-wiring.test.ts:1447:35)\n\n[ContinuationDispatcher] native session.promptAsync call threw: warn: RPC failure\n      at <anonymous> (/home/ubuntu/FlowDeck-audit/tests/orchestration-production-wiring.test.ts:1433:54)\n      at dispatch (/home/ubuntu/FlowDeck-audit/src/orchestration/services/continuation-policy.ts:377:45)\n      at <anonymous> (/home/ubuntu/FlowDeck-audit/tests/orchestration-production-wiring.test.ts:1450:35)\n\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 42. failed-continuation-retry-bounded [54.41ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 43. out-of-order-duplicate-message-id-does-not-increment [49.92ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 44. identical-text-different-message-id-increments-turn [55.16ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 45. migration-v13-upgrades-real-historical-v12-schema-and-preserves-retry-columns [78.10ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 46. pending-dispatch-restart-becomes-outcome-unknown [64.49ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 47. session-deleted-confirms-cancellation-and-resumes-deferred-replace [70.24ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 48. modify-reclassification-uses-shared-cancellation-barrier [58.05ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 49. session-deleted-does-not-cancel-completed-child [61.69ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 50. root-old-progress-consumed-once [64.51ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 51. strategy-set-exhaustion-blocks-further-tools [64.95ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 52. deferred-replacement-survives-restart-and-resumes-once [82.89ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 53. newer-deferred-replacement-supersedes-older-deferred-replacement [66.11ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 54. true-production-stall-detected-via-session-idle [65.88ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 55. migration-checksum-mismatch-throws-error [44.12ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 56. legacy-pre-v12-upgrades-v13-and-backfills-defaults [1.85ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 57. meaningful-state-version-persists-across-restart-and-increments-on-mutations [70.16ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 58. concurrent-duplicate-message-id-competing-parallel [57.88ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 59. deferred-resuming-before-create-recovers-after-restart [70.95ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 60. deferred-resuming-after-create-reuses-existing-run [69.08ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 61. deferred-replacement-persists-actual-run-id [71.89ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 62. deferred-replacement-create-is-idempotent-by-correlation [55.97ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 63. duplicate-session-delete-after-crash-does-not-create-second-run [80.99ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 64. newer-user-message-while-deferred-does-not-bypass-barrier [70.11ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 65. user-cancel-supersedes-or-cancels-deferred-intent [63.29ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 66. deferred-fast-direct-survives-restart-and-resumes-at-most-once [103.64ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 67. strategy-exhausted-evaluate-returns-explicit-reason-and-stops-autonomous-idle [66.33ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 68. v13-checksum-covers-schema-aware-migration-contract-and-rejects-changed-behavior [38.56ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 70. deferred-intent-semantics-replay-continue-query-ack-modify [61.67ms]\n[ContinuationDispatcher] native session.promptAsync call threw: warn: Native OpenCode dispatch failed\n      at <anonymous> (/home/ubuntu/FlowDeck-audit/tests/orchestration-production-wiring.test.ts:2881:59)\n      at dispatch (/home/ubuntu/FlowDeck-audit/src/orchestration/services/continuation-policy.ts:377:45)\n      at resumeDeferredReplacement (/home/ubuntu/FlowDeck-audit/src/runtime/flowdeck-opencode-adapter.ts:1191:61)\n      at async drainSafeDeferredReplacements (/home/ubuntu/FlowDeck-audit/src/runtime/flowdeck-opencode-adapter.ts:1035:22)\n      at async onSessionDeleted (/home/ubuntu/FlowDeck-audit/src/runtime/flowdeck-opencode-adapter.ts:1231:18)\n      at async onEvent (/home/ubuntu/FlowDeck-audit/src/runtime/flowdeck-opencode-adapter.ts:784:18)\n      at async <anonymous> (/home/ubuntu/FlowDeck-audit/tests/orchestration-production-wiring.test.ts:2916:23)\n\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 71. deferred-prompt-failure-does-not-mark-resumed [77.02ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 76. outcome-unknown-cancel-after-child-termination-cancels-deferred [56.20ms]\n[FlowDeckLifecycleAdapter] syncOrchestrationRun failed: 241 |       completedAt: (row.completed_at as string) ?? undefined,\n242 |     };\n243 |   }\n244 | \n245 |   async findByCorrelationId(correlationId: string): Promise<Run | null> {\n246 |     const metaRow = this.db.query(\n                                  ^\nRangeError: Cannot use a closed database\n      at [prepareOwned] (bun:sqlite:330:37)\n      at query (bun:sqlite:347:31)\n      at findByCorrelationId (/home/ubuntu/FlowDeck-audit/src/orchestration/composition.ts:246:29)\n      at createOrGetRunByCorrelationId (/home/ubuntu/FlowDeck-audit/src/orchestration/services/run-service.ts:40:41)\n      at syncOrchestrationRun (/home/ubuntu/FlowDeck-audit/src/runtime/flowdeck-opencode-adapter.ts:459:50)\n      at resumeDeferredReplacement (/home/ubuntu/FlowDeck-audit/src/runtime/flowdeck-opencode-adapter.ts:1138:34)\n      at async drainSafeDeferredReplacements (/home/ubuntu/FlowDeck-audit/src/runtime/flowdeck-opencode-adapter.ts:1035:22)\n\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 77. outcome-unknown-replace-after-child-termination-supersedes-old [54.64ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 78. handoff-pending-query-does-not-strand-dispatch [65.48ms]\n[ContinuationDispatcher] native session.promptAsync call threw: warn: Permanent prompt failure\n      at <anonymous> (/home/ubuntu/FlowDeck-audit/tests/orchestration-production-wiring.test.ts:3066:59)\n      at dispatch (/home/ubuntu/FlowDeck-audit/src/orchestration/services/continuation-policy.ts:377:45)\n      at resumeDeferredReplacement (/home/ubuntu/FlowDeck-audit/src/runtime/flowdeck-opencode-adapter.ts:1191:61)\n      at async drainSafeDeferredReplacements (/home/ubuntu/FlowDeck-audit/src/runtime/flowdeck-opencode-adapter.ts:1035:22)\n      at async onSessionDeleted (/home/ubuntu/FlowDeck-audit/src/runtime/flowdeck-opencode-adapter.ts:1231:18)\n      at async onEvent (/home/ubuntu/FlowDeck-audit/src/runtime/flowdeck-opencode-adapter.ts:784:18)\n      at async <anonymous> (/home/ubuntu/FlowDeck-audit/tests/orchestration-production-wiring.test.ts:3099:23)\n\n[ContinuationDispatcher] native session.promptAsync call threw: warn: Permanent prompt failure\n      at <anonymous> (/home/ubuntu/FlowDeck-audit/tests/orchestration-production-wiring.test.ts:3066:59)\n      at dispatch (/home/ubuntu/FlowDeck-audit/src/orchestration/services/continuation-policy.ts:377:45)\n      at resumeDeferredReplacement (/home/ubuntu/FlowDeck-audit/src/runtime/flowdeck-opencode-adapter.ts:1191:61)\n      at async drainSafeDeferredReplacements (/home/ubuntu/FlowDeck-audit/src/runtime/flowdeck-opencode-adapter.ts:1035:22)\n\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 79. failed-max-attempts-transitions-deferred-blocked [81.82ms]\n[ContinuationDispatcher] native session.promptAsync call threw: warn: Transient network failure\n      at <anonymous> (/home/ubuntu/FlowDeck-audit/tests/orchestration-production-wiring.test.ts:3137:59)\n      at dispatch (/home/ubuntu/FlowDeck-audit/src/orchestration/services/continuation-policy.ts:377:45)\n      at resumeDeferredReplacement (/home/ubuntu/FlowDeck-audit/src/runtime/flowdeck-opencode-adapter.ts:1103:61)\n      at drainSafeDeferredReplacements (/home/ubuntu/FlowDeck-audit/src/runtime/flowdeck-opencode-adapter.ts:1035:22)\n      at onSessionDeleted (/home/ubuntu/FlowDeck-audit/src/runtime/flowdeck-opencode-adapter.ts:1231:18)\n      at async onEvent (/home/ubuntu/FlowDeck-audit/src/runtime/flowdeck-opencode-adapter.ts:784:18)\n      at async <anonymous> (/home/ubuntu/FlowDeck-audit/tests/orchestration-production-wiring.test.ts:3170:23)\n\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 80. fast-direct-failed-dispatch-retries-safely [75.62ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 72. deferred-cancel-race-before-dispatch-prevents-prompt [69.03ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 73. deferred-replace-race-before-dispatch-prevents-stale-prompt [64.86ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 74. deferred-dispatch-uses-durable-user-turn-without-increment [68.46ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 75. fast-direct-success-uses-native-prompt-and-marks-resumed [60.90ms]\n(pass) Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees) > 69. historical-v12-byte-identity-remains-valid [0.34ms]\n\n 93 pass\n 0 fail\n 330 expect() calls\nRan 93 tests across 3 files. [5.80s]\n"
+    },
+    {
+      "label": "doctor-observability-regressions",
+      "command": "bun test tests/doctor-cli.test.ts",
+      "startedAt": "2026-08-24T21:10:22.784Z",
+      "durationMs": 45281.95,
+      "exitCode": 0,
+      "signal": null,
+      "passed": true,
+      "stdout": "bun test v1.4.0 (34cbb9a40)\n",
+      "stderr": "\ntests/doctor-cli.test.ts:\n(pass) Doctor CLI — Argument Parsing > parses --json flag [1719.30ms]\n(pass) Doctor CLI — Argument Parsing > parses --strict flag [1716.45ms]\n(pass) Doctor CLI — Argument Parsing > parses --verbose flag without error [1742.91ms]\n(pass) Doctor CLI — Argument Parsing > parses --profile flag [1712.91ms]\n(pass) Doctor CLI — Argument Parsing > parses --apply-recommended flag [1713.67ms]\n(pass) Doctor CLI — Argument Parsing > parses --non-interactive flag [1713.05ms]\n(pass) Doctor CLI — Argument Parsing > rejects unknown flags with exit code 2 [25.10ms]\n(pass) Doctor CLI — Argument Parsing > rejects --profile without value with exit code 2 [24.60ms]\n(pass) Doctor CLI — JSON Output > produces valid JSON when --json is specified [1708.59ms]\n(pass) Doctor CLI — JSON Output > includes schemaVersion: 1 in JSON output [1706.50ms]\n(pass) Doctor CLI — JSON Output > does not mix human text into stdout with --json [1709.74ms]\n(pass) Doctor CLI — JSON Output > sends diagnostics to stderr, not stdout in JSON mode [1716.06ms]\n(pass) Doctor CLI — JSON Output > includes checks array in JSON output [1717.11ms]\n(pass) Doctor CLI — JSON Output > includes summary in JSON output [1719.19ms]\n(pass) Doctor CLI — JSON Output > includes scores in JSON output [1715.24ms]\n(pass) Doctor CLI — JSON Output > includes version and timestamp in JSON output [1723.75ms]\n(pass) Doctor CLI — Text Output > produces human-readable text by default [1714.40ms]\n(pass) Doctor CLI — Text Output > includes score section in text output [1725.91ms]\n(pass) Doctor CLI — Text Output > includes readiness in text output [1725.53ms]\n(pass) Doctor CLI — Secret Redaction > never returns secret values in any output format [1717.71ms]\n(pass) Doctor CLI — Secret Redaction > redacts detected values in environment check output [1717.19ms]\n(pass) Doctor CLI — Exit Codes > returns exit code 0 for healthy environment (normal mode) [1714.56ms]\n(pass) Doctor CLI — Exit Codes > returns exit code 2 for invalid --profile value (not name) [25.71ms]\n(pass) Doctor CLI — Profile Selection > accepts profile minimal [1713.60ms]\n(pass) Doctor CLI — Profile Selection > accepts profile recommended-dev [1715.82ms]\n(pass) Doctor CLI — Profile Selection > accepts profile full-dev [1716.19ms]\n(pass) Doctor CLI — Profile Selection > accepts profile ci [1713.45ms]\n(pass) Doctor CLI — Profile Selection > accepts profile release [1734.52ms]\n(pass) Doctor CLI — Package-Relative Path Resolution > resolves engine relative to package root, not cwd [207.79ms]\n(pass) Doctor CLI — Cross-Platform Path Handling > handles POSIX-style paths for Linux and macOS [1716.54ms]\n(pass) Doctor CLI — Cross-Platform Path Handling > handles Node.js path resolution for CLI script [0.23ms]\n(pass) Doctor Service — Module-Relative Import & Error Handling > runs doctor checks via runDoctorChecks with module-relative URL resolution [218.11ms]\n(pass) Doctor Service — Module-Relative Import & Error Handling > exports DoctorEngineLoadError class for engine load failures [0.19ms]\n\n 33 pass\n 0 fail\n 95 expect() calls\nRan 33 tests across 1 file. [45.27s]\n"
+    },
+    {
+      "label": "authority-performance",
+      "runs": [
+        {
+          "passed": true,
+          "durationMs": 997.96
+        },
+        {
+          "passed": true,
+          "durationMs": 975.9
+        },
+        {
+          "passed": true,
+          "durationMs": 979.89
+        }
+      ],
+      "medianMs": 979.89,
+      "maxMs": 997.96,
+      "thresholdMs": 5000,
+      "passed": true
+    }
+  ]
+}
