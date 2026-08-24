@@ -1,0 +1,157 @@
+{
+  "milestone": "M10",
+  "title": "Shadow Calibration & Empirical Verification Planner Accuracy",
+  "functional_source_sha": "dbee5bb4e558126fb6292cfec043e7bb9fec96df",
+  "binary_source_sha": "dbee5bb4e558126fb6292cfec043e7bb9fec96df",
+  "binary_sha256": "50f3b79891b3840a3ca60389afdca16f2b0afd5cab9f3c8f6012f92a0baba4fb",
+  "benchmark_harness_sha": "46a0590ddae588ed73d9be19e14cac8995e82c64",
+  "qualification_head_sha": "46a0590ddae588ed73d9be19e14cac8995e82c64",
+  "timestamp": "2026-08-24T13:38:51.678Z",
+  "platform": "linux",
+  "arch": "x64",
+  "node_version": "v24.19.0",
+  "schema_version": 8,
+  "invariants": {
+    "schema_v8_migration_complete": true,
+    "deterministic_calibration_id_binding": true,
+    "candidate_plan_exact_preservation": true,
+    "shadow_reference_superset_discovery": true,
+    "signal_classification_complete": true,
+    "zero_signal_null_recall_enforced": true,
+    "bounded_shadow_checks_and_truncation": true,
+    "database_atomic_idempotent_persistence": true,
+    "divergent_data_conflict_rejected": true,
+    "secrets_and_excerpts_redacted": true,
+    "planner_selection_isolated": true,
+    "assurance_escalation_isolated": true,
+    "runtime_history_isolated": true,
+    "m9_attestation_bytes_isolated": true
+  },
+  "preflights": [
+    {
+      "name": "schema_v8_tables_and_columns_exist",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "v7_to_v8_migration_preserves_runtime_runs",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "deterministic_calibration_id_binding",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "policy_digest_field_sensitivity",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "candidate_plan_exact_preservation",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "shadow_reference_superset_discovery",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "signal_classification_and_observed_miss_detection",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "incomplete_execution_classification",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "zero_failing_signals_null_recall",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "bounded_shadow_checks_and_truncation",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "database_idempotent_persistence",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "divergent_data_conflict_rejection",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "transaction_rollback_zero_orphaned_rows",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "database_reopen_exact_determinism",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "privacy_and_secret_redaction",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "planner_selection_and_assurance_isolation",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "runtime_history_and_executions_isolation",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "m9_attestation_statement_and_digest_isolation",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "cli_subcommands_end_to_end",
+      "status": "passed",
+      "details": {}
+    }
+  ],
+  "metrics": {
+    "calibration_run_single_ms": {
+      "count": 15,
+      "min": 11.18,
+      "max": 12.72,
+      "mean": 11.68,
+      "median": 11.65,
+      "p95": 12.72
+    },
+    "calibration_show_single_ms": {
+      "count": 15,
+      "min": 5.09,
+      "max": 5.7,
+      "mean": 5.33,
+      "median": 5.27,
+      "p95": 5.7
+    },
+    "calibration_stats_query_ms": {
+      "count": 15,
+      "min": 4.22,
+      "max": 4.83,
+      "mean": 4.47,
+      "median": 4.46,
+      "p95": 4.83
+    },
+    "calibrate_50_runs_total_ms": 689.53,
+    "calibrate_avg_per_run_ms": 13.79,
+    "calibrate_show_50_runs_total_ms": 260.38,
+    "calibrate_show_avg_per_run_ms": 5.21
+  }
+}
