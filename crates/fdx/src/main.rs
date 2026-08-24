@@ -63,6 +63,41 @@ pub enum HistoryAction {
 }
 
 #[derive(Subcommand)]
+pub enum AttestAction {
+    /// Create a deterministic verification attestation for a qualified verification run
+    Create {
+        /// Verification run identifier
+        #[arg(long)]
+        run: String,
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+    /// Verify an in-toto attestation against source run artifact and M8 runtime history
+    Verify {
+        /// Path to attestation JSON file
+        file: PathBuf,
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+    /// Inspect an in-toto attestation file
+    Show {
+        /// Path to attestation JSON file
+        file: PathBuf,
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+    /// List all attestations in .fdx/attestations/
+    List {
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum BuildAction {
     /// Show build provider status / freshness / topology stats
     Status,
@@ -562,6 +597,14 @@ enum Commands {
     History {
         #[command(subcommand)]
         action: HistoryAction,
+    },
+
+    /// Verification attestation and cryptographic evidence binding (Milestone 9)
+    ///
+    /// Example: fdx attest create --run run-123
+    Attest {
+        #[command(subcommand)]
+        action: AttestAction,
     },
 }
 
@@ -1926,6 +1969,226 @@ fn main() {
                         }
                         Err(e) => {
                             eprintln!("Error during reconciliation: {}", e);
+                            process::exit(1);
+                        }
+                    }
+                }
+            }
+        }
+
+        Commands::Attest { action } => {
+            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let repo_root = fdx::paths::find_repository_root(&cwd).unwrap_or(cwd);
+
+            match action {
+                AttestAction::Create { run, format } => {
+                    let format = parse_format(&format);
+                    let db = match fdx::intelligence::db::EvidenceDatabase::open(
+                        &repo_root,
+                        fdx::intelligence::db::DatabaseOpenMode::ReadOnly,
+                    ) {
+                        Ok(d) => d,
+                        Err(e) => {
+                            eprintln!("Error opening history database: {}", e);
+                            process::exit(1);
+                        }
+                    };
+
+                    let attestation =
+                        match fdx::intelligence::attestation::build_verification_attestation(
+                            &repo_root, &run, &db.conn,
+                        ) {
+                            Ok(a) => a,
+                            Err(e) => {
+                                eprintln!("Error building verification attestation: {}", e);
+                                process::exit(1);
+                            }
+                        };
+
+                    match fdx::intelligence::attestation::persist_attestation(
+                        &repo_root,
+                        &attestation,
+                    ) {
+                        Ok((path, sha256)) => match format {
+                            OutputFormat::Json => {
+                                let obj = serde_json::json!({
+                                    "status": "created",
+                                    "run_id": run,
+                                    "path": path,
+                                    "attestation_sha256": sha256,
+                                    "artifact_sha256": attestation.predicate.run.artifact_sha256,
+                                    "statement": attestation,
+                                });
+                                if let Ok(s) = serde_json::to_string_pretty(&obj) {
+                                    println!("{}", s);
+                                }
+                            }
+                            OutputFormat::Text => {
+                                println!("Verification Attestation Created:");
+                                println!("  Run ID: {}", run);
+                                println!("  Attestation SHA-256: {}", sha256);
+                                println!(
+                                    "  Artifact SHA-256: {}",
+                                    attestation.predicate.run.artifact_sha256
+                                );
+                                println!("  Outcome: {:?}", attestation.predicate.result.outcome);
+                                println!(
+                                    "  Assurance: {:?}",
+                                    attestation.predicate.result.assurance
+                                );
+                                println!("  Path: {:?}", path);
+                            }
+                        },
+                        Err(e) => {
+                            eprintln!("Error persisting attestation: {}", e);
+                            process::exit(1);
+                        }
+                    }
+                }
+                AttestAction::Verify { file, format } => {
+                    let format = parse_format(&format);
+                    let db = match fdx::intelligence::db::EvidenceDatabase::open(
+                        &repo_root,
+                        fdx::intelligence::db::DatabaseOpenMode::ReadOnly,
+                    ) {
+                        Ok(d) => d,
+                        Err(e) => {
+                            eprintln!("Error opening history database: {}", e);
+                            process::exit(1);
+                        }
+                    };
+
+                    let (statement, raw_bytes, _file_sha) =
+                        match fdx::intelligence::attestation::load_attestation_from_path(
+                            &repo_root, &file,
+                        ) {
+                            Ok(res) => res,
+                            Err(e) => {
+                                eprintln!("Error loading attestation file: {}", e);
+                                process::exit(1);
+                            }
+                        };
+
+                    match fdx::intelligence::attestation::verify_attestation(
+                        &repo_root,
+                        &statement,
+                        Some(&raw_bytes),
+                        &db.conn,
+                    ) {
+                        Ok(report) => match format {
+                            OutputFormat::Json => {
+                                if let Ok(s) = serde_json::to_string_pretty(&report) {
+                                    println!("{}", s);
+                                }
+                            }
+                            OutputFormat::Text => {
+                                println!("Verification Attestation Verified:");
+                                println!("  Valid: {}", report.valid);
+                                println!("  Run ID: {}", report.run_id);
+                                println!("  Attestation SHA-256: {}", report.attestation_sha256);
+                                println!("  Artifact SHA-256: {}", report.artifact_sha256);
+                                println!("  Outcome: {:?}", report.outcome);
+                                println!("  Assurance: {:?}", report.assurance);
+                                println!("  Checks Verified: {}", report.checks_verified);
+                                println!("  Executions Verified: {}", report.executions_verified);
+                                println!(
+                                    "  Global History Complete: {}",
+                                    report.global_history_complete
+                                );
+                            }
+                        },
+                        Err(e) => {
+                            eprintln!("Attestation verification failed: {}", e);
+                            process::exit(1);
+                        }
+                    }
+                }
+                AttestAction::Show { file, format } => {
+                    let format = parse_format(&format);
+                    let (statement, _bytes, file_sha) =
+                        match fdx::intelligence::attestation::load_attestation_from_path(
+                            &repo_root, &file,
+                        ) {
+                            Ok(res) => res,
+                            Err(e) => {
+                                eprintln!("Error loading attestation file: {}", e);
+                                process::exit(1);
+                            }
+                        };
+
+                    match format {
+                        OutputFormat::Json => {
+                            if let Ok(s) = serde_json::to_string_pretty(&statement) {
+                                println!("{}", s);
+                            }
+                        }
+                        OutputFormat::Text => {
+                            println!("Verification Attestation Statement:");
+                            println!("  Type: {}", statement.statement_type);
+                            println!("  Predicate Type: {}", statement.predicate_type);
+                            println!("  File SHA-256: {}", file_sha);
+                            println!("  Run ID: {}", statement.predicate.run.run_id);
+                            println!(
+                                "  Artifact SHA-256: {}",
+                                statement.predicate.run.artifact_sha256
+                            );
+                            println!("  Plan SHA-256: {}", statement.predicate.run.plan_sha256);
+                            println!("  Outcome: {:?}", statement.predicate.result.outcome);
+                            println!("  Assurance: {:?}", statement.predicate.result.assurance);
+                            println!(
+                                "  Total Obligations: {}",
+                                statement.predicate.plan.total_obligations
+                            );
+                            println!("  Checks ({}):", statement.predicate.checks.len());
+                            for c in &statement.predicate.checks {
+                                println!(
+                                    "    - {} (status: {:?}, physical: {}, reused: {})",
+                                    c.check_id,
+                                    c.status,
+                                    c.has_physical_execution,
+                                    c.reused_execution
+                                );
+                            }
+                            println!("  Executions ({}):", statement.predicate.executions.len());
+                            for e in &statement.predicate.executions {
+                                println!(
+                                    "    - {} (prog: {}, status: {:?}, dur: {}ms)",
+                                    e.execution_id, e.program, e.status, e.duration_ms
+                                );
+                            }
+                            if !statement.predicate.uncertainty.is_empty() {
+                                println!(
+                                    "  Uncertainty ({}):",
+                                    statement.predicate.uncertainty.len()
+                                );
+                                for u in &statement.predicate.uncertainty {
+                                    println!("    - [{}] {}", u.code, u.message);
+                                }
+                            }
+                        }
+                    }
+                }
+                AttestAction::List { format } => {
+                    let format = parse_format(&format);
+                    match fdx::intelligence::attestation::list_attestations(&repo_root) {
+                        Ok(list) => match format {
+                            OutputFormat::Json => {
+                                if let Ok(s) = serde_json::to_string_pretty(&list) {
+                                    println!("{}", s);
+                                }
+                            }
+                            OutputFormat::Text => {
+                                println!("Discovered Attestations ({}):", list.len());
+                                for a in &list {
+                                    println!(
+                                        "- Run: {} | Outcome: {:?} | Assurance: {:?} | Attestation SHA: {} | Path: {:?}",
+                                        a.run_id, a.outcome, a.assurance, a.attestation_sha256, a.path
+                                    );
+                                }
+                            }
+                        },
+                        Err(e) => {
+                            eprintln!("Error listing attestations: {}", e);
                             process::exit(1);
                         }
                     }
