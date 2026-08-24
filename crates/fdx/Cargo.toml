@@ -27,6 +27,7 @@ rusqlite = { version = "0.40.2", features = ["bundled"] }
 libc = "0.2.186"
 toml = "0.8"
 serde_yaml = "0.9"
+serde_json_canonicalizer = "0.3.2"
 
 
 [[bin]]

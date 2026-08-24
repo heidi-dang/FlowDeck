@@ -85,9 +85,10 @@ fn test_attest_create_show_verify_roundtrip() {
     let (att_path, _sha) = persist_attestation(repo_root, &attestation).unwrap();
 
     let (loaded, raw_att_bytes, _file_sha) =
-        load_attestation_from_path(repo_root, &att_path).unwrap();
+        load_attestation_from_path(repo_root, &att_path, None).unwrap();
     assert_eq!(loaded.predicate.run.run_id, run_id);
 
-    let report = verify_attestation(repo_root, &loaded, Some(&raw_att_bytes), &db.conn).unwrap();
+    let report =
+        verify_attestation(repo_root, &loaded, Some(&raw_att_bytes), None, &db.conn).unwrap();
     assert!(report.valid);
 }

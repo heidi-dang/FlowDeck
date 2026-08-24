@@ -9,3 +9,17 @@ fn test_predicate_version_and_uri_constants() {
     );
     assert_eq!(FDX_ATTESTATION_PREDICATE_VERSION, 1);
 }
+
+#[test]
+fn test_source_context_workspace_clean_omitted_when_none() {
+    let ctx = SourceContext {
+        base_ref: Some("main".to_string()),
+        head_ref: Some("HEAD".to_string()),
+        changed_files_count: 3,
+        impacted_targets_count: 1,
+        workspace_clean: None,
+    };
+
+    let serialized = serde_json::to_string(&ctx).unwrap();
+    assert!(!serialized.contains("workspace_clean"));
+}

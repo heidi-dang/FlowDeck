@@ -92,7 +92,7 @@ fn test_outcome_scenario(
     assert_eq!(attestation.predicate.result.outcome, outcome);
     assert_eq!(attestation.predicate.result.assurance, assurance);
 
-    let report = verify_attestation(repo_root, &attestation, None, &db.conn).unwrap();
+    let report = verify_attestation(repo_root, &attestation, None, None, &db.conn).unwrap();
     assert!(report.valid);
     assert_eq!(report.outcome, outcome);
     assert_eq!(report.assurance, assurance);

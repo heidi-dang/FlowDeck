@@ -90,6 +90,6 @@ fn test_tampered_artifact_detected_by_verification() {
     )
     .unwrap();
 
-    let err = verify_attestation(repo_root, &attestation, None, &db.conn).unwrap_err();
+    let err = verify_attestation(repo_root, &attestation, None, None, &db.conn).unwrap_err();
     assert!(err.contains("Tamper detected"));
 }

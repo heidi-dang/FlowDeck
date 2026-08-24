@@ -4,7 +4,9 @@ use crate::intelligence::runtime::digest::{
     compute_argv_digest, compute_plan_digest, sha256_bytes,
 };
 use crate::intelligence::runtime::model::{RuntimeIngestResult, INGESTION_CONTRACT_VERSION_V2};
-use crate::intelligence::verify::model::{CheckExecutionResult, CheckExecutionStatus, VerificationRun};
+use crate::intelligence::verify::model::{
+    CheckExecutionResult, CheckExecutionStatus, VerificationRun,
+};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};

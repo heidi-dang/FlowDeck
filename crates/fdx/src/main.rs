@@ -77,6 +77,9 @@ pub enum AttestAction {
     Verify {
         /// Path to attestation JSON file
         file: PathBuf,
+        /// Expected SHA-256 digest of attestation (required for non-content-addressed external files)
+        #[arg(long)]
+        expected_sha256: Option<String>,
         /// Output format: text or json
         #[arg(long, default_value = "text")]
         format: String,
@@ -2056,7 +2059,11 @@ fn main() {
                         }
                     }
                 }
-                AttestAction::Verify { file, format } => {
+                AttestAction::Verify {
+                    file,
+                    expected_sha256,
+                    format,
+                } => {
                     let format = parse_format(&format);
                     let db = match fdx::intelligence::db::EvidenceDatabase::open(
                         &repo_root,
@@ -2071,7 +2078,9 @@ fn main() {
 
                     let (statement, raw_bytes, _file_sha) =
                         match fdx::intelligence::attestation::load_attestation_from_path(
-                            &repo_root, &file,
+                            &repo_root,
+                            &file,
+                            expected_sha256.as_deref(),
                         ) {
                             Ok(res) => res,
                             Err(e) => {
@@ -2084,6 +2093,7 @@ fn main() {
                         &repo_root,
                         &statement,
                         Some(&raw_bytes),
+                        expected_sha256.as_deref(),
                         &db.conn,
                     ) {
                         Ok(report) => match format {
@@ -2103,8 +2113,8 @@ fn main() {
                                 println!("  Checks Verified: {}", report.checks_verified);
                                 println!("  Executions Verified: {}", report.executions_verified);
                                 println!(
-                                    "  Global History Complete: {}",
-                                    report.global_history_complete
+                                    "  Global History Complete at Generation: {}",
+                                    report.global_history_complete_at_generation
                                 );
                             }
                         },
@@ -2118,7 +2128,7 @@ fn main() {
                     let format = parse_format(&format);
                     let (statement, _bytes, file_sha) =
                         match fdx::intelligence::attestation::load_attestation_from_path(
-                            &repo_root, &file,
+                            &repo_root, &file, None,
                         ) {
                             Ok(res) => res,
                             Err(e) => {
