@@ -39,7 +39,6 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
   private disposed = false;
   private turnVersionCounter = 0;
   private pendingFastDirectTurns = new Map<string, PendingFastDirectTurn>();
-  private pendingDeferredReplacements = new Map<string, { parentSessionId: string; oldRunId: string; agent: string; text: string; msgHash: string; correlationId?: string; decision: any }>();
   private preToolRepositoryFingerprints = new Map<string, string>();
   private inFlightAttempts = new Map<string, { runId: string; assignmentId: string; attemptNumber: number; preStateFingerprint: string; actionFingerprint: string; startedAt: string }>();
   private continuationDispatcher: ContinuationDispatcher;
@@ -193,14 +192,16 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
             );
 
             if (safety === "TERMINATION_PENDING") {
-              this.pendingDeferredReplacements.set(input.sessionID, {
+              this.runtime.deferredReplacementRepo.savePending({
                 parentSessionId: input.sessionID,
                 oldRunId: activeRun.id,
-                agent: input.agent ?? "heidi",
-                text: modResult.effectiveGoal,
-                msgHash,
+                sourceIntent: "MODIFY_RECLASSIFICATION",
+                agentId: input.agent ?? "heidi",
+                effectiveGoal: modResult.effectiveGoal,
+                messageHash: msgHash,
+                messageId: correlationId,
                 correlationId,
-                decision: modResult.newDecision,
+                routingDecision: modResult.newDecision,
               });
               return;
             }
@@ -258,14 +259,16 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
 
             if (safety === "TERMINATION_PENDING") {
               const decision = classifyTask(text, { hasExplicitDomainSignal: false });
-              this.pendingDeferredReplacements.set(input.sessionID, {
+              this.runtime.deferredReplacementRepo.savePending({
                 parentSessionId: input.sessionID,
                 oldRunId: activeRun.id,
-                agent: input.agent ?? "heidi",
-                text,
-                msgHash,
+                sourceIntent: "REPLACE",
+                agentId: input.agent ?? "heidi",
+                effectiveGoal: text,
+                messageHash: msgHash,
+                messageId: correlationId,
                 correlationId,
-                decision,
+                routingDecision: decision,
               });
               return;
             }
@@ -421,21 +424,25 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
         sessionID: input.sessionID,
       });
       const snapshot = this.runtime.orchestrationSnapshotService.getSnapshot(runId, input.sessionID);
-      const preStateFingerprint = snapshot
-        ? `${snapshot.progress.lastRepositoryDelta}:${snapshot.childState.activeRequired}:${snapshot.childState.failedRequired}:${snapshot.workItems.filter(w => w.isSatisfied).length}`
-        : "0:0:0:0";
+      const preStateFingerprint = this.runtime.transitionEngine.computeStrategyStateFingerprint(runId, assignmentId, snapshot);
 
       // Boundary Enforcement: Check active strategy constraint set before execution
       const activeConstraintSet = this.runtime.transitionEngine.getActiveStrategyConstraints(runId, assignmentId);
-      if (activeConstraintSet && activeConstraintSet.prohibitedActionFingerprints.includes(actionFingerprint)) {
-        if (activeConstraintSet.stateFingerprint === preStateFingerprint) {
+      if (activeConstraintSet && activeConstraintSet.stateFingerprint === preStateFingerprint) {
+        if (activeConstraintSet.exhausted) {
           throw new Error(
-            `[ExecutionBoundary] REPEATED_ACTION_BLOCKED: Action '${input.tool}' with fingerprint '${actionFingerprint}' is prohibited under unchanged state '${preStateFingerprint}'. Change strategy, choose a different tool or evidence source, or replan.`
+            `[ExecutionBoundary] STRATEGY_SET_EXHAUSTED: Strategy set exhausted under unchanged state '${preStateFingerprint}'. Replan or resolve state before attempting further tools.`
           );
-        } else {
-          // State has changed; clear outdated constraint set and allow execution
-          this.runtime.transitionEngine.clearStrategyConstraint(runId, assignmentId);
         }
+        if (activeConstraintSet.prohibitedActionFingerprints.includes(actionFingerprint)) {
+          const reason = activeConstraintSet.reasonsByFingerprint?.[actionFingerprint] ?? "REPEATED_ACTION_BLOCKED";
+          throw new Error(
+            `[ExecutionBoundary] REPEATED_ACTION_BLOCKED: Action '${input.tool}' with fingerprint '${actionFingerprint}' is prohibited under unchanged state '${preStateFingerprint}'. ${reason}.`
+          );
+        }
+      } else if (activeConstraintSet && activeConstraintSet.stateFingerprint !== preStateFingerprint) {
+        // Meaningful state has changed; clear outdated constraint set and allow execution
+        this.runtime.transitionEngine.clearStrategyConstraint(runId, assignmentId);
       }
 
       const startedAttempt = this.runtime.transitionEngine.startAttempt({
@@ -786,38 +793,41 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
 
       // Check if this parent run has a pending deferred replacement ready to resume
       const parentSessionId = childRec.parentSessionId;
-      const deferred = this.pendingDeferredReplacements.get(parentSessionId);
+      const deferred = this.runtime.deferredReplacementRepo.findCurrentForSession(parentSessionId);
       if (deferred && deferred.oldRunId === childRec.runId) {
         const diag = this.runtime.childExecutionLifecycleService.getDiagnosticsForRun(childRec.runId);
-        const hasUnconfirmedRemaining = diag.childExecutions?.some(
-          c => !c.nativeTerminationConfirmed && (c.status === "running" || c.status === "queued")
-        );
+        const hasUnconfirmedRemaining = diag.currentTerminationPending;
         if (!hasUnconfirmedRemaining) {
-          this.pendingDeferredReplacements.delete(parentSessionId);
-          markRouteInactive(parentSessionId);
-          const taskId = "task-" + randomUUID();
-          this.turnVersionCounter += 1;
-          const turnVersion = this.turnVersionCounter;
-          setRouteDecision(parentSessionId, taskId, deferred.decision, deferred.text, deferred.msgHash);
+          // Atomic CAS claim: only one resume operation can succeed
+          const claimed = this.runtime.deferredReplacementRepo.claimForResume(deferred.id);
+          if (claimed) {
+            markRouteInactive(parentSessionId);
+            const taskId = "task-" + randomUUID();
+            this.turnVersionCounter += 1;
+            const turnVersion = this.turnVersionCounter;
+            setRouteDecision(parentSessionId, taskId, deferred.routingDecision, deferred.effectiveGoal, deferred.messageHash);
 
-          if (deferred.decision.executionClass === "FAST_DIRECT") {
-            this.pendingFastDirectTurns.set(parentSessionId, {
-              sessionID: parentSessionId,
-              taskId,
-              messageHash: deferred.msgHash,
-              messageID: deferred.correlationId,
-              turnVersion,
-            });
-          } else {
-            await this.syncOrchestrationRun(
-              taskId,
-              parentSessionId,
-              deferred.agent,
-              deferred.decision,
-              deferred.text,
-              deferred.msgHash,
-              deferred.correlationId ?? ("deferred-" + taskId)
-            );
+            if (deferred.routingDecision.executionClass === "FAST_DIRECT") {
+              this.pendingFastDirectTurns.set(parentSessionId, {
+                sessionID: parentSessionId,
+                taskId,
+                messageHash: deferred.messageHash,
+                messageID: deferred.correlationId,
+                turnVersion,
+              });
+              this.runtime.deferredReplacementRepo.markResumed(deferred.id);
+            } else {
+              await this.syncOrchestrationRun(
+                taskId,
+                parentSessionId,
+                deferred.agentId,
+                deferred.routingDecision,
+                deferred.effectiveGoal,
+                deferred.messageHash,
+                deferred.correlationId ?? ("deferred-" + taskId)
+              );
+              this.runtime.deferredReplacementRepo.markResumed(deferred.id, taskId);
+            }
           }
         }
       }
@@ -827,6 +837,5 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
   dispose(): void {
     this.disposed = true;
     this.pendingFastDirectTurns.clear();
-    this.pendingDeferredReplacements.clear();
   }
 }

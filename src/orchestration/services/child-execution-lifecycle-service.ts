@@ -703,6 +703,8 @@ export class ChildExecutionLifecycleService {
     activeChildExecutions: number;
     completedChildExecutions: number;
     failedChildExecutions: number;
+    currentTerminationPending: boolean;
+    currentUnconfirmedChildExecutionIds: string[];
     childExecutions: Array<{
       assignmentId: string;
       executionId: string;
@@ -737,6 +739,11 @@ export class ChildExecutionLifecycleService {
       }
     }
 
+    const currentUnconfirmedChildExecutionIds = list
+      .filter(c => !c.nativeTerminationConfirmed && (c.status === "running" || c.status === "queued" || c.cancelRequested))
+      .map(c => c.executionId);
+    const currentTerminationPending = currentUnconfirmedChildExecutionIds.length > 0;
+
     return {
       activeAssignments,
       completedAssignments,
@@ -744,6 +751,8 @@ export class ChildExecutionLifecycleService {
       activeChildExecutions,
       completedChildExecutions,
       failedChildExecutions,
+      currentTerminationPending,
+      currentUnconfirmedChildExecutionIds,
       childExecutions: list.map(item => ({
         assignmentId: item.assignmentId,
         executionId: item.executionId,

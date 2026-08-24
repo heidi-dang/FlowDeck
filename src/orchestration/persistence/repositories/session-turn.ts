@@ -55,36 +55,47 @@ export class SessionTurnRepository extends BaseRepository {
         const existingTurn = this.findBySessionId(input.sessionId);
         const nextVersion = existingTurn ? existingTurn.userTurnVersion + 1 : 1;
 
-        // Atomically record message identity and update turn version
-        this.db.query(`
-          INSERT INTO session_turn_messages (session_id, message_id, message_hash, user_turn_version, created_at)
-          VALUES (?, ?, ?, ?, ?)
-        `).run(
-          input.sessionId,
-          input.messageId,
-          input.messageHash ?? null,
-          nextVersion,
-          now
-        );
+        try {
+          // Atomically record message identity and update turn version
+          this.db.query(`
+            INSERT INTO session_turn_messages (session_id, message_id, message_hash, user_turn_version, created_at)
+            VALUES (?, ?, ?, ?, ?)
+          `).run(
+            input.sessionId,
+            input.messageId,
+            input.messageHash ?? null,
+            nextVersion,
+            now
+          );
 
-        this.db.query(`
-          INSERT INTO session_turns (session_id, user_turn_version, last_user_message_id, last_user_message_hash, updated_at)
-          VALUES (?, ?, ?, ?, ?)
-          ON CONFLICT(session_id) DO UPDATE SET
-            user_turn_version = ?,
-            last_user_message_id = excluded.last_user_message_id,
-            last_user_message_hash = excluded.last_user_message_hash,
-            updated_at = excluded.updated_at
-        `).run(
-          input.sessionId,
-          nextVersion,
-          input.messageId,
-          input.messageHash ?? null,
-          now,
-          nextVersion
-        );
+          this.db.query(`
+            INSERT INTO session_turns (session_id, user_turn_version, last_user_message_id, last_user_message_hash, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(session_id) DO UPDATE SET
+              user_turn_version = ?,
+              last_user_message_id = excluded.last_user_message_id,
+              last_user_message_hash = excluded.last_user_message_hash,
+              updated_at = excluded.updated_at
+          `).run(
+            input.sessionId,
+            nextVersion,
+            input.messageId,
+            input.messageHash ?? null,
+            now,
+            nextVersion
+          );
 
-        return nextVersion;
+          return nextVersion;
+        } catch (err: any) {
+          // On UNIQUE constraint conflict from concurrent duplicate insertion, reread and return established version
+          const recheck = this.db.query(
+            "SELECT user_turn_version FROM session_turn_messages WHERE session_id = ? AND message_id = ?"
+          ).get(input.sessionId, input.messageId) as { user_turn_version: number } | null;
+          if (recheck) {
+            return recheck.user_turn_version;
+          }
+          throw err;
+        }
       }
 
       // 2. Hash-only fallback when messageId is unavailable
