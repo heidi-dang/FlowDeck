@@ -124,27 +124,40 @@ describe("Strict closure", () => {
     expect(existsSync(dir)).toBe(false);
   });
 
-  it("strict close detects an unfinalized pending statement", async () => {
+  it("safely closes a held prepared statement when Bun accepts close(true)", async () => {
     const dir = mkdtempSync(join(tmpdir(), "res-clean-"));
     const path = join(dir, "test.db");
     const db = new Database(path);
     db.exec("CREATE TABLE t (x INTEGER)");
-    // A held, never-finalized statement must make strict close fail visibly.
     const pending = db.prepare("SELECT * FROM t");
-    void pending;
+
+    await deterministicCleanup({ db, dir });
+
+    expect(() => pending.all()).toThrow();
+    expect(() => db.query("SELECT 1").get()).toThrow();
+    expect(existsSync(path)).toBe(false);
+    expect(existsSync(dir)).toBe(false);
+  });
+
+  it("surfaces a deterministic primary strict-close failure", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "res-clean-"));
+    const db = new Database(join(dir, "test.db"));
+    db.exec("CREATE TABLE t (x INTEGER)");
 
     let caught: AggregateError | null = null;
     try {
-      await deterministicCleanup({ db, dir });
-    } catch (e) {
-      caught = e instanceof AggregateError ? e : null;
+      await deterministicCleanup({
+        db,
+        dir,
+        hooks: { closeDatabase: () => { throw new Error("injected close failure"); } },
+      });
+    } catch (error) {
+      caught = error instanceof AggregateError ? error : null;
     }
 
     expect(caught).not.toBeNull();
     expect(caught!.errors.some((error) => error.message.includes("sqlite-strict-close-primary"))).toBe(true);
-
-    pending.finalize();
-    try { await deterministicCleanup({ dir }); } catch {}
+    expect(existsSync(dir)).toBe(false);
   });
 
   it("extra connections are strict-closed before file removal", async () => {
@@ -161,27 +174,33 @@ describe("Strict closure", () => {
     expect(() => secondary.query("SELECT 1").get()).toThrow();
   });
 
-  it("strict close failure on an extra connection is fail-visible", async () => {
+  it("surfaces a deterministic extra-connection strict-close failure", async () => {
     const dir = mkdtempSync(join(tmpdir(), "res-clean-"));
     const path = join(dir, "test.db");
     const db = new Database(path);
     db.exec("CREATE TABLE t (x INTEGER)");
     const secondary = new Database(path);
-    const pending = secondary.prepare("SELECT * FROM t");
-    void pending;
 
     let caught: AggregateError | null = null;
     try {
-      await deterministicCleanup({ db, dir, extraConnections: [secondary] });
-    } catch (e) {
-      caught = e instanceof AggregateError ? e : null;
+      await deterministicCleanup({
+        db,
+        dir,
+        extraConnections: [secondary],
+        hooks: {
+          closeDatabase: (connection, throwOnError) => {
+            if (connection === secondary) throw new Error("injected close failure");
+            connection.close(throwOnError);
+          },
+        },
+      });
+    } catch (error) {
+      caught = error instanceof AggregateError ? error : null;
     }
 
     expect(caught).not.toBeNull();
     expect(caught!.errors.some((error) => error.message.includes("sqlite-strict-close-extra-0"))).toBe(true);
-
-    pending.finalize();
-    try { await deterministicCleanup({ dir }); } catch {}
+    expect(existsSync(dir)).toBe(false);
   });
 });
 

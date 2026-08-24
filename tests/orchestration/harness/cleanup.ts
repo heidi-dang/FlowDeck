@@ -26,6 +26,10 @@ export interface ExecutionRegistryHandle {
   clear(): void;
 }
 
+export interface CleanupHooks {
+  closeDatabase?: (db: Database, throwOnError: boolean) => void;
+}
+
 export interface CleanupContext {
   db?: Database | OwnedDatabase;
   dir?: string;
@@ -35,6 +39,8 @@ export interface CleanupContext {
   executionTimeoutMs?: number;
   /** Additional SQLite connections to close strictly before directory removal */
   extraConnections?: Database[];
+  /** Test-only close hook for deterministic failure propagation coverage. */
+  hooks?: CleanupHooks;
 }
 
 export function getDbPath(dir: string, dbFileName: string = "test.db"): string {
@@ -58,22 +64,21 @@ function resolveOwned(db: Database | OwnedDatabase | undefined): { instance: Dat
 }
 
 /**
- * Strict-close a single SQLite connection: `close(true)`.
+ * Strict-close a single SQLite connection and surface any actual close error.
  *
- * `close(true)` throws "database is locked" when unfinalized prepared
- * statements remain, which means the fixture still owns active work.
- * That failure is surfaced as a diagnostic error, never silently swallowed.
- *
- * bun:sqlite only retains a 20-statement query cache; statements beyond that
- * limit are finalized by the GC rather than by `close()`. Finalize the cache
- * and run a full synchronous GC first so `close(true)` does not false-positive
- * on garbage statements, while still failing loudly for genuinely held ones.
+ * Bun SQLite may safely finalize prepared statements during `close(true)`. A
+ * successful close is authoritative; a failed close is retained as a cleanup
+ * diagnostic, followed by best-effort non-strict release and leak checks.
  */
-function strictClose(db: Database, role: string): Error | null {
+function strictClose(
+  db: Database,
+  role: string,
+  closeDatabase: (db: Database, throwOnError: boolean) => void,
+): Error | null {
   try {
     (db as BunSqliteDatabaseWithCache).clearQueryCache?.();
     Bun.gc(true);
-    db.close(true);
+    closeDatabase(db, true);
     return null;
   } catch (error) {
     try { db.close(false); } catch {} 
@@ -135,6 +140,7 @@ async function removeTarget(target: string, opts: { recursive?: boolean }): Prom
 
 export async function deterministicCleanup(ctx: CleanupContext): Promise<void> {
   const { dir, dbFileName, outboxWorker, executionRegistry, extraConnections } = ctx;
+  const closeDatabase = ctx.hooks?.closeDatabase ?? ((db: Database, throwOnError: boolean) => db.close(throwOnError));
   const fileName = dbFileName ?? "test.db";
   const failures: Error[] = [];
   const removalFailures: Error[] = [];
@@ -186,7 +192,7 @@ export async function deterministicCleanup(ctx: CleanupContext): Promise<void> {
   if (extraConnections) {
     for (let i = 0; i < extraConnections.length; i++) {
       const conn = extraConnections[i];
-      const closeError = strictClose(conn, `extra-${i}`);
+      const closeError = strictClose(conn, `extra-${i}`, closeDatabase);
       if (closeError) failures.push(closeError);
     }
   }
@@ -195,7 +201,7 @@ export async function deterministicCleanup(ctx: CleanupContext): Promise<void> {
   if (dbInstance && !(owned?.closed)) {
     const walError = shutdownWal(dbInstance);
     if (walError) failures.push(walError);
-    const closeError = strictClose(dbInstance, "primary");
+    const closeError = strictClose(dbInstance, "primary", closeDatabase);
     if (closeError) failures.push(closeError);
     else if (owned) owned.closed = true;
   }
