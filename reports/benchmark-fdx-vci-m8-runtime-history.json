@@ -1,11 +1,11 @@
 {
   "milestone": "M8",
   "title": "Hardened Runtime Evidence & Historical Verification Intelligence",
-  "functional_source_sha": "29828a506e436a9a1d9ca88d8483d4f2d299a0f5",
-  "binary_source_sha": "29828a506e436a9a1d9ca88d8483d4f2d299a0f5",
-  "binary_sha256": "6b8c4c84e72506529270b39a2ad9ccd865c414e5ee0fb7ebb0b018144c5d5cb2",
-  "benchmark_harness_sha": "70c0c9bf1f0bdfe522ff70f0f6f105ef4bf366f4",
-  "timestamp": "2026-08-24T06:56:30.218Z",
+  "functional_source_sha": "9f705270537e67c89c3db6655630a896fac762e0",
+  "binary_source_sha": "9f705270537e67c89c3db6655630a896fac762e0",
+  "binary_sha256": "4e2736be0a700668afc5ff373c9bd8250695a5b71c15ad4d297c2dd632b946f3",
+  "benchmark_harness_sha": "c94d87f94c6d8f18e3c5bafa1c3408e1fe12890e",
+  "timestamp": "2026-08-24T08:32:15.436Z",
   "platform": "linux",
   "arch": "x64",
   "node_version": "v24.19.0",
@@ -82,6 +82,46 @@
       "passed": true
     },
     {
+      "name": "mixed_physicality_nonphysical_first_rejected",
+      "passed": true
+    },
+    {
+      "name": "mixed_physicality_physical_first_rejected",
+      "passed": true
+    },
+    {
+      "name": "spawnfailed_passed_mixed_group_rejected",
+      "passed": true
+    },
+    {
+      "name": "timedout_unsupported_mixed_group_rejected",
+      "passed": true
+    },
+    {
+      "name": "nonphysical_shared_command_conflict_rejected",
+      "passed": true
+    },
+    {
+      "name": "nonphysical_shared_status_conflict_rejected",
+      "passed": true
+    },
+    {
+      "name": "invalid_shared_execution_two_primaries_rejected",
+      "passed": true
+    },
+    {
+      "name": "invalid_shared_execution_no_primary_rejected",
+      "passed": true
+    },
+    {
+      "name": "physical_check_requires_execution_row",
+      "passed": true
+    },
+    {
+      "name": "nonphysical_check_has_no_execution_row",
+      "passed": true
+    },
+    {
       "name": "crash_window_reconciliation",
       "passed": true
     },
@@ -109,35 +149,35 @@
   "metrics": {
     "single_run_verify_and_ingest_ms": {
       "count": 15,
-      "min": 111.24,
-      "max": 131.93,
-      "mean": 121.65,
-      "median": 121.69,
-      "p95": 131.93
+      "min": 121.86,
+      "max": 333.26,
+      "mean": 139.75,
+      "median": 122.43,
+      "p95": 333.26
     },
     "history_runs_query_50_ms": {
       "count": 20,
-      "min": 2.95,
-      "max": 3.57,
-      "mean": 3.13,
-      "median": 3.11,
-      "p95": 3.57
+      "min": 3.08,
+      "max": 3.88,
+      "mean": 3.34,
+      "median": 3.19,
+      "p95": 3.88
     },
     "history_stats_query_ms": {
       "count": 20,
-      "min": 2.92,
-      "max": 3.18,
-      "mean": 3.01,
-      "median": 3,
-      "p95": 3.18
+      "min": 3.11,
+      "max": 3.95,
+      "mean": 3.38,
+      "median": 3.36,
+      "p95": 3.95
     },
     "history_reconcile_50_artifacts_ms": {
       "count": 15,
-      "min": 6.9,
-      "max": 7.04,
-      "mean": 6.96,
-      "median": 6.98,
-      "p95": 7.04
+      "min": 7.23,
+      "max": 13.18,
+      "mean": 8.74,
+      "median": 7.96,
+      "p95": 13.18
     }
   },
   "database_metrics": {
