@@ -79,11 +79,26 @@ fn test_persisting_divergent_data_with_same_id_fails_conflict() {
     // Persist first
     persist_calibration_run(&mut db.conn, &cal_run).unwrap();
 
-    // Tamper with calibration run copy to make it divergent while retaining same calibration_id
-    let mut tampered_run = cal_run.clone();
-    tampered_run.candidate_plan_digest = "tampered_plan_digest".to_string();
+    // Every evidence-bearing field must conflict under the same deterministic key.
+    let mut changed_plan = cal_run.clone();
+    changed_plan.candidate_plan_digest = "tampered_plan_digest".to_string();
+    let mut changed_check = cal_run.clone();
+    changed_check.checks[0].execution_status = CheckExecutionStatus::Failed;
+    let mut changed_execution = cal_run.clone();
+    changed_execution.executions[0].duration_ms += 1;
+    let mut changed_metrics = cal_run.clone();
+    changed_metrics.metrics.candidate_execution_duration_ms += 1;
+    let mut changed_reason = cal_run.clone();
+    changed_reason.checks[0].reason = Some("different redacted diagnostic".to_string());
 
-    let res = persist_calibration_run(&mut db.conn, &tampered_run);
-    assert!(res.is_err());
-    assert!(res.unwrap_err().contains("conflict"));
+    for tampered_run in [
+        changed_plan,
+        changed_check,
+        changed_execution,
+        changed_metrics,
+        changed_reason,
+    ] {
+        let error = persist_calibration_run(&mut db.conn, &tampered_run).unwrap_err();
+        assert!(error.contains("conflict"), "unexpected error: {error}");
+    }
 }

@@ -4,6 +4,9 @@ use crate::intelligence::testplan::model::{VerificationCheckKind, VerificationPl
 use crate::intelligence::verify::model::CheckExecutionStatus;
 use serde::{Deserialize, Serialize};
 
+/// Current evidence contract for newly qualified shadow calibration records.
+pub const CALIBRATION_CONTRACT_VERSION: u32 = 2;
+
 /// Top-level calibration run status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -51,7 +54,8 @@ impl ReferenceScope {
 pub struct CalibrationPolicy {
     /// Scope of reference check discovery.
     pub scope: ReferenceScope,
-    /// Maximum number of checks in the shadow reference set.
+    /// Maximum number of additional, unselected shadow checks.
+    /// Candidate checks are always included and never consume this limit.
     pub max_shadow_checks: usize,
     /// Maximum wall-clock duration in milliseconds for total calibration execution.
     pub max_total_duration_ms: u64,
@@ -101,7 +105,24 @@ impl SignalClass {
     }
 }
 
-/// Observation for a single check in the shadow reference set.
+/// Origin of one deduplicated physical calibration execution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CalibrationExecutionOrigin {
+    CandidateSource,
+    ShadowReference,
+}
+
+impl CalibrationExecutionOrigin {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::CandidateSource => "candidate_source",
+            Self::ShadowReference => "shadow_reference",
+        }
+    }
+}
+
+/// Observation for a single check obligation in the shadow reference set.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShadowCheckObservation {
     /// Unique check identifier matching PlannedCheck.
@@ -120,6 +141,11 @@ pub struct ShadowCheckObservation {
     pub execution_status: CheckExecutionStatus,
     /// Whether this check was physically executed via OS process.
     pub has_physical_execution: bool,
+    /// Stable identity of the physical process evidence, if one was positively established.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub execution_id: Option<String>,
+    /// Whether the obligation reuses a physical execution mapped by another check.
+    pub reused_execution: bool,
     /// Execution duration in milliseconds.
     pub duration_ms: u64,
     /// Signal classification comparing candidate selection vs shadow outcome.
@@ -131,11 +157,13 @@ pub struct ShadowCheckObservation {
     pub reason: Option<String>,
 }
 
-/// Record of an individual shadow process execution.
+/// Record of one actual OS process execution, never an obligation row.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShadowExecutionObservation {
     pub execution_id: String,
+    /// Representative check obligation for inspection. Check-to-execution linkage lives on checks.
     pub check_id: String,
+    pub origin: CalibrationExecutionOrigin,
     pub program: String,
     pub argv_digest: String,
     pub cwd: String,
@@ -162,7 +190,10 @@ pub struct CalibrationEligibility {
 pub struct CalibrationMetrics {
     pub candidate_selected_count: usize,
     pub shadow_reference_count: usize,
+    /// Legacy-compatible alias for unique newly executed shadow processes.
     pub shadow_executed_count: usize,
+    pub candidate_physical_execution_count: usize,
+    pub shadow_physical_execution_count: usize,
     pub selected_failure_count: usize,
     pub unselected_failure_count: usize,
     pub observed_shadow_miss_count: usize,
@@ -173,6 +204,7 @@ pub struct CalibrationMetrics {
     pub selection_ratio: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub runtime_cost_ratio: Option<f64>,
+    /// Qualified primary signal-recall value. It is None for incomplete or truncated evidence.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signal_recall: Option<f64>,
     pub eligibility: CalibrationEligibility,
@@ -182,7 +214,10 @@ pub struct CalibrationMetrics {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CalibrationRun {
     pub calibration_id: String,
+    pub calibration_contract_version: u32,
     pub source_run_id: String,
+    /// SHA-256 of the exact M7 artifact bytes evaluated by calibration.
+    pub source_artifact_sha256: String,
     pub candidate_plan_digest: String,
     pub policy: CalibrationPolicy,
     pub policy_digest: String,
@@ -192,6 +227,8 @@ pub struct CalibrationRun {
     pub checks: Vec<ShadowCheckObservation>,
     pub executions: Vec<ShadowExecutionObservation>,
     pub metrics: CalibrationMetrics,
+    /// Canonical digest over all semantic calibration evidence, excluding nondeterministic timestamps.
+    pub record_digest: String,
     pub started_at_ms: u64,
     pub completed_at_ms: u64,
     pub duration_ms: u64,
@@ -201,9 +238,12 @@ pub struct CalibrationRun {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CalibrationRunSummary {
     pub calibration_id: String,
+    pub calibration_contract_version: u32,
     pub source_run_id: String,
+    pub source_artifact_sha256: Option<String>,
     pub candidate_plan_digest: String,
     pub policy_digest: String,
+    pub record_digest: Option<String>,
     pub status: CalibrationStatus,
     pub reference_scope: String,
     pub candidate_selected_count: usize,

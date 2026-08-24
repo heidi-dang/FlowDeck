@@ -15,7 +15,9 @@ pub mod query;
 pub mod reference;
 pub mod schema;
 
-pub use evaluate::run_calibration;
+pub use evaluate::{
+    compute_calibration_record_digest, run_calibration, run_calibration_with_source_artifact,
+};
 pub use explain::{format_calibration_run_text, format_calibration_stats_text};
 pub use model::*;
 pub use persist::persist_calibration_run;

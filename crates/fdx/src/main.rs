@@ -2318,27 +2318,92 @@ fn main() {
                         max_output_bytes: 16 * 1024 * 1024,
                     };
 
-                    let cal_run = match fdx::intelligence::calibration::run_calibration(
-                        &repo_root,
-                        &source_run,
-                        &policy,
-                    ) {
-                        Ok(c) => c,
-                        Err(e) => {
-                            eprintln!("Error executing shadow calibration: {}", e);
-                            process::exit(1);
-                        }
-                    };
+                    let source_artifact_sha256 =
+                        fdx::intelligence::runtime::sha256_bytes(&raw_bytes);
+                    let candidate_plan_digest =
+                        match fdx::intelligence::runtime::compute_plan_digest(&source_run.plan) {
+                            Ok(digest) => digest,
+                            Err(e) => {
+                                eprintln!("Error computing candidate plan digest: {}", e);
+                                process::exit(1);
+                            }
+                        };
+                    let policy_digest =
+                        match fdx::intelligence::calibration::compute_policy_digest(&policy) {
+                            Ok(digest) => digest,
+                            Err(e) => {
+                                eprintln!("Error computing calibration policy digest: {}", e);
+                                process::exit(1);
+                            }
+                        };
+                    let calibration_id = fdx::intelligence::calibration::generate_calibration_id(
+                        &source_run.run_id,
+                        &candidate_plan_digest,
+                        &policy_digest,
+                        fdx::intelligence::schema::CURRENT_SCHEMA_VERSION,
+                    );
 
-                    // Ingest source verification run (if needed) and calibration run into SQLite database in ReadWrite mode
-                    if let Ok(mut db) = fdx::intelligence::db::EvidenceDatabase::open(
+                    // A qualified deterministic key is reusable evidence, not an invitation to
+                    // rerun shadow processes under the same calibration identity.
+                    let mut writable_db = fdx::intelligence::db::EvidenceDatabase::open(
                         &repo_root,
                         fdx::intelligence::db::DatabaseOpenMode::ReadWrite,
-                    ) {
+                    )
+                    .ok();
+                    if let Some(db) = writable_db.as_mut() {
                         let _ = fdx::intelligence::runtime::ingest_verification_artifact(
                             &mut db.conn,
                             &raw_bytes,
                         );
+                        match fdx::intelligence::calibration::get_calibration_run(
+                            &db.conn,
+                            &calibration_id,
+                        ) {
+                            Ok(Some((summary, metrics, checks, executions))) => {
+                                match format {
+                                    OutputFormat::Json => println!(
+                                        "{}",
+                                        serde_json::json!({
+                                            "summary": summary,
+                                            "metrics": metrics,
+                                            "checks": checks,
+                                            "executions": executions,
+                                            "reused_qualified_calibration": true,
+                                        })
+                                    ),
+                                    OutputFormat::Text => println!(
+                                        "Reused qualified calibration {} without rerunning shadow processes.",
+                                        calibration_id
+                                    ),
+                                }
+                                return;
+                            }
+                            Ok(None) => {}
+                            Err(e) => {
+                                eprintln!(
+                                    "Error reading existing calibration evidence; refusing to rerun: {}",
+                                    e
+                                );
+                                process::exit(1);
+                            }
+                        }
+                    }
+
+                    let cal_run =
+                        match fdx::intelligence::calibration::run_calibration_with_source_artifact(
+                            &repo_root,
+                            &source_run,
+                            &policy,
+                            &source_artifact_sha256,
+                        ) {
+                            Ok(c) => c,
+                            Err(e) => {
+                                eprintln!("Error executing shadow calibration: {}", e);
+                                process::exit(1);
+                            }
+                        };
+
+                    if let Some(db) = writable_db.as_mut() {
                         if let Err(e) = fdx::intelligence::calibration::persist_calibration_run(
                             &mut db.conn,
                             &cal_run,

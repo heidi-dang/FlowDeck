@@ -3,8 +3,8 @@ use fdx::intelligence::schema::CURRENT_SCHEMA_VERSION;
 use tempfile::tempdir;
 
 #[test]
-fn test_runtime_schema_version_is_7_and_tables_exist() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 8);
+fn test_runtime_schema_tables_survive_the_additive_v9_target() {
+    assert_eq!(CURRENT_SCHEMA_VERSION, 9);
 
     let dir = tempdir().unwrap();
     let db = EvidenceDatabase::open(dir.path(), DatabaseOpenMode::ReadWrite).unwrap();
@@ -26,7 +26,11 @@ fn test_runtime_schema_version_is_7_and_tables_exist() {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(count, 1, "table {} does not exist in schema v7", table);
+        assert_eq!(
+            count, 1,
+            "table {} does not exist in the current schema",
+            table
+        );
     }
 
     // Verify v7 columns exist

@@ -93,6 +93,15 @@ fn test_database_close_and_reopen_preserves_exact_metrics() {
 
         assert_eq!(summary.calibration_id, cal_run.calibration_id);
         assert_eq!(summary.source_run_id, "run-reopen-1");
+        assert_eq!(summary.calibration_contract_version, 2);
+        assert_eq!(
+            summary.source_artifact_sha256.as_deref(),
+            Some(cal_run.source_artifact_sha256.as_str())
+        );
+        assert_eq!(
+            summary.record_digest.as_deref(),
+            Some(cal_run.record_digest.as_str())
+        );
         assert_eq!(
             metrics.candidate_selected_count,
             cal_run.metrics.candidate_selected_count
@@ -102,6 +111,32 @@ fn test_database_close_and_reopen_preserves_exact_metrics() {
             cal_run.metrics.candidate_execution_duration_ms
         );
         assert_eq!(checks.len(), cal_run.checks.len());
+        assert_eq!(checks[0].display_name, "packages/core/tests/a.test.ts");
+        assert_eq!(checks[0].kind, VerificationCheckKind::UnitTest);
+        assert_eq!(checks[0].scope, "pkg:npm:packages/core");
+        assert_eq!(checks[0].execution_id.as_deref(), Some("candidate_exec_1"));
+        assert!(!checks[0].reused_execution);
         assert_eq!(execs.len(), cal_run.executions.len());
+        assert_eq!(
+            execs[0].origin,
+            fdx::intelligence::calibration::CalibrationExecutionOrigin::CandidateSource
+        );
+        assert_eq!(execs[0].cwd, ".");
+        assert_eq!(execs[0].program, "echo");
     }
+
+    // A corrupt stored enum must surface as an error; it must never be silently rewritten to
+    // Unsupported or Custom during query reconstruction.
+    {
+        let db_rw = EvidenceDatabase::open(repo_root, DatabaseOpenMode::ReadWrite).unwrap();
+        db_rw
+            .conn
+            .execute(
+                "UPDATE calibration_checks SET kind = 'corrupt_kind' WHERE calibration_id = ?1",
+                rusqlite::params![cal_run.calibration_id],
+            )
+            .unwrap();
+    }
+    let db_ro = EvidenceDatabase::open(repo_root, DatabaseOpenMode::ReadOnly).unwrap();
+    assert!(get_calibration_run(&db_ro.conn, &cal_run.calibration_id).is_err());
 }
