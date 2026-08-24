@@ -1,12 +1,12 @@
 {
   "milestone": "M9",
   "title": "Verification Attestation & Cryptographic Evidence Binding",
-  "functional_source_sha": "441d9af2725c051771c8d684c6b26fc560f2e32c",
-  "binary_source_sha": "441d9af2725c051771c8d684c6b26fc560f2e32c",
-  "binary_sha256": "1091ee3c78e4e987b887ca79a0b46ef6c697ddbf44fed30c48172c60964438ec",
-  "benchmark_harness_sha": "9d5ae4b5e862d32ea62bf6385ec305c73074241c",
-  "qualification_head_sha": "9d5ae4b5e862d32ea62bf6385ec305c73074241c",
-  "timestamp": "2026-08-24T11:47:55.102Z",
+  "functional_source_sha": "75db2931195c2c6dc1496237ca569511c6859dc4",
+  "binary_source_sha": "75db2931195c2c6dc1496237ca569511c6859dc4",
+  "binary_sha256": "01dd3621844266d172d3d8af32e166aa3445b56ddecfce73668109845fb72ed3",
+  "benchmark_harness_sha": "3b55aaa8d06224e78ccee34fa3a642b0f0b1825a",
+  "qualification_head_sha": "3b55aaa8d06224e78ccee34fa3a642b0f0b1825a",
+  "timestamp": "2026-08-24T12:13:22.215Z",
   "platform": "linux",
   "arch": "x64",
   "node_version": "v24.19.0",
@@ -25,7 +25,9 @@
     "managed_path_containment_verified": true,
     "symlink_escape_protection_verified": true,
     "bounded_read_size_enforced": true,
-    "filesystem_toctou_handle_safety_verified": true
+    "filesystem_toctou_handle_safety_verified": true,
+    "descriptor_relative_handle_acquisition_verified": true,
+    "external_single_open_nofollow_verified": true
   },
   "preflights": [
     {
@@ -227,28 +229,48 @@
       "name": "generator_name_tamper_rejected",
       "status": "passed",
       "details": {}
+    },
+    {
+      "name": "managed_directory_swap_during_acquisition_rejected",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "fdx_directory_swap_during_acquisition_rejected",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "external_same_byte_symlink_substitution_rejected",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "external_different_file_substitution_rejected",
+      "status": "passed",
+      "details": {}
     }
   ],
   "metrics": {
     "attest_create_single_run_ms": {
       "count": 15,
-      "min": 5.39,
-      "max": 20.14,
-      "mean": 6.81,
-      "median": 5.66,
-      "p95": 20.14
+      "min": 5.38,
+      "max": 5.88,
+      "mean": 5.56,
+      "median": 5.49,
+      "p95": 5.88
     },
     "attest_verify_single_run_ms": {
       "count": 15,
-      "min": 4.92,
-      "max": 5.99,
-      "mean": 5.41,
-      "median": 5.48,
-      "p95": 5.99
+      "min": 4.7,
+      "max": 17.25,
+      "mean": 5.96,
+      "median": 4.99,
+      "p95": 17.25
     },
-    "attest_create_100_runs_total_ms": 536.61,
-    "attest_create_avg_per_run_ms": 5.37,
-    "attest_verify_100_runs_total_ms": 540.78,
-    "attest_verify_avg_per_run_ms": 5.41
+    "attest_create_100_runs_total_ms": 554.21,
+    "attest_create_avg_per_run_ms": 5.54,
+    "attest_verify_100_runs_total_ms": 605.48,
+    "attest_verify_avg_per_run_ms": 6.05
   }
 }

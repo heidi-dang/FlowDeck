@@ -1,10 +1,10 @@
-# Milestone 9: Verification Attestation Qualification Report (R27)
+# Milestone 9: Verification Attestation Qualification Report (R28)
 
 **Milestone:** M9  
-**Functional Baseline (F24):** `441d9af2725c051771c8d684c6b26fc560f2e32c`  
-**Binary SHA-256:** `1091ee3c78e4e987b887ca79a0b46ef6c697ddbf44fed30c48172c60964438ec`  
-**Benchmark Harness (H27):** `9d5ae4b5e862d32ea62bf6385ec305c73074241c`  
-**Executed At:** 2026-08-24T11:47:55.102Z  
+**Functional Baseline (F25):** `75db2931195c2c6dc1496237ca569511c6859dc4`  
+**Binary SHA-256:** `01dd3621844266d172d3d8af32e166aa3445b56ddecfce73668109845fb72ed3`  
+**Benchmark Harness (H28):** `3b55aaa8d06224e78ccee34fa3a642b0f0b1825a`  
+**Executed At:** 2026-08-24T12:13:22.215Z  
 **Platform:** linux (x64)  
 **Node Version:** v24.19.0  
 **Predicate Schema Version:** `1`  
@@ -64,18 +64,22 @@
 - [x] `predicate_runtime_contract_v1_rejected`: Passed
 - [x] `predicate_run_qualified_false_rejected`: Passed
 - [x] `generator_name_tamper_rejected`: Passed
+- [x] `managed_directory_swap_during_acquisition_rejected`: Passed
+- [x] `fdx_directory_swap_during_acquisition_rejected`: Passed
+- [x] `external_same_byte_symlink_substitution_rejected`: Passed
+- [x] `external_different_file_substitution_rejected`: Passed
 
 ## Performance Metrics
 
 | Benchmark Scenario | Samples | Min (ms) | Median (ms) | P95 (ms) | Max (ms) | Mean (ms) |
 |---|---|---|---|---|---|---|
-| Single Run Attest Create | 15 | 5.39 | 5.66 | 20.14 | 20.14 | 6.81 |
-| Single Run Attest Verify | 15 | 4.92 | 5.48 | 5.99 | 5.99 | 5.41 |
+| Single Run Attest Create | 15 | 5.38 | 5.49 | 5.88 | 5.88 | 5.56 |
+| Single Run Attest Verify | 15 | 4.7 | 4.99 | 17.25 | 17.25 | 5.96 |
 
 ### Scaling Benchmarks (100 Runs)
 
-- **Attest Create 100 Runs Total:** 536.61 ms (avg 5.37 ms / run)
-- **Attest Verify 100 Runs Total:** 540.78 ms (avg 5.41 ms / run)
+- **Attest Create 100 Runs Total:** 554.21 ms (avg 5.54 ms / run)
+- **Attest Verify 100 Runs Total:** 605.48 ms (avg 6.05 ms / run)
 
 ---
 *Qualification completed under FlowDeck Verifiable Change Intelligence protocol.*
