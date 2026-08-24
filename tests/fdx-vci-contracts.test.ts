@@ -97,7 +97,7 @@ describe("FDX VCI Contracts & Ground Truth", () => {
     expect(res.value.selected_capabilities).not.toContain("custom-cap");
     expect(res.value.server_capabilities).toContain("impact-v2");
     expect(res.value.server_capabilities).toContain("why-v1");
-    expect(res.value.graph_schema_version).toBe(7);
+    expect(res.value.graph_schema_version).toBe(8);
     expect(res.value.selection_policy_version).toBe(1);
     expect(res.value.attestation_predicate_version).toBe(1);
   });

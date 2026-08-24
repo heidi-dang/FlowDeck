@@ -4,7 +4,7 @@ use tempfile::tempdir;
 
 #[test]
 fn test_runtime_schema_version_is_7_and_tables_exist() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 7);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 8);
 
     let dir = tempdir().unwrap();
     let db = EvidenceDatabase::open(dir.path(), DatabaseOpenMode::ReadWrite).unwrap();
