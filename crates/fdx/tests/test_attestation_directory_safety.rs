@@ -15,14 +15,10 @@ use fdx::intelligence::verify::persist::persist_verification_run;
 use fdx::protocol::AssuranceLevel;
 use tempfile::tempdir;
 
-#[test]
-fn test_attestation_directory_symlink_escape_rejected() {
-    let tmp_repo = tempdir().unwrap();
-    let repo_root = tmp_repo.path();
-    let tmp_outside = tempdir().unwrap();
-    let outside_dir = tmp_outside.path();
+fn setup_test_run(run_id: &str) -> (tempfile::TempDir, VerificationRun) {
+    let tmp = tempdir().unwrap();
+    let repo_root = tmp.path();
 
-    let run_id = "run-test-symlink-escape";
     let check = CheckExecutionResult {
         check_id: "check:test".to_string(),
         kind: VerificationCheckKind::UnitTest,
@@ -91,24 +87,102 @@ fn test_attestation_directory_symlink_escape_rejected() {
     let raw_bytes = std::fs::read(&artifact_path).unwrap();
     ingest_verification_artifact(&mut db.conn, &raw_bytes).unwrap();
 
-    let attestation = build_verification_attestation(repo_root, run_id, &db.conn).unwrap();
+    (tmp, run)
+}
 
-    // Create a symlink .fdx/attestations -> outside_dir
-    let fdx_dir = repo_root.join(".fdx");
-    let attestations_symlink = fdx_dir.join("attestations");
+#[test]
+fn test_fdx_parent_symlink_escape_rejected() {
+    let (tmp_repo, run) = setup_test_run("run-test-fdx-symlink-escape");
+    let repo_root = tmp_repo.path();
+    let tmp_outside = tempdir().unwrap();
+    let outside_dir = tmp_outside.path();
+
+    let db = EvidenceDatabase::open(repo_root, DatabaseOpenMode::ReadOnly).unwrap();
+    let attestation = build_verification_attestation(repo_root, &run.run_id, &db.conn).unwrap();
+
+    // Replace repo/.fdx with a symlink to outside_dir
+    let fdx_path = repo_root.join(".fdx");
+    std::fs::remove_dir_all(&fdx_path).unwrap();
 
     #[cfg(unix)]
     {
-        std::os::unix::fs::symlink(outside_dir, &attestations_symlink).unwrap();
+        std::os::unix::fs::symlink(outside_dir, &fdx_path).unwrap();
 
         let res = persist_attestation(repo_root, &attestation);
         assert!(res.is_err());
-        assert!(res
-            .unwrap_err()
-            .contains("symlink points outside repository"));
+        let err_msg = res.unwrap_err();
+        assert!(
+            err_msg.contains(".fdx directory cannot be a symlink") || err_msg.contains("symlink")
+        );
 
-        // Verify outside directory remains empty
+        // Verify outside directory received zero files
         let entries: Vec<_> = std::fs::read_dir(outside_dir).unwrap().collect();
-        assert!(entries.is_empty());
+        assert!(
+            entries.is_empty(),
+            "Outside directory must receive zero files on escape attempt"
+        );
     }
+}
+
+#[test]
+fn test_attestations_dir_symlink_escape_rejected() {
+    let (tmp_repo, run) = setup_test_run("run-test-attestations-symlink-escape");
+    let repo_root = tmp_repo.path();
+    let tmp_outside = tempdir().unwrap();
+    let outside_dir = tmp_outside.path();
+
+    let db = EvidenceDatabase::open(repo_root, DatabaseOpenMode::ReadOnly).unwrap();
+    let attestation = build_verification_attestation(repo_root, &run.run_id, &db.conn).unwrap();
+
+    // Create a symlink repo/.fdx/attestations -> outside_dir
+    let attestations_path = repo_root.join(".fdx").join("attestations");
+
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(outside_dir, &attestations_path).unwrap();
+
+        let res = persist_attestation(repo_root, &attestation);
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("symlink"));
+
+        // Verify outside directory received zero files
+        let entries: Vec<_> = std::fs::read_dir(outside_dir).unwrap().collect();
+        assert!(
+            entries.is_empty(),
+            "Outside directory must receive zero files on escape attempt"
+        );
+    }
+}
+
+#[test]
+fn test_fdx_as_regular_file_rejected() {
+    let (tmp_repo, run) = setup_test_run("run-test-fdx-file-rejected");
+    let repo_root = tmp_repo.path();
+
+    let db = EvidenceDatabase::open(repo_root, DatabaseOpenMode::ReadOnly).unwrap();
+    let attestation = build_verification_attestation(repo_root, &run.run_id, &db.conn).unwrap();
+
+    // Replace repo/.fdx with a regular file
+    let fdx_path = repo_root.join(".fdx");
+    std::fs::remove_dir_all(&fdx_path).unwrap();
+    std::fs::write(&fdx_path, "not a directory").unwrap();
+
+    let res = persist_attestation(repo_root, &attestation);
+    assert!(res.is_err());
+}
+
+#[test]
+fn test_attestations_as_regular_file_rejected() {
+    let (tmp_repo, run) = setup_test_run("run-test-attestations-file-rejected");
+    let repo_root = tmp_repo.path();
+
+    let db = EvidenceDatabase::open(repo_root, DatabaseOpenMode::ReadOnly).unwrap();
+    let attestation = build_verification_attestation(repo_root, &run.run_id, &db.conn).unwrap();
+
+    // Replace repo/.fdx/attestations with a regular file
+    let attestations_path = repo_root.join(".fdx").join("attestations");
+    std::fs::write(&attestations_path, "not a directory").unwrap();
+
+    let res = persist_attestation(repo_root, &attestation);
+    assert!(res.is_err());
 }

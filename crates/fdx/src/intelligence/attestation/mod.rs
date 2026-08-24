@@ -24,7 +24,9 @@ pub use model::{
     FDX_VERIFICATION_PREDICATE_V1_TYPE, IN_TOTO_STATEMENT_V1_TYPE,
 };
 pub use persist::{
-    attestation_file_path, attestations_dir, load_attestation_from_path, persist_attestation,
+    attestation_file_path, attestations_dir, classify_attestation_source,
+    load_attestation_from_path, persist_attestation, AttestationSource, ManagedAttestationDir,
+    MAX_ATTESTATION_ARTIFACT_BYTES,
 };
 pub use query::{list_attestations, AttestationSummary};
 pub use verify::{verify_attestation, AttestationVerificationReport};

@@ -331,7 +331,29 @@ pub fn verify_attestation(
         return Err("Source context workspace_clean must be None in Predicate v1".to_string());
     }
 
-    // 5. Verify M8 database records
+    // 5. Verify generator metadata and predicate runtime history qualification
+    if attestation.predicate.generator.name != "fdx" {
+        return Err(format!(
+            "Attestation generator name mismatch: {:?} != \"fdx\"",
+            attestation.predicate.generator.name
+        ));
+    }
+    if attestation.predicate.generator.version.trim().is_empty() {
+        return Err("Attestation generator version cannot be empty".to_string());
+    }
+
+    if attestation.predicate.runtime_history.run_contract_version != INGESTION_CONTRACT_VERSION_V2 {
+        return Err(format!(
+            "Attested runtime contract version {} is unsupported (expected exact version {})",
+            attestation.predicate.runtime_history.run_contract_version,
+            INGESTION_CONTRACT_VERSION_V2
+        ));
+    }
+    if !attestation.predicate.runtime_history.run_qualified {
+        return Err("Attested run_qualified must be true for qualified M8 attestation".to_string());
+    }
+
+    // 6. Verify M8 database records
     let historical = get_historical_run(conn, run_id)?
         .ok_or_else(|| format!("Run {:?} not found in M8 SQLite runtime history", run_id))?;
     let (run_obs, executions, check_obs) = historical;
