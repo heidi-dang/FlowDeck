@@ -424,26 +424,66 @@ async function runBenchmarks(bin) {
 }
 
 async function main() {
-  console.log("=== FlowDeck M8 Hardened Runtime Evidence Qualification & Benchmark (H21) ===");
+  console.log("=== FlowDeck M8 Hardened Runtime Evidence Qualification & Benchmark (H23) ===");
 
-  const functionalSha = process.env.FDX_BENCHMARK_FUNCTIONAL_SHA || EXPECTED_FUNCTIONAL_SHA;
+  // 1. Mandatory provenance environment variables (no fallback)
+  const functionalSha = process.env.FDX_BENCHMARK_FUNCTIONAL_SHA;
+  if (!functionalSha) {
+    throw new Error("FDX_BENCHMARK_FUNCTIONAL_SHA environment variable is required");
+  }
   if (functionalSha !== EXPECTED_FUNCTIONAL_SHA) {
     throw new Error(`Functional SHA mismatch: provided ${functionalSha} != expected ${EXPECTED_FUNCTIONAL_SHA}`);
   }
 
-  const bin = process.env.FDX_BINARY_PATH || join(ROOT, "target/release", process.platform === "win32" ? "fdx.exe" : "fdx");
+  const bin = process.env.FDX_BINARY_PATH;
+  if (!bin) {
+    throw new Error("FDX_BINARY_PATH environment variable is required");
+  }
   if (!existsSync(bin)) {
-    console.log("-> Building release binary...");
-    execFileSync("cargo", ["build", "-p", "fdx", "--release"], { cwd: ROOT, stdio: "inherit" });
+    throw new Error(`Provided binary path does not exist: ${bin}`);
+  }
+
+  const expectedBinarySha256 = process.env.FDX_BINARY_SHA256;
+  if (!expectedBinarySha256) {
+    throw new Error("FDX_BINARY_SHA256 environment variable is required");
   }
 
   const binarySha256 = computeFileSha256(bin);
-  const expectedBinarySha256 = process.env.FDX_BINARY_SHA256 || binarySha256;
   if (binarySha256 !== expectedBinarySha256) {
     throw new Error(`Binary SHA256 mismatch: calculated ${binarySha256} != expected ${expectedBinarySha256}`);
   }
 
-  const harnessSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: ROOT, encoding: "utf8" }).trim();
+  // 2. Enforce harness checkout clean state and ownership
+  const harnessPath = "scripts/benchmark-fdx-vci-m8-runtime-history.mjs";
+  const workingDiff = execFileSync("git", ["diff", "--name-only", "--", harnessPath], { cwd: ROOT, encoding: "utf8" }).trim();
+  if (workingDiff.length > 0) {
+    throw new Error(`Harness working tree is dirty: ${harnessPath} contains uncommitted modifications`);
+  }
+
+  const stagedDiff = execFileSync("git", ["diff", "--cached", "--name-only", "--", harnessPath], { cwd: ROOT, encoding: "utf8" }).trim();
+  if (stagedDiff.length > 0) {
+    throw new Error(`Harness index is dirty: ${harnessPath} contains staged uncommitted modifications`);
+  }
+
+  const qualificationStatus = execFileSync("git", ["status", "--porcelain"], { cwd: ROOT, encoding: "utf8" }).trim();
+  if (qualificationStatus.length > 0) {
+    throw new Error(`Qualification checkout is not clean: uncommitted changes detected:\n${qualificationStatus}`);
+  }
+
+  const headSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: ROOT, encoding: "utf8" }).trim();
+  const harnessOwnerSha = execFileSync("git", ["log", "-1", "--format=%H", "--", harnessPath], { cwd: ROOT, encoding: "utf8" }).trim();
+  if (headSha !== harnessOwnerSha) {
+    throw new Error(`HEAD commit (${headSha}) is not the harness-owning commit (${harnessOwnerSha})`);
+  }
+
+  // Verify F20 is an ancestor of H23
+  try {
+    execFileSync("git", ["merge-base", "--is-ancestor", EXPECTED_FUNCTIONAL_SHA, headSha], { cwd: ROOT, stdio: "ignore" });
+  } catch {
+    throw new Error(`Functional baseline ${EXPECTED_FUNCTIONAL_SHA} is not an ancestor of current HEAD ${headSha}`);
+  }
+
+  const harnessSha = harnessOwnerSha;
 
   const preflightResults = await runPreflights(bin);
 
@@ -456,6 +496,7 @@ async function main() {
     binary_source_sha: functionalSha,
     binary_sha256: binarySha256,
     benchmark_harness_sha: harnessSha,
+    qualification_head_sha: headSha,
     timestamp: new Date().toISOString(),
     platform: process.platform,
     arch: process.arch,
@@ -484,12 +525,12 @@ async function main() {
   console.log(`-> Saved benchmark report: ${REPORT_JSON_PATH}`);
 
   const mdContent = [
-    "# Final Hardened M8 Runtime Evidence & Historical Verification Intelligence Qualification Report (R22)",
+    "# Hardened M8 Runtime Evidence & Historical Verification Intelligence Qualification Report (R23)",
     "",
     `**Milestone:** M8  `,
-    `**Functional Commit (F20):** \`${functionalSha}\`  `,
+    `**Functional Baseline (F20):** \`${functionalSha}\`  `,
     `**Binary SHA-256:** \`${binarySha256}\`  `,
-    `**Benchmark Harness (H22):** \`${harnessSha}\`  `,
+    `**Benchmark Harness (H23):** \`${harnessSha}\`  `,
     `**Executed At:** ${report.timestamp}  `,
     `**Platform:** ${report.platform} (${report.arch})  `,
     `**Node Version:** ${report.node_version}  `,
