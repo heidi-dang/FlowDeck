@@ -2634,18 +2634,21 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     expect(savedDef).not.toBeNull();
     expect(savedDef?.status).toBe("pending_termination");
 
-    // Inject simulated crash at production handoff boundary (after markHandoffPending, before prompt completion)
-    ctx2.adapter.testHandoffFaultHook = async (_type, _def) => {
-      throw new Error("Simulated crash during handoff");
-    };
+    // Inject simulated in-flight crash: promptAsync is called and process dies before confirmation
+    const crashPromptMock = mock(() => {
+      // Simulate sudden process termination while prompt is in-flight by returning a promise that never settles before runtime release
+      return new Promise<boolean>(() => {});
+    });
+    ctx2.adapter.setClient({ session: { abort: abortMock, promptAsync: crashPromptMock } });
 
-    // Child termination event arrives -> triggers resumeDeferredReplacement which executes markHandoffPending then hits fault
-    try {
-      await ctx2.adapter.onEvent({
-        type: "session.deleted",
-        properties: { sessionID: "child-fd-sess" },
-      } as any);
-    } catch {}
+    // Child termination event arrives -> initiates dispatch and inserts pending dispatch claim
+    void ctx2.adapter.onEvent({
+      type: "session.deleted",
+      properties: { sessionID: "child-fd-sess" },
+    } as any);
+
+    // Yield tick so dispatch insert executes
+    await new Promise(resolve => setTimeout(resolve, 20));
 
     // Verify status was transitioned to handoff_pending by production code
     const defAtFault = ctx2.runtime.deferredReplacementRepo.findById(savedDef!.id);
@@ -2920,6 +2923,266 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     // Must NOT be marked resumed!
     expect(defAfterFail?.status).not.toBe("resumed");
     expect(defAfterFail?.status).toBe("handoff_pending");
+
+    // Process restart: known failure is preserved as retryable and startup recovery retries with same identity
+    await releaseProjectRuntime(TEST_DIR);
+    const retryPromptMock = mock(() => Promise.resolve(true));
+    const ctx2 = acquireProjectRuntime(TEST_DIR, { session: { abort: abortMock, promptAsync: retryPromptMock } });
+    await ctx2.adapter.startupReady;
+
+    const defAfterRetry = ctx2.runtime.deferredReplacementRepo.findById(savedDef!.id);
+    expect(defAfterRetry?.status).toBe("resumed");
+    expect(retryPromptMock).toHaveBeenCalledTimes(1);
+
+    await releaseProjectRuntime(TEST_DIR);
+  });
+
+  // 76. outcome-unknown-cancel-after-child-termination-cancels-deferred
+  it("76. outcome-unknown-cancel-after-child-termination-cancels-deferred", async () => {
+    const abortMock = mock(() => Promise.reject(new Error("Native process stuck")));
+    const mockClient = { session: { abort: abortMock, promptAsync: mock(() => Promise.resolve(true)) } };
+    const ctx = acquireProjectRuntime(TEST_DIR, mockClient);
+    const sessionID = "sess-ou-cancel";
+
+    const goal = "Refactor backend telemetry architecture";
+    const decision = classifyTask(goal, { hasExplicitDomainSignal: false });
+    ctx.runtime.db.query(`
+      INSERT INTO deferred_replacements (
+        id, parent_session_id, old_run_id, source_intent, agent_id,
+        effective_goal, message_hash, message_id, correlation_id,
+        routing_decision, status, created_at, updated_at
+      ) VALUES ('def-ou-1', ?, 'old-run-ou', 'REPLACE', 'heidi', ?, 'h-ou', 'm-ou', 'corr-ou', ?, 'handoff_outcome_unknown', datetime('now'), datetime('now'))
+    `).run(sessionID, goal, JSON.stringify(decision));
+
+    // User sends CANCEL while child termination is already complete and status is handoff_outcome_unknown
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "m-ou-cancel" },
+      { message: {} as any, parts: [{ type: "text", text: "cancel everything stop", id: "1", sessionID, messageID: "m-ou-cancel" }] }
+    );
+
+    const defAfter = ctx.runtime.deferredReplacementRepo.findById("def-ou-1");
+    expect(defAfter?.status).toBe("cancelled");
+
+    await releaseProjectRuntime(TEST_DIR);
+  });
+
+  // 77. outcome-unknown-replace-after-child-termination-supersedes-old
+  it("77. outcome-unknown-replace-after-child-termination-supersedes-old", async () => {
+    const abortMock = mock(() => Promise.reject(new Error("Native process stuck")));
+    const promptAsyncMock = mock(() => Promise.resolve(true));
+    const mockClient = { session: { abort: abortMock, promptAsync: promptAsyncMock } };
+    const ctx = acquireProjectRuntime(TEST_DIR, mockClient);
+    const sessionID = "sess-ou-replace";
+
+    const goal = "Old uncertain deferred task";
+    const decision = classifyTask(goal, { hasExplicitDomainSignal: false });
+    ctx.runtime.db.query(`
+      INSERT INTO deferred_replacements (
+        id, parent_session_id, old_run_id, source_intent, agent_id,
+        effective_goal, message_hash, message_id, correlation_id,
+        routing_decision, status, created_at, updated_at
+      ) VALUES ('def-ou-2', ?, 'old-run-ou-2', 'REPLACE', 'heidi', ?, 'h-ou-2', 'm-ou-2', 'corr-ou-2', ?, 'handoff_outcome_unknown', datetime('now'), datetime('now'))
+    `).run(sessionID, goal, JSON.stringify(decision));
+
+    // User sends REPLACE while status is handoff_outcome_unknown
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "m-ou-rep-msg" },
+      { message: {} as any, parts: [{ type: "text", text: "Forget that, refactor database schema and build backend services", id: "2", sessionID, messageID: "m-ou-rep-msg" }] }
+    );
+
+    // Old deferred record is superseded
+    const oldDef = ctx.runtime.deferredReplacementRepo.findById("def-ou-2");
+    expect(oldDef?.status).toBe("superseded");
+
+    // New deferred record is created and actively resumed
+    const curDef = ctx.runtime.deferredReplacementRepo.findCurrentForSession(sessionID);
+    expect(curDef).not.toBeNull();
+    expect(curDef?.effectiveGoal).toContain("refactor database schema");
+
+    await releaseProjectRuntime(TEST_DIR);
+  });
+
+  // 78. handoff-pending-query-does-not-strand-dispatch
+  it("78. handoff-pending-query-does-not-strand-dispatch", async () => {
+    const abortMock = mock(() => Promise.reject(new Error("Native process stuck")));
+    const promptAsyncMock = mock(() => Promise.resolve(true));
+    const mockClient = { session: { abort: abortMock, promptAsync: promptAsyncMock } };
+    const ctx = acquireProjectRuntime(TEST_DIR, mockClient);
+    const sessionID = "sess-query-race";
+
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "m-qr-1" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m-qr-1" }] }
+    );
+    const run1 = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
+
+    const del = await ctx.runtime.childExecutionLifecycleService.registerDelegation({
+      runId: run1.id,
+      parentSessionId: sessionID,
+      taskCallId: "call-qr-1",
+      targetAgent: "coder",
+    });
+    ctx.runtime.childExecutionLifecycleService.bindChildSession({
+      parentSessionId: sessionID,
+      childSessionId: "child-qr-sess",
+      agentId: "coder",
+      taskCallId: del.taskCallId,
+    });
+    await ctx.runtime.childExecutionLifecycleService.markStarted({ childSessionId: "child-qr-sess" });
+
+    // User sends REPLACE -> deferred replacement created
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "m-qr-2" },
+      { message: {} as any, parts: [{ type: "text", text: "Forget that, refactor database schema and build backend services", id: "2", sessionID, messageID: "m-qr-2" }] }
+    );
+    const savedDef = ctx.runtime.deferredReplacementRepo.findCurrentForSession(sessionID);
+    expect(savedDef).not.toBeNull();
+
+    // Hook: User asks "what is the status?" (QUERY) during handoff_pending before promptAsync
+    ctx.adapter.testHandoffFaultHook = async (_type, _def) => {
+      await ctx.adapter.onChatMessage(
+        { sessionID, agent: "heidi", messageID: "m-qr-query" },
+        { message: {} as any, parts: [{ type: "text", text: "what is the status?", id: "3", sessionID, messageID: "m-qr-query" }] }
+      );
+    };
+
+    // Child termination event arrives
+    await ctx.adapter.onEvent({
+      type: "session.deleted",
+      properties: { sessionID: "child-qr-sess" },
+    } as any);
+
+    // Handoff must NOT be rejected by stale turn version; must complete promptAsync and mark resumed!
+    expect(promptAsyncMock).toHaveBeenCalledTimes(1);
+    const defAfter = ctx.runtime.deferredReplacementRepo.findById(savedDef!.id);
+    expect(defAfter?.status).toBe("resumed");
+
+    await releaseProjectRuntime(TEST_DIR);
+  });
+
+  // 79. failed-max-attempts-transitions-deferred-blocked
+  it("79. failed-max-attempts-transitions-deferred-blocked", async () => {
+    const abortMock = mock(() => Promise.reject(new Error("Native process stuck")));
+    const promptAsyncMock = mock(() => Promise.reject(new Error("Permanent prompt failure")));
+    const mockClient = { session: { abort: abortMock, promptAsync: promptAsyncMock } };
+    const ctx = acquireProjectRuntime(TEST_DIR, mockClient);
+    const sessionID = "sess-block-fail";
+
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "m-bf-1" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m-bf-1" }] }
+    );
+    const run1 = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
+
+    const del = await ctx.runtime.childExecutionLifecycleService.registerDelegation({
+      runId: run1.id,
+      parentSessionId: sessionID,
+      taskCallId: "call-bf-1",
+      targetAgent: "coder",
+    });
+    ctx.runtime.childExecutionLifecycleService.bindChildSession({
+      parentSessionId: sessionID,
+      childSessionId: "child-bf-sess",
+      agentId: "coder",
+      taskCallId: del.taskCallId,
+    });
+    await ctx.runtime.childExecutionLifecycleService.markStarted({ childSessionId: "child-bf-sess" });
+
+    // User sends REPLACE -> deferred replacement created
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "m-bf-2" },
+      { message: {} as any, parts: [{ type: "text", text: "Forget that, refactor database schema and build backend services", id: "2", sessionID, messageID: "m-bf-2" }] }
+    );
+    const savedDef = ctx.runtime.deferredReplacementRepo.findCurrentForSession(sessionID);
+
+    // Attempt 1 fails
+    await ctx.adapter.onEvent({
+      type: "session.deleted",
+      properties: { sessionID: "child-bf-sess" },
+    } as any);
+
+    expect(ctx.runtime.deferredReplacementRepo.findById(savedDef!.id)?.status).toBe("handoff_pending");
+
+    // Restart runtime: Attempt 2 fails -> max attempts reached -> status becomes blocked
+    await releaseProjectRuntime(TEST_DIR);
+    const ctx2 = acquireProjectRuntime(TEST_DIR, mockClient);
+    await ctx2.adapter.startupReady;
+
+    const defBlocked = ctx2.runtime.deferredReplacementRepo.findById(savedDef!.id);
+    expect(defBlocked?.status).toBe("blocked");
+
+    // Parent tool execution remains blocked by barrier
+    await expect(
+      ctx2.adapter.onToolExecuteBefore({
+        tool: "bash",
+        sessionID,
+        callID: "call-blocked-tool",
+        args: { command: "echo mutating" },
+      })
+    ).rejects.toThrow(/DEFERRED_REPLACEMENT_BARRIER/);
+
+    // User can cancel the blocked replacement
+    await ctx2.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "m-bf-cancel" },
+      { message: {} as any, parts: [{ type: "text", text: "cancel everything", id: "3", sessionID, messageID: "m-bf-cancel" }] }
+    );
+    expect(ctx2.runtime.deferredReplacementRepo.findById(savedDef!.id)?.status).toBe("cancelled");
+
+    await releaseProjectRuntime(TEST_DIR);
+  });
+
+  // 80. fast-direct-failed-dispatch-retries-safely
+  it("80. fast-direct-failed-dispatch-retries-safely", async () => {
+    const abortMock = mock(() => Promise.reject(new Error("Native process stuck")));
+    const promptAsyncMock = mock(() => Promise.reject(new Error("Transient network failure")));
+    const mockClient = { session: { abort: abortMock, promptAsync: promptAsyncMock } };
+    const ctx = acquireProjectRuntime(TEST_DIR, mockClient);
+    const sessionID = "sess-fd-fail-retry";
+
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "m-fdfr-1" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m-fdfr-1" }] }
+    );
+    const run1 = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
+
+    const del = await ctx.runtime.childExecutionLifecycleService.registerDelegation({
+      runId: run1.id,
+      parentSessionId: sessionID,
+      taskCallId: "call-fdfr-1",
+      targetAgent: "coder",
+    });
+    ctx.runtime.childExecutionLifecycleService.bindChildSession({
+      parentSessionId: sessionID,
+      childSessionId: "child-fdfr-sess",
+      agentId: "coder",
+      taskCallId: del.taskCallId,
+    });
+    await ctx.runtime.childExecutionLifecycleService.markStarted({ childSessionId: "child-fdfr-sess" });
+
+    // User sends FAST_DIRECT replace message
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "m-fdfr-2" },
+      { message: {} as any, parts: [{ type: "text", text: "Forget that, give me a quick summary of what is done", id: "2", sessionID, messageID: "m-fdfr-2" }] }
+    );
+    const savedDef = ctx.runtime.deferredReplacementRepo.findCurrentForSession(sessionID);
+
+    // Child termination event arrives -> Attempt 1 fails
+    await ctx.adapter.onEvent({
+      type: "session.deleted",
+      properties: { sessionID: "child-fdfr-sess" },
+    } as any);
+
+    expect(ctx.runtime.deferredReplacementRepo.findById(savedDef!.id)?.status).toBe("handoff_pending");
+
+    // Restart with working promptAsync -> Attempt 2 succeeds -> marked resumed
+    await releaseProjectRuntime(TEST_DIR);
+    const retryPromptMock = mock(() => Promise.resolve(true));
+    const ctx2 = acquireProjectRuntime(TEST_DIR, { session: { abort: abortMock, promptAsync: retryPromptMock } });
+    await ctx2.adapter.startupReady;
+
+    const defResumed = ctx2.runtime.deferredReplacementRepo.findById(savedDef!.id);
+    expect(defResumed?.status).toBe("resumed");
+    expect(retryPromptMock).toHaveBeenCalledTimes(1);
 
     await releaseProjectRuntime(TEST_DIR);
   });
