@@ -173,6 +173,31 @@ pub enum PolicyCommand {
         #[arg(long, default_value = "text")]
         format: String,
     },
+    /// Explicitly promote one eligible policy candidate.
+    PromoteCandidate {
+        /// Candidate identifier
+        candidate_id: String,
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+    /// List active promoted policies.
+    ListActive {
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+    /// Revoke one promoted policy while preserving history.
+    RevokePolicy {
+        /// Policy identifier
+        policy_id: String,
+        /// Human-readable revocation reason
+        #[arg(long)]
+        reason: String,
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -639,6 +664,10 @@ enum Commands {
         #[arg(long)]
         head: Option<String>,
 
+        /// Apply the additive learned policy overlay after the frozen M6 planner.
+        #[arg(long, default_value_t = false)]
+        policy_overlay: bool,
+
         /// Output format: text or json
         #[arg(long, default_value = "text")]
         format: String,
@@ -655,6 +684,10 @@ enum Commands {
         /// Head Git ref (defaults to working tree)
         #[arg(long)]
         head: Option<String>,
+
+        /// Apply the additive learned policy overlay after the frozen M6 planner.
+        #[arg(long, default_value_t = false)]
+        policy_overlay: bool,
 
         /// Stop execution immediately upon the first failure
         #[arg(long)]
@@ -1736,34 +1769,83 @@ fn main() {
             }
         }
 
-        Commands::Plan { base, head, format } => {
+        Commands::Plan {
+            base,
+            head,
+            policy_overlay,
+            format,
+        } => {
             let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
             let repo_root = fdx::paths::find_repository_root(&cwd).unwrap_or(cwd);
             let format = parse_format(&format);
 
-            match fdx::intelligence::testplan::planner::plan_verification(
-                &repo_root,
-                base.as_deref(),
-                head.as_deref(),
-                None,
-            ) {
-                Ok(plan) => match format {
-                    OutputFormat::Json => {
-                        if let Ok(json_str) = serde_json::to_string_pretty(&plan) {
-                            println!("{}", json_str);
+            if policy_overlay {
+                let db = match fdx::intelligence::db::EvidenceDatabase::open(
+                    &repo_root,
+                    fdx::intelligence::db::DatabaseOpenMode::ReadOnly,
+                ) {
+                    Ok(db) => db,
+                    Err(error) => {
+                        eprintln!("Error opening policy evidence database: {error}");
+                        process::exit(1);
+                    }
+                };
+                match fdx::intelligence::policy::plan_with_policy_overlay(
+                    &repo_root,
+                    &db.conn,
+                    base.as_deref(),
+                    head.as_deref(),
+                ) {
+                    Ok(effective) => match format {
+                        OutputFormat::Json => {
+                            if let Ok(json_str) = serde_json::to_string_pretty(&effective) {
+                                println!("{}", json_str);
+                            }
                         }
+                        OutputFormat::Text => {
+                            let text =
+                                fdx::intelligence::testplan::explain::format_verification_plan_text(
+                                    &effective.plan,
+                                );
+                            print!("{}", text);
+                            if !effective.added_check_ids.is_empty() {
+                                println!(
+                                    "\nM11 additive policy checks: {}",
+                                    effective.added_check_ids.join(", ")
+                                );
+                            }
+                        }
+                    },
+                    Err(error) => {
+                        eprintln!("Error creating policy-overlaid verification plan: {error}");
+                        process::exit(1);
                     }
-                    OutputFormat::Text => {
-                        let text =
-                            fdx::intelligence::testplan::explain::format_verification_plan_text(
-                                &plan,
-                            );
-                        print!("{}", text);
+                }
+            } else {
+                match fdx::intelligence::testplan::planner::plan_verification(
+                    &repo_root,
+                    base.as_deref(),
+                    head.as_deref(),
+                    None,
+                ) {
+                    Ok(plan) => match format {
+                        OutputFormat::Json => {
+                            if let Ok(json_str) = serde_json::to_string_pretty(&plan) {
+                                println!("{}", json_str);
+                            }
+                        }
+                        OutputFormat::Text => {
+                            let text =
+                                fdx::intelligence::testplan::explain::format_verification_plan_text(
+                                    &plan,
+                                );
+                            print!("{}", text);
+                        }
+                    },
+                    Err(e) => {
+                        eprintln!("Error creating verification plan: {}", e);
+                        process::exit(1);
                     }
-                },
-                Err(e) => {
-                    eprintln!("Error creating verification plan: {}", e);
-                    process::exit(1);
                 }
             }
         }
@@ -1771,6 +1853,7 @@ fn main() {
         Commands::Verify {
             base,
             head,
+            policy_overlay,
             fail_fast,
             no_persist,
             format,
@@ -1779,16 +1862,56 @@ fn main() {
             let repo_root = fdx::paths::find_repository_root(&cwd).unwrap_or(cwd);
             let format = parse_format(&format);
 
-            let plan = match fdx::intelligence::testplan::planner::plan_verification(
-                &repo_root,
-                base.as_deref(),
-                head.as_deref(),
-                None,
-            ) {
-                Ok(p) => p,
-                Err(e) => {
-                    eprintln!("Error creating verification plan: {}", e);
-                    process::exit(1);
+            let plan = if policy_overlay {
+                let db = match fdx::intelligence::db::EvidenceDatabase::open(
+                    &repo_root,
+                    fdx::intelligence::db::DatabaseOpenMode::ReadWrite,
+                ) {
+                    Ok(db) => db,
+                    Err(error) => {
+                        eprintln!("Error opening policy evidence database: {error}");
+                        process::exit(1);
+                    }
+                };
+                let effective = match fdx::intelligence::policy::plan_with_policy_overlay(
+                    &repo_root,
+                    &db.conn,
+                    base.as_deref(),
+                    head.as_deref(),
+                ) {
+                    Ok(plan) => plan,
+                    Err(error) => {
+                        eprintln!("Error creating policy-overlaid verification plan: {error}");
+                        process::exit(1);
+                    }
+                };
+                if !no_persist {
+                    let applied_at_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+                    if let Err(error) = fdx::intelligence::policy::persist_policy_application(
+                        &db.conn,
+                        &effective.application,
+                        applied_at_ms,
+                    ) {
+                        eprintln!("Error persisting policy application: {error}");
+                        process::exit(1);
+                    }
+                }
+                effective.plan
+            } else {
+                match fdx::intelligence::testplan::planner::plan_verification(
+                    &repo_root,
+                    base.as_deref(),
+                    head.as_deref(),
+                    None,
+                ) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        eprintln!("Error creating verification plan: {}", e);
+                        process::exit(1);
+                    }
                 }
             };
 
@@ -2800,6 +2923,126 @@ Checks ({}):",
                         }
                         Err(error) => {
                             eprintln!("Error reading policy candidate: {error}");
+                            process::exit(1);
+                        }
+                    }
+                }
+                PolicyCommand::PromoteCandidate {
+                    candidate_id,
+                    format,
+                } => {
+                    let format = parse_format(&format);
+                    let mut db = match fdx::intelligence::db::EvidenceDatabase::open(
+                        &repo_root,
+                        fdx::intelligence::db::DatabaseOpenMode::ReadWrite,
+                    ) {
+                        Ok(db) => db,
+                        Err(error) => {
+                            eprintln!("Error opening policy evidence database: {error}");
+                            process::exit(1);
+                        }
+                    };
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+                    match fdx::intelligence::policy::promote_candidate_with_template(
+                        &repo_root,
+                        &mut db.conn,
+                        &candidate_id,
+                        &fdx::intelligence::policy::PromotionPolicy::default(),
+                        now_ms,
+                    ) {
+                        Ok(policy) => match format {
+                            OutputFormat::Json => println!(
+                                "{}",
+                                serde_json::to_string_pretty(&policy)
+                                    .unwrap_or_else(|_| "{}".to_string())
+                            ),
+                            OutputFormat::Text => println!(
+                                "{} | scope={} | check={} | state={}",
+                                policy.policy_id,
+                                policy.trigger.scope,
+                                policy.check_id,
+                                policy.state.as_str()
+                            ),
+                        },
+                        Err(error) => {
+                            eprintln!("Error promoting policy candidate: {error}");
+                            process::exit(1);
+                        }
+                    }
+                }
+                PolicyCommand::ListActive { format } => {
+                    let format = parse_format(&format);
+                    let db = match fdx::intelligence::db::EvidenceDatabase::open(
+                        &repo_root,
+                        fdx::intelligence::db::DatabaseOpenMode::ReadOnly,
+                    ) {
+                        Ok(db) => db,
+                        Err(error) => {
+                            eprintln!("Error opening policy evidence database: {error}");
+                            process::exit(1);
+                        }
+                    };
+                    match fdx::intelligence::policy::active_policy_snapshot(&db.conn) {
+                        Ok(snapshot) => match format {
+                            OutputFormat::Json => println!(
+                                "{}",
+                                serde_json::to_string_pretty(&snapshot)
+                                    .unwrap_or_else(|_| "{}".to_string())
+                            ),
+                            OutputFormat::Text => {
+                                println!("Active policies: {}", snapshot.policies.len());
+                                for policy in snapshot.policies {
+                                    println!(
+                                        "- {} | scope={} | check={}",
+                                        policy.policy_id, policy.trigger.scope, policy.check_id
+                                    );
+                                }
+                            }
+                        },
+                        Err(error) => {
+                            eprintln!("Error listing active policies: {error}");
+                            process::exit(1);
+                        }
+                    }
+                }
+                PolicyCommand::RevokePolicy {
+                    policy_id,
+                    reason,
+                    format,
+                } => {
+                    let format = parse_format(&format);
+                    let mut db = match fdx::intelligence::db::EvidenceDatabase::open(
+                        &repo_root,
+                        fdx::intelligence::db::DatabaseOpenMode::ReadWrite,
+                    ) {
+                        Ok(db) => db,
+                        Err(error) => {
+                            eprintln!("Error opening policy evidence database: {error}");
+                            process::exit(1);
+                        }
+                    };
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+                    match fdx::intelligence::policy::revoke_policy(
+                        &mut db.conn,
+                        &policy_id,
+                        &reason,
+                        now_ms,
+                    ) {
+                        Ok(()) => match format {
+                            OutputFormat::Json => println!(
+                                "{}",
+                                serde_json::json!({"policy_id": policy_id, "state": "revoked"})
+                            ),
+                            OutputFormat::Text => println!("Revoked policy {policy_id}."),
+                        },
+                        Err(error) => {
+                            eprintln!("Error revoking policy: {error}");
                             process::exit(1);
                         }
                     }

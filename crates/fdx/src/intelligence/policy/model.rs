@@ -134,6 +134,9 @@ pub struct PromotedPolicy {
     pub action: PolicyAction,
     pub trigger: LearnedPolicyTrigger,
     pub check_id: String,
+    /// Digest of the exact canonical `PlannedCheck` persisted at promotion time.
+    /// Active policies without this binding are invalid and must fail closed.
+    pub template_digest: String,
     pub candidate_digest: String,
     pub promotion_policy_digest: String,
     pub promoted_policy_digest: String,
