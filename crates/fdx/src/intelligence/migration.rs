@@ -65,6 +65,10 @@ pub fn migrate_schema(
                 // Migrate v7 -> v8: Milestone 10 Shadow Calibration tables
                 tx.execute_batch(crate::intelligence::calibration::schema::MIGRATE_V7_TO_V8_SQL)?;
             }
+            8 => {
+                // Migrate v8 -> v9: qualified M10 evidence and execution grouping.
+                tx.execute_batch(crate::intelligence::calibration::schema::MIGRATE_V8_TO_V9_SQL)?;
+            }
             _ => {
                 return Err(MigrationError::Unsupported(version, target_version));
             }

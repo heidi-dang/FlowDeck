@@ -1,6 +1,6 @@
 //! SQLite schema and migration definitions for M10 Shadow Calibration.
 
-pub const CALIBRATION_SCHEMA_VERSION: u32 = 8;
+pub const CALIBRATION_SCHEMA_VERSION: u32 = 9;
 
 /// Migration SQL for v7 -> v8 (Milestone 10 Shadow Calibration tables).
 /// Immutable historical migration: never edit in place.
@@ -83,4 +83,31 @@ CREATE TABLE IF NOT EXISTS calibration_metrics (
     eligible_for_runtime_comparison BOOLEAN NOT NULL,
     FOREIGN KEY(calibration_id) REFERENCES calibration_runs(calibration_id) ON DELETE CASCADE
 );
+"#;
+
+/// Additive v8 -> v9 migration for qualified M10 evidence. Historical v8 rows are explicitly
+/// retained as contract version 1 and do not acquire fabricated check or execution metadata.
+pub const MIGRATE_V8_TO_V9_SQL: &str = r#"
+ALTER TABLE calibration_runs ADD COLUMN calibration_contract_version INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE calibration_runs ADD COLUMN source_artifact_sha256 TEXT;
+ALTER TABLE calibration_runs ADD COLUMN record_digest TEXT;
+ALTER TABLE calibration_runs ADD COLUMN max_total_duration_ms INTEGER;
+ALTER TABLE calibration_runs ADD COLUMN per_check_timeout_ms INTEGER;
+ALTER TABLE calibration_runs ADD COLUMN max_output_bytes INTEGER;
+
+ALTER TABLE calibration_checks ADD COLUMN display_name TEXT;
+ALTER TABLE calibration_checks ADD COLUMN kind TEXT;
+ALTER TABLE calibration_checks ADD COLUMN scope TEXT;
+ALTER TABLE calibration_checks ADD COLUMN execution_id TEXT;
+ALTER TABLE calibration_checks ADD COLUMN reused_execution BOOLEAN;
+
+ALTER TABLE calibration_executions ADD COLUMN origin TEXT;
+
+ALTER TABLE calibration_metrics ADD COLUMN candidate_physical_execution_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE calibration_metrics ADD COLUMN shadow_physical_execution_count INTEGER NOT NULL DEFAULT 0;
+
+CREATE INDEX IF NOT EXISTS idx_calibration_runs_qualified
+    ON calibration_runs(source_run_id, candidate_plan_digest, policy_digest, calibration_contract_version);
+CREATE INDEX IF NOT EXISTS idx_calibration_runs_record_digest ON calibration_runs(record_digest);
+CREATE INDEX IF NOT EXISTS idx_calibration_checks_execution ON calibration_checks(calibration_id, execution_id);
 "#;

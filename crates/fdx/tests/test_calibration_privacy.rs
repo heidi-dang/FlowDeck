@@ -18,6 +18,8 @@ fn test_secrets_in_unsupported_reasons_or_environment_are_redacted() {
     let mut db = EvidenceDatabase::open(repo_root, DatabaseOpenMode::ReadWrite).unwrap();
 
     let secret = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    let project_secret = "sk-proj-secret-value";
+    let private_path = "/home/private-user/project";
     let check = PlannedCheck {
         check_id: "test:npm:packages/core/tests/a.test.ts".to_string(),
         display_name: "packages/core/tests/a.test.ts".to_string(),
@@ -50,7 +52,7 @@ fn test_secrets_in_unsupported_reasons_or_environment_are_redacted() {
             status: CheckExecutionStatus::Passed,
             execution_id: "exec_1".to_string(),
             reused_execution: false,
-            command: vec!["echo".to_string(), "ok".to_string()],
+            command: vec![format!("{private_path}/bin/echo"), "ok".to_string()],
             cwd: ".".to_string(),
             exit_code: Some(0),
             signal: None,
@@ -64,7 +66,9 @@ fn test_secrets_in_unsupported_reasons_or_environment_are_redacted() {
             stdout_truncated: false,
             stderr_truncated: false,
             started_at_ms: 1000,
-            reason: None,
+            reason: Some(format!(
+                "Bearer secret-value {secret} {project_secret} under {private_path}"
+            )),
         }],
         uncertainty: vec![],
         base: None,
@@ -78,17 +82,40 @@ fn test_secrets_in_unsupported_reasons_or_environment_are_redacted() {
     let cal_run = run_calibration(repo_root, &source_run, &policy).unwrap();
     persist_calibration_run(&mut db.conn, &cal_run).unwrap();
 
-    // Verify raw secret string never appears in database table values
+    // Scan every M10 persistence table rather than only a planned-check reason.
     let raw_db_str: String = db
         .conn
         .query_row(
-            "SELECT group_concat(check_id || ' ' || coalesce(reason, '')) FROM calibration_checks",
+            r#"
+            SELECT group_concat(value, ' ') FROM (
+                SELECT calibration_id || ' ' || source_run_id || ' ' ||
+                       coalesce(source_artifact_sha256, '') || ' ' ||
+                       coalesce(record_digest, '') AS value
+                FROM calibration_runs
+                UNION ALL
+                SELECT check_id || ' ' || coalesce(reason, '') || ' ' ||
+                       coalesce(display_name, '') || ' ' || coalesce(scope, '')
+                FROM calibration_checks
+                UNION ALL
+                SELECT execution_id || ' ' || program || ' ' || cwd || ' ' || argv_digest
+                FROM calibration_executions
+                UNION ALL
+                SELECT calibration_id FROM calibration_metrics
+            )
+            "#,
             [],
-            |r| r.get(0),
+            |row| row.get(0),
         )
         .unwrap();
+    for forbidden in [secret, project_secret, private_path, "Bearer secret-value"] {
+        assert!(
+            !raw_db_str.contains(forbidden),
+            "raw sensitive value must not be persisted: {forbidden}"
+        );
+    }
     assert!(
-        !raw_db_str.contains(secret),
-        "Raw secret must not be persisted into SQLite"
+        raw_db_str.contains("echo"),
+        "absolute program identity should be normalized"
     );
+    assert!(!raw_db_str.contains("/home/"));
 }

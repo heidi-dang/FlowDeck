@@ -97,7 +97,13 @@ fn test_max_shadow_checks_limit_truncates_and_marks_incomplete() {
 
     let cal_run = run_calibration(repo_root, &source_run, &policy).unwrap();
 
-    assert_eq!(cal_run.checks.len(), 3);
+    // The cap applies to the three additional shadow checks, never to the
+    // candidate obligation itself.
+    assert_eq!(cal_run.checks.len(), 4);
+    assert!(cal_run
+        .checks
+        .iter()
+        .any(|check| check.check_id == candidate_check.check_id));
     assert!(cal_run.reference_truncated);
     assert_eq!(cal_run.status, CalibrationStatus::Incomplete);
     assert!(!cal_run.metrics.eligibility.eligible_for_miss_rate);

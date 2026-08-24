@@ -5,7 +5,7 @@ use tempfile::tempdir;
 
 #[test]
 fn test_calibration_schema_tables_and_columns_exist() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 8);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 9);
 
     let dir = tempdir().unwrap();
     let db = EvidenceDatabase::open(dir.path(), DatabaseOpenMode::ReadWrite).unwrap();
@@ -26,12 +26,12 @@ fn test_calibration_schema_tables_and_columns_exist() {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(count, 1, "table {} does not exist in schema v8", table);
+        assert_eq!(count, 1, "table {} does not exist in schema v9", table);
     }
 }
 
 #[test]
-fn test_v7_to_v8_migration_preserves_data() {
+fn test_v7_to_v9_migration_preserves_data() {
     let dir = tempdir().unwrap();
     let db_path = dir.path().join(".fdx").join("index.sqlite");
     std::fs::create_dir_all(dir.path().join(".fdx")).unwrap();
@@ -55,7 +55,7 @@ fn test_v7_to_v8_migration_preserves_data() {
         .unwrap();
     }
 
-    // 2. Open via EvidenceDatabase to trigger migration to v8
+    // 2. Open via EvidenceDatabase to trigger the additive v8 and v9 migrations
     {
         let db = EvidenceDatabase::open(dir.path(), DatabaseOpenMode::ReadWrite).unwrap();
 
@@ -63,7 +63,7 @@ fn test_v7_to_v8_migration_preserves_data() {
             .conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 8);
+        assert_eq!(version, 9);
 
         // Check runtime_runs row is intact
         let run_count: i64 = db
