@@ -1,10 +1,10 @@
-# Hardened M8 Runtime Evidence & Historical Verification Intelligence Qualification Report (R21)
+# Final Hardened M8 Runtime Evidence & Historical Verification Intelligence Qualification Report (R22)
 
 **Milestone:** M8  
-**Functional Commit (F19):** `29828a506e436a9a1d9ca88d8483d4f2d299a0f5`  
-**Binary SHA-256:** `6b8c4c84e72506529270b39a2ad9ccd865c414e5ee0fb7ebb0b018144c5d5cb2`  
-**Benchmark Harness (H21):** `70c0c9bf1f0bdfe522ff70f0f6f105ef4bf366f4`  
-**Executed At:** 2026-08-24T06:56:30.218Z  
+**Functional Commit (F20):** `9f705270537e67c89c3db6655630a896fac762e0`  
+**Binary SHA-256:** `4e2736be0a700668afc5ff373c9bd8250695a5b71c15ad4d297c2dd632b946f3`  
+**Benchmark Harness (H22):** `c94d87f94c6d8f18e3c5bafa1c3408e1fe12890e`  
+**Executed At:** 2026-08-24T08:32:15.436Z  
 **Platform:** linux (x64)  
 **Node Version:** v24.19.0  
 **Schema Version:** `7`  
@@ -36,6 +36,16 @@
 - [x] `divergent_artifacts_two_independent_connections`: Passed
 - [x] `reconciliation_completeness_persists_after_reopen`: Passed
 - [x] `legacy_v6_rows_are_not_silently_qualified`: Passed
+- [x] `mixed_physicality_nonphysical_first_rejected`: Passed
+- [x] `mixed_physicality_physical_first_rejected`: Passed
+- [x] `spawnfailed_passed_mixed_group_rejected`: Passed
+- [x] `timedout_unsupported_mixed_group_rejected`: Passed
+- [x] `nonphysical_shared_command_conflict_rejected`: Passed
+- [x] `nonphysical_shared_status_conflict_rejected`: Passed
+- [x] `invalid_shared_execution_two_primaries_rejected`: Passed
+- [x] `invalid_shared_execution_no_primary_rejected`: Passed
+- [x] `physical_check_requires_execution_row`: Passed
+- [x] `nonphysical_check_has_no_execution_row`: Passed
 - [x] `crash_window_reconciliation`: Passed
 - [x] `malformed_artifact_fails_closed`: Passed
 - [x] `oversized_artifact_fails_closed`: Passed
@@ -47,10 +57,10 @@
 
 | Benchmark | Samples | Min (ms) | Median (ms) | P95 (ms) | Max (ms) | Mean (ms) |
 |---|---|---|---|---|---|---|
-| Single Run Verify + Ingest | 15 | 111.24 | 121.69 | 131.93 | 131.93 | 121.65 |
-| Query 50 Runs History | 20 | 2.95 | 3.11 | 3.57 | 3.57 | 3.13 |
-| Check Stats & Flake Signal | 20 | 2.92 | 3 | 3.18 | 3.18 | 3.01 |
-| Reconcile 50 Artifacts | 15 | 6.9 | 6.98 | 7.04 | 7.04 | 6.96 |
+| Single Run Verify + Ingest | 15 | 121.86 | 122.43 | 333.26 | 333.26 | 139.75 |
+| Query 50 Runs History | 20 | 3.08 | 3.19 | 3.88 | 3.88 | 3.34 |
+| Check Stats & Flake Signal | 20 | 3.11 | 3.36 | 3.95 | 3.95 | 3.38 |
+| Reconcile 50 Artifacts | 15 | 7.23 | 7.96 | 13.18 | 13.18 | 8.74 |
 
 ### Database Sizing
 
