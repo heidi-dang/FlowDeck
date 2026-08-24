@@ -744,6 +744,23 @@ export class RunTransitionEngine {
     const attempts = this.listAttempts(input.runId, targetItemId);
     const lastAttempt = attempts[attempts.length - 1];
 
+    // Check strategy exhaustion for this target item under current meaningful state fingerprint
+    const activeConstraint = this.getActiveStrategyConstraints(input.runId, targetItemId);
+    const strategyFp = this.computeStrategyStateFingerprint(input.runId, targetItemId, snapshot);
+    if (activeConstraint?.exhausted === true && activeConstraint.stateFingerprint === strategyFp) {
+      return {
+        runId: input.runId,
+        currentPhase,
+        phaseChanged: false,
+        currentWorkItemId: targetItemId,
+        workItemChanged: false,
+        strategyDecision: "BLOCK",
+        reasonCode: "STRATEGY_SET_EXHAUSTED",
+        requiresAction: false,
+        blockerReason: "Strategy search exhausted under unchanged meaningful state",
+      };
+    }
+
     // 3. Check Stall condition from AdaptiveExecutionControl
     if (snapshot.progress.stalled) {
       let targetPhase = currentPhase;
