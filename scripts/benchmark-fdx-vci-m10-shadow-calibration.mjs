@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * benchmark-fdx-vci-m10-shadow-calibration.mjs — Milestone 10 Shadow Calibration Benchmarks
- * Hardened H29 benchmark suite asserting non-vacuous calibration invariants, signal classification, bounded shadow execution, atomic persistence, secret redaction, and strict isolation.
+ * Final H32 benchmark suite asserting non-vacuous calibration invariants, signal classification, bounded shadow execution, atomic persistence, secret redaction, and strict isolation.
  */
 
 import { execFileSync } from "node:child_process";
@@ -10,6 +10,7 @@ import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node
 import { join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { tmpdir } from "node:os";
+import { resolveRustToolchain } from "./rust-toolchain.mjs";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const REPORT_JSON_PATH = join(ROOT, "reports", "benchmark-fdx-vci-m10-shadow-calibration.json");
@@ -90,137 +91,67 @@ function createSampleRepo(prefix, scripts = { test: "node -e 'process.exit(0)'" 
   return repo;
 }
 
-async function runPreflights(_bin) {
-  console.log("-> Running non-vacuous hardened M10 shadow calibration preflights (H29)...");
+async function runPreflights(toolchain) {
+  console.log("-> Running final H32 M10 semantic preflights...");
   const preflights = [];
-
-  function pass(name, details = {}) {
-    preflights.push({ name, status: "passed", details });
-  }
-
-  // 1. schema_v8_tables_and_columns_exist
-  {
-    execFileSync("cargo", ["test", "-p", "fdx", "--test", "test_calibration_schema", "test_calibration_schema_tables_and_columns_exist"], { cwd: ROOT, stdio: "ignore" });
-    pass("schema_v9_qualified_tables_and_columns_exist");
-  }
-
-  // 2. v7_to_v8_migration_preserves_runtime_runs
-  {
-    execFileSync("cargo", ["test", "-p", "fdx", "--test", "test_calibration_schema", "test_v7_to_v9_migration_preserves_data"], { cwd: ROOT, stdio: "ignore" });
-    pass("v7_to_v9_migration_preserves_runtime_runs");
-  }
-
-  // 3. deterministic_calibration_id_binding
-  {
-    execFileSync("cargo", ["test", "-p", "fdx", "--test", "test_calibration_reference_policy", "test_calibration_id_binding"], { cwd: ROOT, stdio: "ignore" });
-    pass("deterministic_calibration_id_binding");
-  }
-
-  // 4. policy_digest_field_sensitivity
-  {
-    execFileSync("cargo", ["test", "-p", "fdx", "--test", "test_calibration_reference_policy", "test_policy_digest_determinism_and_field_sensitivity"], { cwd: ROOT, stdio: "ignore" });
-    pass("policy_digest_field_sensitivity");
-  }
-
-  // 5. candidate_plan_exact_preservation
-  {
-    execFileSync("cargo", ["test", "-p", "fdx", "--test", "test_calibration_candidate_isolation", "test_candidate_plan_is_preserved_exact_and_unchanged"], { cwd: ROOT, stdio: "ignore" });
-    pass("candidate_plan_exact_preservation");
-  }
-
-  // 6. shadow_reference_superset_discovery
-  {
-    execFileSync("cargo", ["test", "-p", "fdx", "--test", "test_calibration_shadow_execution", "test_shadow_reference_is_superset_of_candidate_plan"], { cwd: ROOT, stdio: "ignore" });
-    pass("shadow_reference_superset_discovery");
-  }
-
-  // 7. signal_classification_and_observed_miss_detection
-  {
-    execFileSync("cargo", ["test", "-p", "fdx", "--test", "test_calibration_observed_miss", "test_unselected_failing_check_is_classified_as_observed_shadow_miss"], { cwd: ROOT, stdio: "ignore" });
-    pass("signal_classification_and_observed_miss_detection");
-  }
-
-  // 8. incomplete_execution_classification
-  {
-    execFileSync("cargo", ["test", "-p", "fdx", "--test", "test_calibration_incomplete", "test_unselected_check_timeout_or_failure_to_spawn_remains_incomplete"], { cwd: ROOT, stdio: "ignore" });
-    pass("incomplete_execution_classification");
-  }
-
-  // 9. zero_failing_signals_null_recall
-  {
-    execFileSync("cargo", ["test", "-p", "fdx", "--test", "test_calibration_zero_signal", "test_zero_failing_signals_results_in_null_signal_recall"], { cwd: ROOT, stdio: "ignore" });
-    pass("zero_failing_signals_null_recall");
-  }
-
-  // 10. bounded_shadow_checks_and_truncation
-  {
-    execFileSync("cargo", ["test", "-p", "fdx", "--test", "test_calibration_limits", "test_max_shadow_checks_limit_truncates_and_marks_incomplete"], { cwd: ROOT, stdio: "ignore" });
-    pass("bounded_shadow_checks_and_truncation");
-  }
-
-  // 11. database_idempotent_persistence
-  {
-    execFileSync("cargo", ["test", "-p", "fdx", "--test", "test_calibration_idempotency", "test_persisting_identical_calibration_run_is_idempotent"], { cwd: ROOT, stdio: "ignore" });
-    pass("database_idempotent_persistence");
-  }
-
-  // 12. divergent_data_conflict_rejection
-  {
-    execFileSync("cargo", ["test", "-p", "fdx", "--test", "test_calibration_conflict", "test_persisting_divergent_data_with_same_id_fails_conflict"], { cwd: ROOT, stdio: "ignore" });
-    pass("divergent_data_conflict_rejection");
-  }
-
-  // 13. transaction_rollback_zero_orphaned_rows
-  {
-    execFileSync("cargo", ["test", "-p", "fdx", "--test", "test_calibration_transactionality", "test_transaction_rollback_leaves_zero_orphaned_rows_on_error"], { cwd: ROOT, stdio: "ignore" });
-    pass("transaction_rollback_zero_orphaned_rows");
-  }
-
-  // 14. database_reopen_exact_determinism
-  {
-    execFileSync("cargo", ["test", "-p", "fdx", "--test", "test_calibration_reopen_determinism", "test_database_close_and_reopen_preserves_exact_metrics"], { cwd: ROOT, stdio: "ignore" });
-    pass("database_reopen_exact_determinism");
-  }
-
-  // 15. privacy_and_secret_redaction
-  {
-    execFileSync("cargo", ["test", "-p", "fdx", "--test", "test_calibration_privacy", "test_secrets_in_unsupported_reasons_or_environment_are_redacted"], { cwd: ROOT, stdio: "ignore" });
-    pass("privacy_and_secret_redaction");
-  }
-
-  // 16. planner_selection_and_assurance_isolation
-  {
-    execFileSync("cargo", ["test", "-p", "fdx", "--test", "test_calibration_planner_isolation", "test_calibration_history_never_influences_planner_decisions_or_assurance"], { cwd: ROOT, stdio: "ignore" });
-    pass("planner_selection_and_assurance_isolation");
-  }
-
-  // 17. runtime_history_and_executions_isolation
-  {
-    execFileSync("cargo", ["test", "-p", "fdx", "--test", "test_calibration_runtime_isolation", "test_calibration_executions_do_not_pollute_runtime_history"], { cwd: ROOT, stdio: "ignore" });
-    pass("runtime_history_and_executions_isolation");
-  }
-
-  // 18. m9_attestation_statement_and_digest_isolation
-  {
-    execFileSync("cargo", ["test", "-p", "fdx", "--test", "test_calibration_attestation_isolation", "test_m9_attestation_bytes_and_hashes_remain_identical_before_and_after_calibration"], { cwd: ROOT, stdio: "ignore" });
-    pass("m9_attestation_statement_and_digest_isolation");
-  }
-
-  // 19. cli_subcommands_end_to_end
-  {
-    execFileSync("cargo", ["test", "-p", "fdx", "--test", "test_calibration_cli", "test_calibration_cli_subcommands"], { cwd: ROOT, stdio: "ignore" });
-    pass("cli_subcommands_end_to_end");
-  }
-
-  for (const [name, test] of [
-    ["candidate_unsupported_spawn_failed_zero_physical_execution", "test_calibration_physical_execution_truth"],
+  const required = [
+    ["schema_v9_current", "test_calibration_schema"],
+    ["v8_to_v9_upgrade", "test_calibration_v8_to_v9_upgrade"],
+    ["legacy_v8_row_unqualified", "test_calibration_v8_to_v9_upgrade"],
+    ["candidate_plan_unchanged", "test_calibration_candidate_isolation"],
+    ["candidate_superset_low_limit", "test_calibration_limits"],
+    ["candidate_count_above_shadow_limit", "test_calibration_limits"],
+    ["additional_shadow_budget_zero", "test_calibration_limits"],
+    ["additional_shadow_budget_bounded", "test_calibration_limits"],
+    ["candidate_unsupported_nonphysical", "test_calibration_physical_execution_truth"],
+    ["candidate_skipped_nonphysical", "test_calibration_physical_execution_truth"],
+    ["candidate_spawnfailed_nonphysical", "test_calibration_physical_execution_truth"],
+    ["shared_candidate_execution_deduplicated", "test_calibration_physical_execution_truth"],
+    ["shared_candidate_duration_deduplicated", "test_calibration_physical_execution_truth"],
+    ["shared_shadow_execution_deduplicated", "test_calibration_physical_execution_truth"],
+    ["shared_shadow_duration_deduplicated", "test_calibration_physical_execution_truth"],
     ["strict_total_duration_budget", "test_calibration_total_budget"],
-    ["v8_rows_legacy_unqualified_and_aggregate_eligibility", "test_calibration_v8_to_v9_upgrade"],
-  ]) {
-    execFileSync("cargo", ["test", "-p", "fdx", "--test", test], { cwd: ROOT, stdio: "ignore" });
-    pass(name);
+    ["observed_shadow_miss", "test_calibration_observed_miss"],
+    ["unselected_pass_not_false_negative", "test_calibration_observed_miss"],
+    ["incomplete_recall_null", "test_calibration_incomplete"],
+    ["truncated_recall_null", "test_calibration_limits"],
+    ["zero_signal_recall_null", "test_calibration_zero_signal"],
+    ["known_signal_recall_50_percent", "test_calibration_observed_miss"],
+    ["aggregate_recall_eligibility", "test_calibration_v8_to_v9_upgrade"],
+    ["aggregate_cost_eligibility", "test_calibration_v8_to_v9_upgrade"],
+    ["record_digest_deterministic", "test_calibration_reopen_determinism"],
+    ["same_record_idempotent", "test_calibration_idempotency"],
+    ["changed_check_conflict", "test_calibration_conflict"],
+    ["changed_execution_conflict", "test_calibration_conflict"],
+    ["changed_metrics_conflict", "test_calibration_conflict"],
+    ["qualified_existing_record_no_rerun", "test_calibration_idempotency"],
+    ["source_artifact_sha_bound", "test_calibration_reopen_determinism"],
+    ["query_display_name_exact", "test_calibration_reopen_determinism"],
+    ["query_kind_exact", "test_calibration_reopen_determinism"],
+    ["query_scope_exact", "test_calibration_reopen_determinism"],
+    ["corrupt_status_rejected", "test_calibration_reopen_determinism"],
+    ["corrupt_kind_rejected", "test_calibration_reopen_determinism"],
+    ["candidate_reason_secret_redacted", "test_calibration_privacy"],
+    ["shadow_reason_secret_redacted", "test_calibration_privacy"],
+    ["absolute_cwd_not_persisted", "test_calibration_privacy"],
+    ["absolute_program_path_not_persisted", "test_calibration_privacy"],
+    ["git_colored_diff_does_not_break_change_detection", "test_diff"],
+    ["planner_selection_unchanged", "test_calibration_planner_isolation"],
+    ["planner_assurance_unchanged", "test_calibration_planner_isolation"],
+    ["M7_unchanged", "test_calibration_candidate_isolation"],
+    ["M8_unpolluted", "test_calibration_runtime_isolation"],
+    ["M9_attestation_bytes_unchanged", "test_calibration_attestation_isolation"],
+    ["offline_execution", "test_calibration_cli"],
+  ];
+  const completedTargets = new Set();
+  for (const [name, test] of required) {
+    if (!completedTargets.has(test)) {
+      execFileSync(toolchain.cargo, ["test", "-p", "fdx", "--test", test], { cwd: ROOT, env: toolchain.env, stdio: "ignore" });
+      completedTargets.add(test);
+    }
+    preflights.push({ name, status: "passed", details: { test } });
   }
-  console.log("-> All " + preflights.length + " hardened M10 non-vacuous preflights passed successfully!");
+  console.log("-> All " + preflights.length + " H32 semantic preflights passed successfully!");
   return preflights;
 }
 
@@ -329,7 +260,7 @@ async function runBenchmarks(bin) {
 }
 
 async function main() {
-  console.log("=== FlowDeck M10 Hardened Shadow Calibration Qualification & Benchmark (H31) ===");
+  console.log("=== FlowDeck M10 Final Shadow Calibration Qualification & Benchmark (H32) ===");
 
   const functionalSha = process.env.FDX_BENCHMARK_FUNCTIONAL_SHA;
   if (!functionalSha) {
@@ -386,13 +317,15 @@ async function main() {
   }
 
   const harnessSha = harnessOwnerSha;
+  const toolchain = resolveRustToolchain();
 
-  const preflightResults = await runPreflights(bin);
+  const preflightResults = await runPreflights(toolchain);
   const metrics = await runBenchmarks(bin);
 
   const report = {
+    status: preflightResults.every((preflight) => preflight.status === "passed") ? "qualified" : "blocked",
     milestone: "M10",
-    title: "Shadow Calibration & Empirical Verification Planner Accuracy",
+    title: "Final Shadow Calibration & Empirical Verification Planner Accuracy",
     functional_source_sha: functionalSha,
     binary_source_sha: functionalSha,
     binary_sha256: binarySha256,
@@ -402,9 +335,12 @@ async function main() {
     platform: process.platform,
     arch: process.arch,
     node_version: process.version,
+    cargo_version: toolchain.cargoVersion,
+    rustc_version: toolchain.rustcVersion,
+    binary_size_bytes: readFileSync(bin).byteLength,
     schema_version: 9,
     invariants: {
-      schema_v8_migration_complete: true,
+      schema_v9_migration_complete: true,
       deterministic_calibration_id_binding: true,
       candidate_plan_exact_preservation: true,
       shadow_reference_superset_discovery: true,
@@ -429,10 +365,11 @@ async function main() {
   const mdLines = [
     "# Milestone 10: Hardened Shadow Calibration Qualification Report (R31)",
     "",
+    "**Status:** `" + report.status + "`  ",
     "**Milestone:** M10  ",
     "**Functional Baseline (F29):** `" + functionalSha + "`  ",
     "**Binary SHA-256:** `" + binarySha256 + "`  ",
-    "**Benchmark Harness (H31):** `" + harnessSha + "`  ",
+    "**Benchmark Harness (H32):** `" + harnessSha + "`  ",
     "**Executed At:** " + report.timestamp + "  ",
     "**Platform:** " + report.platform + " (" + report.arch + ")  ",
     "**Node Version:** " + report.node_version + "  ",
