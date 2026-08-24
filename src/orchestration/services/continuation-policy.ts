@@ -252,32 +252,44 @@ export class ContinuationDispatcher {
 
       if (insertRes.changes === 0) {
         // Row already existed: inspect current status
-        const existing = this.db.query(
-          "SELECT status, attempt_count FROM continuation_dispatches WHERE identity = ?"
-        ).get(identity) as { status: string; attempt_count: number } | null;
+        const existing = this.db.query(`
+          SELECT status, attempt_count, run_id, session_id, user_turn_version,
+                 run_aggregate_version, transition_reason, current_work_item_id, state_fingerprint
+          FROM continuation_dispatches WHERE identity = ?
+        `).get(identity) as Record<string, unknown> | null;
 
         if (!existing) {
           return { dispatched: false, identity, reason: "duplicate_dispatch" };
         }
-
-        if (existing.status === "dispatched") {
-          return { dispatched: false, identity, reason: "duplicate_dispatch" };
-        }
-
-        if (existing.status === "pending") {
-          return { dispatched: false, identity, reason: "dispatch_in_progress" };
-        }
-
-        if (existing.status === "outcome_unknown") {
+        if (!this.isCompatibleDurableClaim(existing, token)) {
+          this.db.query(`
+            UPDATE continuation_dispatches
+            SET status = 'blocked', error = 'corrupt_or_mismatched_durable_dispatch'
+            WHERE identity = ? AND status != 'dispatched'
+          `).run(identity);
           return { dispatched: false, identity, reason: "dispatch_outcome_unknown" };
         }
 
-        if (existing.status === "blocked") {
+        const existingStatus = existing.status as string;
+        const existingAttemptCount = existing.attempt_count as number;
+        if (existingStatus === "dispatched") {
+          return { dispatched: false, identity, reason: "duplicate_dispatch" };
+        }
+
+        if (existingStatus === "pending") {
+          return { dispatched: false, identity, reason: "dispatch_in_progress" };
+        }
+
+        if (existingStatus === "outcome_unknown") {
+          return { dispatched: false, identity, reason: "dispatch_outcome_unknown" };
+        }
+
+        if (existingStatus === "blocked") {
           return { dispatched: false, identity, reason: "native_dispatch_failed" };
         }
 
-        if (existing.status === "failed") {
-          if (existing.attempt_count >= maxAttempts) {
+        if (existingStatus === "failed") {
+          if (existingAttemptCount >= maxAttempts) {
             this.db.query(
               "UPDATE continuation_dispatches SET status = 'blocked' WHERE identity = ? AND status = 'failed'"
             ).run(identity);
@@ -332,11 +344,12 @@ export class ContinuationDispatcher {
       const isValid = typeof authRes === "boolean" ? authRes : authRes.valid;
       if (!isValid) {
         if (this.db) {
-          this.db.query(`
+          const res = this.db.query(`
             UPDATE continuation_dispatches
             SET status = 'failed', error = 'authority_revoked'
             WHERE identity = ? AND status = 'pending'
           `).run(identity);
+          if (res.changes === 0) return { dispatched: false, identity, reason: "dispatch_outcome_unknown" };
         }
         return { dispatched: false, identity, reason: "authority_revoked" };
       }
@@ -345,11 +358,12 @@ export class ContinuationDispatcher {
     // 3. Check native promptAsync availability
     if (!opts.client?.session?.promptAsync) {
       if (this.db) {
-        this.db.query(`
+        const res = this.db.query(`
           UPDATE continuation_dispatches
           SET status = 'failed', error = 'native_dispatch_unavailable'
-          WHERE identity = ?
+          WHERE identity = ? AND status = 'pending'
         `).run(identity);
+        if (res.changes === 0) return { dispatched: false, identity, reason: "dispatch_outcome_unknown" };
       } else {
         const mem = this.memoryDispatches.get(identity);
         if (mem) mem.status = "failed";
@@ -375,11 +389,12 @@ export class ContinuationDispatcher {
       // Mark dispatched on verified success
       const dispatchedAt = new Date().toISOString();
       if (this.db) {
-        this.db.query(`
+        const res = this.db.query(`
           UPDATE continuation_dispatches
           SET status = 'dispatched', dispatched_at = ?, error = NULL
-          WHERE identity = ?
+          WHERE identity = ? AND status = 'pending'
         `).run(dispatchedAt, identity);
+        if (res.changes === 0) return { dispatched: false, identity, reason: "dispatch_outcome_unknown" };
       } else {
         const mem = this.memoryDispatches.get(identity);
         if (mem) mem.status = "dispatched";
@@ -396,11 +411,12 @@ export class ContinuationDispatcher {
         const isExhausted = (curRow?.attempt_count ?? 1) >= maxAttempts;
         const newStatus = isExhausted ? "blocked" : "failed";
 
-        this.db.query(`
+        const res = this.db.query(`
           UPDATE continuation_dispatches
           SET status = ?, error = ?
-          WHERE identity = ?
+          WHERE identity = ? AND status = 'pending'
         `).run(newStatus, err?.message ?? String(err), identity);
+        if (res.changes === 0) return { dispatched: false, identity, reason: "dispatch_outcome_unknown" };
       } else {
         const mem = this.memoryDispatches.get(identity);
         if (mem) {
@@ -428,6 +444,21 @@ export class ContinuationDispatcher {
     } catch {
       return 0;
     }
+  }
+
+  private isCompatibleDurableClaim(row: Record<string, unknown>, token: ContinuationToken): boolean {
+    const status = row.status;
+    const attemptCount = row.attempt_count;
+    return typeof status === "string"
+      && ["pending", "dispatched", "failed", "blocked", "outcome_unknown"].includes(status)
+      && Number.isSafeInteger(attemptCount) && (attemptCount as number) >= 1
+      && row.run_id === token.runId
+      && row.session_id === token.sessionId
+      && row.user_turn_version === token.userTurnVersion
+      && row.run_aggregate_version === token.runAggregateVersion
+      && row.transition_reason === token.transitionReason
+      && (row.current_work_item_id ?? null) === (token.currentWorkItemId ?? null)
+      && row.state_fingerprint === token.stateFingerprint;
   }
 
   reset(): void {

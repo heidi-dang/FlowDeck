@@ -114,7 +114,7 @@ export class SqliteDeferredReplacementRepository {
     `).get(parentSessionId) as any
 
     if (!row) return null
-    return this.mapRow(row)
+    try { return this.mapRow(row) } catch { return null }
   }
 
   findById(id: string): DeferredReplacementRecord | null {
@@ -124,7 +124,7 @@ export class SqliteDeferredReplacementRepository {
     `).get(id) as any
 
     if (!row) return null
-    return this.mapRow(row)
+    try { return this.mapRow(row) } catch { return null }
   }
 
   claimForResume(id: string): boolean {
@@ -228,7 +228,9 @@ export class SqliteDeferredReplacementRepository {
         ORDER BY created_at ASC
       `).all() as any[]
 
-      return rows.map(r => this.mapRow(r))
+      return rows.flatMap(row => {
+        try { return [this.mapRow(row)] } catch { return [] }
+      })
     } catch {
       return []
     }
@@ -242,7 +244,9 @@ export class SqliteDeferredReplacementRepository {
         ORDER BY created_at ASC
       `).all() as any[]
 
-      return rows.map(r => this.mapRow(r))
+      return rows.flatMap(row => {
+        try { return [this.mapRow(row)] } catch { return [] }
+      })
     } catch {
       return []
     }
@@ -425,30 +429,61 @@ export class SqliteDeferredReplacementRepository {
   }
 
   private mapRow(row: any): DeferredReplacementRecord {
-    let decision: RouterDecision
     try {
-      decision = typeof row.routing_decision === "string" ? JSON.parse(row.routing_decision) : row.routing_decision
-    } catch {
-      decision = { executionClass: "STANDARD", reason: "parsed fallback", reasonCode: "FALLBACK", confidence: 0.5, forcedByExplicitSignal: false }
-    }
+      const decision: unknown = typeof row.routing_decision === "string" ? JSON.parse(row.routing_decision) : row.routing_decision
+      const requiredStrings = [
+        row.id, row.parent_session_id, row.old_run_id, row.agent_id, row.effective_goal,
+        row.message_hash, row.message_id, row.correlation_id, row.created_at, row.updated_at,
+      ]
+      if (requiredStrings.some(value => typeof value !== "string" || value.length === 0)) throw new Error("required_field")
+      if (row.source_intent !== "REPLACE" && row.source_intent !== "MODIFY_RECLASSIFICATION") throw new Error("source_intent")
+      if (![
+        "pending_termination", "resuming", "handoff_pending", "handoff_outcome_unknown",
+        "resumed", "superseded", "blocked", "cancelled",
+      ].includes(row.status)) throw new Error("status")
+      if (!this.isValidRoutingDecision(decision)) throw new Error("routing_decision")
 
-    return {
-      id: row.id,
-      parentSessionId: row.parent_session_id,
-      oldRunId: row.old_run_id,
-      sourceIntent: row.source_intent,
-      agentId: row.agent_id,
-      effectiveGoal: row.effective_goal,
-      messageHash: row.message_hash,
-      messageId: row.message_id,
-      correlationId: row.correlation_id,
-      routingDecision: decision,
-      status: row.status,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-      resumedAt: row.resumed_at ?? undefined,
-      replacementRunId: row.replacement_run_id ?? undefined,
-      supersededById: row.superseded_by_id ?? undefined,
+      return {
+        id: row.id,
+        parentSessionId: row.parent_session_id,
+        oldRunId: row.old_run_id,
+        sourceIntent: row.source_intent,
+        agentId: row.agent_id,
+        effectiveGoal: row.effective_goal,
+        messageHash: row.message_hash,
+        messageId: row.message_id,
+        correlationId: row.correlation_id,
+        routingDecision: decision,
+        status: row.status,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        resumedAt: row.resumed_at ?? undefined,
+        replacementRunId: row.replacement_run_id ?? undefined,
+        supersededById: row.superseded_by_id ?? undefined,
+      }
+    } catch (error) {
+      this.quarantineCorruptActiveRow(row?.id)
+      throw new Error(`CORRUPT_DEFERRED_REPLACEMENT_ROW:${error instanceof Error ? error.message : "unknown"}`)
     }
+  }
+
+  private isValidRoutingDecision(value: unknown): value is RouterDecision {
+    if (!value || typeof value !== "object") return false
+    const decision = value as Record<string, unknown>
+    return ["FAST_DIRECT", "SPECIALIST", "PARALLEL_SPECIALISTS", "STANDARD", "DEEP"].includes(String(decision.executionClass))
+      && typeof decision.reason === "string" && decision.reason.length > 0
+      && typeof decision.reasonCode === "string" && decision.reasonCode.length > 0
+      && typeof decision.confidence === "number" && Number.isFinite(decision.confidence)
+      && decision.confidence >= 0 && decision.confidence <= 1
+      && typeof decision.forcedByExplicitSignal === "boolean"
+  }
+
+  private quarantineCorruptActiveRow(id: unknown): void {
+    if (typeof id !== "string" || id.length === 0) return
+    this.db.query(`
+      UPDATE deferred_replacements
+      SET status = 'blocked', updated_at = ?
+      WHERE id = ? AND status IN ('pending_termination', 'resuming', 'handoff_pending', 'handoff_outcome_unknown')
+    `).run(new Date().toISOString(), id)
   }
 }

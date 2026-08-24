@@ -267,7 +267,7 @@ export class OrchestrationSnapshotService {
     try {
       const row = this.db.query(
         `SELECT COUNT(*) AS count FROM deferred_replacements
-         WHERE old_run_id = ? AND status IN ('pending_termination', 'resuming', 'handoff_pending', 'handoff_outcome_unknown')`,
+         WHERE old_run_id = ? AND status IN ('pending_termination', 'resuming', 'handoff_pending', 'handoff_outcome_unknown', 'blocked')`,
       ).get(runId) as { count: number } | undefined;
       unresolvedDeferredReplacement = (row?.count ?? 0) > 0;
     } catch {

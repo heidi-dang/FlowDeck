@@ -191,8 +191,8 @@ describe("Live Verification Authority", () => {
       INSERT INTO deferred_replacements (
         id, parent_session_id, old_run_id, source_intent, agent_id, effective_goal,
         message_hash, message_id, correlation_id, routing_decision, status, created_at, updated_at
-      ) VALUES (?, ?, ?, 'modify', 'heidi', 'preserve verification barrier', ?, ?, ?, 'orchestrated', 'handoff_pending', datetime('now'), datetime('now'))
-    `).run("deferred-live-verification-block", sessionID, run.id, "hash", "message", run.id);
+      ) VALUES (?, ?, ?, 'MODIFY_RECLASSIFICATION', 'heidi', 'preserve verification barrier', ?, ?, ?, ?, 'handoff_pending', datetime('now'), datetime('now'))
+    `).run("deferred-live-verification-block", sessionID, run.id, "hash", "message", run.id, JSON.stringify({ executionClass: "STANDARD", reason: "fixture", reasonCode: "FIXTURE", confidence: 1, forcedByExplicitSignal: false }));
 
     await triggerAuthoritativeIdle(ctx, sessionID);
 
@@ -202,6 +202,24 @@ describe("Live Verification Authority", () => {
     );
     expect(verificationPage.total).toBe(0);
     expect(ctx.runtime.orchestrationSnapshotService.getSnapshot(run.id, sessionID)?.phase).toBe(OP.EXECUTING);
+  });
+
+  it("quarantines corrupt deferred replacement authority and retains its completion barrier", async () => {
+    const ctx = acquireProjectRuntime(TEST_DIR);
+    const sessionID = "corrupt-deferred-replacement";
+    const { run } = await createCompletedChild(ctx, sessionID, "Worker prose: PASS", true);
+    ctx.runtime.db.query(`
+      INSERT INTO deferred_replacements (
+        id, parent_session_id, old_run_id, source_intent, agent_id, effective_goal,
+        message_hash, message_id, correlation_id, routing_decision, status, created_at, updated_at
+      ) VALUES (?, ?, ?, 'REPLACE', 'heidi', 'corrupt durable authority', 'hash', 'message', ?, '{bad-json', 'pending_termination', datetime('now'), datetime('now'))
+    `).run("corrupt-deferred-authority", sessionID, run.id, run.id);
+
+    expect(ctx.runtime.deferredReplacementRepo.findCurrentForSession(sessionID)).toBeNull();
+    expect(ctx.runtime.db.query("SELECT status FROM deferred_replacements WHERE id = ?").get("corrupt-deferred-authority")).toEqual({ status: "blocked" });
+    const transition = ctx.runtime.transitionEngine.evaluate({ runId: run.id, sessionId: sessionID });
+    expect(transition.reasonCode).not.toBe("READY_FOR_VERIFICATION");
+    expect(ctx.runtime.orchestrationSnapshotService.getSnapshot(run.id, sessionID)?.lifecycleBlocks.unresolvedDeferredReplacement).toBe(true);
   });
 
   it("invalidates a verification result when persisted repository artifacts change", async () => {

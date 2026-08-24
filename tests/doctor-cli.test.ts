@@ -324,6 +324,10 @@ describe("Doctor Service — Module-Relative Import & Error Handling", () => {
     expect(typeof report.warned).toBe("number")
     expect(typeof report.failed).toBe("number")
     expect(Array.isArray(report.checks)).toBe(true)
+    expect(report.checks.find(check => check.id === "runtime.completion.authority")).toMatchObject({
+      status: "pass",
+      name: "Live Completion Authority",
+    })
   })
 
   it("exports DoctorEngineLoadError class for engine load failures", async () => {
