@@ -238,10 +238,20 @@ async function runPreflights(bin) {
   // 11. structured_unresolved_obligations_preserved
   {
     const repo = createSampleRepo("unresolved-struct");
-    writeFileSync(join(repo, "unsupported.unknown_ext"), "data");
+    const pkgDir = join(repo, "packages", "unresolved-pkg");
+    mkdirSync(join(pkgDir, "src"), { recursive: true });
+    mkdirSync(join(pkgDir, "tests"), { recursive: true });
+    writeFileSync(join(pkgDir, "package.json"), JSON.stringify({ name: "@my/unresolved-pkg" }));
+    writeFileSync(join(pkgDir, "src", "index.ts"), "export const x = 1;");
+    for (let i = 0; i < 5; i++) {
+      writeFileSync(join(pkgDir, "tests", `test_${i}.test.ts`), "test('x', () => {});");
+    }
     gitInitAndCommitAll(repo);
-    writeFileSync(join(repo, "unsupported.unknown_ext"), "changed");
-    const vRes = invokeFdx(bin, repo, ["verify", "--format", "json"]);
+    writeFileSync(join(pkgDir, "src", "index.ts"), "export const x = 2;");
+
+    const vRes = invokeFdx(bin, repo, ["verify", "--format", "json"], {
+      FDX_LIMIT_MAX_DISCOVERED_TESTS: "2",
+    });
     const runId = vRes.data.run_id;
     const aRes = invokeFdx(bin, repo, ["attest", "create", "--run", runId, "--format", "json"]);
     const unres = aRes.data.statement.predicate.result.unresolved_obligations;
