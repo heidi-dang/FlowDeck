@@ -95,6 +95,7 @@ export const DurableProgressStateSchema = z.object({
   repeatedContext: z.number().int().min(0),
   tokensSinceProgress: z.number().int().min(0),
   noProgressCount: z.number().int().min(0),
+  meaningfulStateVersion: z.number().int().min(0).default(0),
   lastProgressAt: z.string().optional(),
   lastProgressReason: z.string().optional(),
   lastStallResult: z.any().optional(),
@@ -118,6 +119,7 @@ export class ProgressObservationService {
     repeatedContext: number;
     tokensSinceProgress: number;
     noProgressCount: number;
+    meaningfulStateVersion?: number;
     lastProgressAt?: string;
     lastProgressReason?: string;
     lastStallResult?: StallResult;
@@ -151,6 +153,7 @@ export class ProgressObservationService {
       repeatedContext: mem.repeatedContext,
       tokensSinceProgress: mem.tokensSinceProgress,
       noProgressCount: mem.noProgressCount,
+      meaningfulStateVersion: mem.meaningfulStateVersion ?? 0,
       lastProgressAt: mem.lastProgressAt,
       lastProgressReason: mem.lastProgressReason,
       lastStallResult: mem.lastStallResult,
@@ -202,6 +205,7 @@ export class ProgressObservationService {
             repeatedContext: validated.repeatedContext,
             tokensSinceProgress: validated.tokensSinceProgress,
             noProgressCount: validated.noProgressCount,
+            meaningfulStateVersion: validated.meaningfulStateVersion ?? 0,
             lastProgressAt: validated.lastProgressAt,
             lastProgressReason: validated.lastProgressReason,
             lastStallResult: validated.lastStallResult,
@@ -409,6 +413,7 @@ export class ProgressObservationService {
     if (isProgress) {
       state.tokensSinceProgress = 0;
       state.noProgressCount = 0;
+      state.meaningfulStateVersion = (state.meaningfulStateVersion ?? 0) + 1;
       state.lastProgressAt = now;
       state.lastProgressReason = progressReason;
     } else {
@@ -533,6 +538,7 @@ export class ProgressObservationService {
     if (isProgress) {
       state.tokensSinceProgress = 0;
       state.noProgressCount = 0;
+      state.meaningfulStateVersion = (state.meaningfulStateVersion ?? 0) + 1;
       state.lastProgressAt = now;
       state.lastProgressReason = progressReason;
     } else {
@@ -615,6 +621,7 @@ export class ProgressObservationService {
       if (!state.seenEvidenceHashes.has(compSig)) {
         state.seenEvidenceHashes.add(compSig);
         isProgress = true;
+        state.meaningfulStateVersion = (state.meaningfulStateVersion ?? 0) + 1;
         progressReason = "child_execution_completed";
         evidenceDelta = 1;
         executionStateDelta = 1;
@@ -720,6 +727,34 @@ export class ProgressObservationService {
       isStalled: state.lastStallResult?.stalled === true,
       corruptRecovery: state.recoveryError === true,
     };
+  }
+
+  getMeaningfulStateVersion(runId: string): number {
+    const state = this.stateByRun.get(runId);
+    return state?.meaningfulStateVersion ?? 0;
+  }
+
+  incrementMeaningfulStateVersion(runId: string): number {
+    let state = this.stateByRun.get(runId);
+    if (!state) {
+      state = {
+        repeatedFailure: 0,
+        repeatedTool: 0,
+        unchangedDiff: 0,
+        repeatedContext: 0,
+        tokensSinceProgress: 0,
+        noProgressCount: 0,
+        meaningfulStateVersion: 0,
+        lastEvidenceDelta: 0,
+        lastRepositoryDelta: 0,
+        seenFailureSignatures: new Set(),
+        seenEvidenceHashes: new Set(),
+      };
+      this.stateByRun.set(runId, state);
+    }
+    state.meaningfulStateVersion = (state.meaningfulStateVersion ?? 0) + 1;
+    this.persistState(runId);
+    return state.meaningfulStateVersion;
   }
 
   /** Reset in-memory and durable state (useful in tests or session reset). */

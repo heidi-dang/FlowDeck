@@ -19,7 +19,7 @@ import { OrchestrationPhase as OP } from "../types/runs";
 import type { TaskRunsRepository } from "../persistence/repositories/task-run";
 import type { SqliteAssignmentRepo } from "../composition";
 import type { ProgressObservationService } from "./progress-observation-service";
-import type { OrchestrationSnapshotService } from "./orchestration-snapshot-service";
+import type { OrchestrationSnapshotService, OrchestrationSnapshot } from "./orchestration-snapshot-service";
 import type { SqliteNativeChildExecutionRepository } from "../persistence/repositories/native-child-execution";
 import type { TransactionManager } from "../persistence/transaction-manager";
 
@@ -75,6 +75,7 @@ export type TransitionReasonCode =
   | "USER_CANCELLED"
   | "SUPERSEDED"
   | "BLOCKED"
+  | "STRATEGY_SET_EXHAUSTED"
   | "TRANSITION_CONFLICT";
 
 export interface AttemptRecord {
@@ -115,6 +116,7 @@ export interface StrategyConstraintSet {
   stateFingerprint: string;
   prohibitedActionFingerprints: string[];
   reasonsByFingerprint?: Record<string, string>;
+  exhausted: boolean;
   createdAt: string;
   updatedAt: string;
   clearedAt?: string;
@@ -430,26 +432,50 @@ export class RunTransitionEngine {
     let constraintSet: StrategyConstraintSet;
 
     if (existing && existing.stateFingerprint === input.stateFingerprint) {
-      // Same state: accumulate into set (bounded to max 20)
-      const prohibited = Array.from(new Set([...existing.prohibitedActionFingerprints, input.prohibitedActionFingerprint]));
-      const reasons = { ...existing.reasonsByFingerprint, [input.prohibitedActionFingerprint]: input.reason };
-      constraintSet = {
-        runId: input.runId,
-        assignmentId: input.assignmentId,
-        stateFingerprint: input.stateFingerprint,
-        prohibitedActionFingerprints: prohibited.slice(-20),
-        reasonsByFingerprint: reasons,
-        createdAt: existing.createdAt,
-        updatedAt: now,
-      };
+      if (existing.exhausted) {
+        constraintSet = {
+          ...existing,
+          updatedAt: now,
+        };
+      } else {
+        const alreadyContains = existing.prohibitedActionFingerprints.includes(input.prohibitedActionFingerprint);
+        if (alreadyContains) {
+          constraintSet = {
+            ...existing,
+            updatedAt: now,
+          };
+        } else if (existing.prohibitedActionFingerprints.length >= 20) {
+          // 21st unique strategy under same state -> mark exhausted, retain all 20 without evicting
+          constraintSet = {
+            ...existing,
+            exhausted: true,
+            updatedAt: now,
+          };
+        } else {
+          // Accumulate unique failure (1..20)
+          const prohibited = [...existing.prohibitedActionFingerprints, input.prohibitedActionFingerprint];
+          const reasons = { ...existing.reasonsByFingerprint, [input.prohibitedActionFingerprint]: input.reason };
+          constraintSet = {
+            runId: input.runId,
+            assignmentId: input.assignmentId,
+            stateFingerprint: input.stateFingerprint,
+            prohibitedActionFingerprints: prohibited,
+            reasonsByFingerprint: reasons,
+            exhausted: false,
+            createdAt: existing.createdAt,
+            updatedAt: now,
+          };
+        }
+      }
     } else {
-      // State changed or first constraint: supersede with new set for this state
+      // State changed or first constraint: supersede with fresh set for this state
       constraintSet = {
         runId: input.runId,
         assignmentId: input.assignmentId,
         stateFingerprint: input.stateFingerprint,
         prohibitedActionFingerprints: [input.prohibitedActionFingerprint],
         reasonsByFingerprint: { [input.prohibitedActionFingerprint]: input.reason },
+        exhausted: false,
         createdAt: input.createdAt ?? now,
         updatedAt: now,
       };
@@ -515,6 +541,20 @@ export class RunTransitionEngine {
         val
       );
     }
+  }
+
+  computeStrategyStateFingerprint(
+    runId: string,
+    assignmentId: string,
+    snapshot?: OrchestrationSnapshot | null
+  ): string {
+    const snap = snapshot ?? this.snapshotService.getSnapshot(runId);
+    const meaningfulVersion = this.progressService.getMeaningfulStateVersion(runId);
+    const activeRequired = snap?.childState?.activeRequired ?? 0;
+    const failedRequired = snap?.childState?.failedRequired ?? 0;
+    const satisfiedWorkItems = snap?.workItems?.filter((w: any) => w.isSatisfied).length ?? 0;
+
+    return `${runId}:${assignmentId}:${meaningfulVersion}:${activeRequired}:${failedRequired}:${satisfiedWorkItems}`;
   }
 
   getConsumedProgressAttempt(runId: string, assignmentId: string): number | null {
@@ -740,7 +780,7 @@ export class RunTransitionEngine {
       if (stalledActionFingerprint) {
         const causalFp = (lastAttempt && lastAttempt.preStateFingerprint)
           ? lastAttempt.preStateFingerprint
-          : `${snapshot.progress.lastRepositoryDelta}:${snapshot.childState.activeRequired}:${snapshot.childState.failedRequired}:${workItems.filter(w => w.isSatisfied).length}`;
+          : this.computeStrategyStateFingerprint(input.runId, targetItemId, snapshot);
         this.saveStrategyConstraint({
           runId: input.runId,
           assignmentId: targetItemId,
@@ -829,7 +869,7 @@ export class RunTransitionEngine {
         }
 
         // Prohibit immediate unchanged strategy repetition and persist StrategyConstraint
-        const causalFp = lastAttempt.preStateFingerprint ?? `${snapshot.progress.lastRepositoryDelta}:${snapshot.childState.activeRequired}:${snapshot.childState.failedRequired}:${workItems.filter(w => w.isSatisfied).length}`;
+        const causalFp = lastAttempt.preStateFingerprint ?? this.computeStrategyStateFingerprint(input.runId, targetItemId, snapshot);
         this.saveStrategyConstraint({
           runId: input.runId,
           assignmentId: targetItemId,

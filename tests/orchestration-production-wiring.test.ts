@@ -10,6 +10,8 @@ import { OrchestrationPhase as OP } from "../src/orchestration/types/runs";
 import { ContinuationDispatcher, getContinuationPrompt } from "../src/orchestration/services/continuation-policy";
 import { RunStatus } from "../src/orchestration/types/runs";
 import { runMigrations, getCurrentVersion } from "../src/orchestration/persistence/migrations/migration-runner";
+import { MIGRATIONS } from "../src/orchestration/persistence/migrations/migration-registry";
+import { MigrationChecksumError } from "../src/orchestration/persistence/errors";
 
 const TEST_DIR = join(import.meta.dir, ".tmp-production-wiring-test");
 
@@ -1137,8 +1139,8 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     await releaseProjectRuntime(TEST_DIR);
   });
 
-  // 36. stall-production-idle-persists-last-attempt-constraint-and-blocks
-  it("36. stall-production-idle-persists-last-attempt-constraint-and-blocks", async () => {
+  // 36. production-idle-repeated-action-blocks-at-boundary
+  it("36. production-idle-repeated-action-blocks-at-boundary", async () => {
     const ctx = acquireProjectRuntime(TEST_DIR);
     const sessionID = "sess-stall-prod";
     await ctx.adapter.onChatMessage(
@@ -1146,6 +1148,13 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
       { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m1" }] }
     );
     const run = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
+    const initSnap = ctx.runtime.orchestrationSnapshotService.getSnapshot(run.id, sessionID)!;
+    ctx.runtime.transitionEngine.transitionPhase({
+      runId: run.id,
+      targetPhase: OP.EXECUTING,
+      expectedPhase: initSnap.phase,
+      expectedAggregateVersion: initSnap.aggregateVersion,
+    });
 
     // Heidi tool attempt 1 produces no progress
     await ctx.adapter.onToolExecuteBefore({
@@ -1198,8 +1207,7 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     const afpA = ctx.runtime.progressObservationService.computeActionFingerprint({ tool: "read", args: { path: "a.json" }, sessionID });
     const afpB = ctx.runtime.progressObservationService.computeActionFingerprint({ tool: "grep", args: { pattern: "b" }, sessionID });
 
-    // State S
-    const stateFp = "0:0:0:0";
+    const stateFp = ctx.runtime.transitionEngine.computeStrategyStateFingerprint(run.id, "root:" + run.id);
 
     // A fails -> prohibited {A}
     ctx.runtime.transitionEngine.saveStrategyConstraint({
@@ -1284,8 +1292,7 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     const afpA = ctx.runtime.progressObservationService.computeActionFingerprint({ tool: "read", args: { file: "1.ts" }, sessionID: "session-child-aba" });
     const afpB = ctx.runtime.progressObservationService.computeActionFingerprint({ tool: "read", args: { file: "2.ts" }, sessionID: "session-child-aba" });
 
-    const snapChild = ctx.runtime.orchestrationSnapshotService.getSnapshot(run.id, "session-child-aba")!;
-    const preFpChild = `${snapChild.progress.lastRepositoryDelta}:${snapChild.childState.activeRequired}:${snapChild.childState.failedRequired}:${snapChild.workItems.filter(w => w.isSatisfied).length}`;
+    const preFpChild = ctx.runtime.transitionEngine.computeStrategyStateFingerprint(run.id, "assignment-ABA");
 
     ctx.runtime.transitionEngine.saveStrategyConstraint({
       runId: run.id,
@@ -1331,18 +1338,20 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     const afpA = ctx1.runtime.progressObservationService.computeActionFingerprint({ tool: "read", args: { path: "a.json" }, sessionID });
     const afpB = ctx1.runtime.progressObservationService.computeActionFingerprint({ tool: "read", args: { path: "b.json" }, sessionID });
 
+    const stateFp = ctx1.runtime.transitionEngine.computeStrategyStateFingerprint(run.id, "root:" + run.id);
+
     ctx1.runtime.transitionEngine.saveStrategyConstraint({
       runId: run.id,
       assignmentId: "root:" + run.id,
       prohibitedActionFingerprint: afpA,
-      stateFingerprint: "0:0:0:0",
+      stateFingerprint: stateFp,
       reason: "REPEATED_ACTION_BLOCKED",
     });
     ctx1.runtime.transitionEngine.saveStrategyConstraint({
       runId: run.id,
       assignmentId: "root:" + run.id,
       prohibitedActionFingerprint: afpB,
-      stateFingerprint: "0:0:0:0",
+      stateFingerprint: stateFp,
       reason: "REPEATED_ACTION_BLOCKED",
     });
 
@@ -1466,7 +1475,7 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
       messageId: "msg-1",
       messageHash: "hash-1",
     });
-    expect(v1Late).toBe(1); // Returns associated version without incrementing
+    expect(v1Late).toBe(1);
 
     // Inspect current turn
     expect(ctx.runtime.sessionTurnRepo.getTurnVersion(sessionID)).toBe(2);
@@ -1496,79 +1505,50 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     await releaseProjectRuntime(TEST_DIR);
   });
 
-  // 45. migration-v12-upgrades-real-e816-continuation-schema-and-preserves-rows
-  it("45. migration-v12-upgrades-real-e816-continuation-schema-and-preserves-rows", async () => {
+  // 45. migration-v13-upgrades-real-historical-v12-schema-and-preserves-retry-columns
+  it("45. migration-v13-upgrades-real-historical-v12-schema-and-preserves-retry-columns", async () => {
     const db = new Database(":memory:");
 
-    // 1. Run migrations up to v11
+    // 1. Run migrations up to v12 (simulate historical database that has v12 ledger)
     runMigrations(db);
+    expect(getCurrentVersion(db)).toBe(13);
 
-    // 2. Simulate legacy continuation_dispatches table without new columns
-    db.exec(`
-      DROP TABLE IF EXISTS continuation_dispatches;
-      CREATE TABLE continuation_dispatches (
-        identity TEXT PRIMARY KEY,
-        run_id TEXT NOT NULL,
-        session_id TEXT NOT NULL,
-        user_turn_version INTEGER NOT NULL,
-        run_aggregate_version INTEGER NOT NULL,
-        transition_reason TEXT NOT NULL,
-        current_work_item_id TEXT,
-        state_fingerprint TEXT NOT NULL,
-        status TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        dispatched_at TEXT,
-        error TEXT
-      );
-      INSERT INTO continuation_dispatches VALUES
-        ('id-old-1', 'run-1', 'sess-1', 1, 1, 'NEXT_WORK_ITEM_READY', 'as-1', 'fp-1', 'dispatched', '2026-08-20T10:00:00Z', '2026-08-20T10:00:01Z', NULL),
-        ('id-old-2', 'run-1', 'sess-1', 1, 1, 'TRANSIENT_RETRY_ALLOWED', 'as-1', 'fp-2', 'failed', '2026-08-20T10:05:00Z', NULL, 'timeout');
-    `);
+    // 2. Now test upgrade from exact historical v12 state:
+    const db2 = new Database(":memory:");
+    // Run up to v12
+    for (const m of MIGRATIONS) {
+      if (m.version > 12) break;
+      db2.exec("BEGIN IMMEDIATE");
+      db2.exec(m.sql);
+      db2.query("INSERT INTO schema_migrations (version, name, applied_at, checksum, duration_ms) VALUES (?, ?, datetime('now'), ?, 1)").run(m.version, m.name, m.checksum);
+      db2.exec("COMMIT");
+    }
+    expect(getCurrentVersion(db2)).toBe(12);
 
-    // Reset schema_migrations to version 11 to simulate real database upgrade to V12
-    db.query("DELETE FROM schema_migrations WHERE version = 12").run();
+    // Insert row with attempt_count=2, last_attempt_at=T2 in historical V12
+    db2.query(`
+      INSERT INTO continuation_dispatches (
+        identity, run_id, session_id, user_turn_version, run_aggregate_version,
+        transition_reason, current_work_item_id, state_fingerprint, status,
+        attempt_count, created_at, last_attempt_at, dispatched_at, error
+      ) VALUES (
+        'id-v12-existing', 'run-v12', 'sess-v12', 1, 1,
+        'TRANSIENT_RETRY_ALLOWED', 'as-1', 'fp-v12', 'failed',
+        2, '2026-08-20T10:00:00Z', '2026-08-20T10:05:00Z', NULL, 'timeout'
+      )
+    `).run();
 
-    // 3. Apply migration to V12
-    runMigrations(db);
-    expect(getCurrentVersion(db)).toBe(12);
+    // Run migrations to apply v13
+    runMigrations(db2);
+    expect(getCurrentVersion(db2)).toBe(13);
 
-    // 4. Assert new columns exist in table_info
-    const cols = db.query("PRAGMA table_info(continuation_dispatches)").all() as { name: string }[];
-    const colNames = cols.map(c => c.name);
-    expect(colNames).toContain("attempt_count");
-    expect(colNames).toContain("last_attempt_at");
-
-    // 5. Assert old rows survived and backfilled
-    const rows = db.query("SELECT * FROM continuation_dispatches ORDER BY identity ASC").all() as any[];
-    expect(rows.length).toBe(2);
-    expect(rows[0].identity).toBe("id-old-1");
-    expect(rows[0].attempt_count).toBe(1);
-    expect(rows[0].last_attempt_at).toBe("2026-08-20T10:00:00Z");
-    expect(rows[0].status).toBe("dispatched");
-
-    expect(rows[1].identity).toBe("id-old-2");
-    expect(rows[1].attempt_count).toBe(1);
-    expect(rows[1].status).toBe("failed");
-
-    // 6. Prove ContinuationDispatcher can operate seamlessly on migrated DB
-    const dispatcher = new ContinuationDispatcher(db);
-    const retryRes = await dispatcher.dispatch({
-      runId: "run-1",
-      sessionId: "sess-1",
-      userTurnVersion: 1,
-      runAggregateVersion: 1,
-      transitionReason: "TRANSIENT_RETRY_ALLOWED",
-      currentWorkItemId: "as-1",
-      stateFingerprint: "fp-2",
-    }, {
-      currentTurnVersion: 1,
-      currentAggregateVersion: 1,
-      client: { session: { promptAsync: mock(() => Promise.resolve(true)) } },
-    });
-
-    expect(retryRes.dispatched).toBe(true);
+    // Assert attempt_count=2 and last_attempt_at='2026-08-20T10:05:00Z' were preserved!
+    const row = db2.query("SELECT * FROM continuation_dispatches WHERE identity = 'id-v12-existing'").get() as any;
+    expect(row.attempt_count).toBe(2);
+    expect(row.last_attempt_at).toBe("2026-08-20T10:05:00Z");
 
     db.close();
+    db2.close();
   });
 
   // 46. pending-dispatch-restart-becomes-outcome-unknown
@@ -1669,6 +1649,11 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     childRec = ctx.runtime.childExecutionLifecycleService.getChildExecution({ childSessionId: "child-to-delete-session" });
     expect(childRec?.status).toBe("cancelled");
     expect(childRec?.nativeTerminationConfirmed).toBe(true);
+
+    // Diagnostics reflect current termination resolved
+    const diag = ctx.runtime.childExecutionLifecycleService.getDiagnosticsForRun(run1.id);
+    expect(diag.currentTerminationPending).toBe(false);
+    expect(diag.currentUnconfirmedChildExecutionIds.length).toBe(0);
 
     // Assignment is cancelled
     const asRec = await ctx.runtime.services.assignmentService.getAssignment(del.assignmentId);
@@ -1800,6 +1785,416 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     const eval2 = ctx.runtime.transitionEngine.evaluate({ runId: run.id, sessionId: sessionID, latestActionFingerprint: afp });
     expect(eval2.reasonCode).toBe("NO_PROGRESS");
     expect(eval2.requiresAction).toBe(false);
+
+    await releaseProjectRuntime(TEST_DIR);
+  });
+
+  // 51. strategy-set-exhaustion-blocks-further-tools
+  it("51. strategy-set-exhaustion-blocks-further-tools", async () => {
+    const ctx = acquireProjectRuntime(TEST_DIR);
+    const sessionID = "sess-exhaustion";
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "m1" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m1" }] }
+    );
+    const run = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
+    const stateFp = ctx.runtime.transitionEngine.computeStrategyStateFingerprint(run.id, "root:" + run.id);
+
+    // Accumulate 20 distinct failed strategy fingerprints
+    for (let i = 1; i <= 20; i++) {
+      ctx.runtime.transitionEngine.saveStrategyConstraint({
+        runId: run.id,
+        assignmentId: "root:" + run.id,
+        prohibitedActionFingerprint: `afp-${i}`,
+        stateFingerprint: stateFp,
+        reason: "REPEATED_ACTION_BLOCKED",
+      });
+    }
+
+    let set = ctx.runtime.transitionEngine.getActiveStrategyConstraints(run.id, "root:" + run.id);
+    expect(set?.exhausted).toBe(false);
+    expect(set?.prohibitedActionFingerprints.length).toBe(20);
+
+    // 21st unique failed strategy marks exhausted
+    ctx.runtime.transitionEngine.saveStrategyConstraint({
+      runId: run.id,
+      assignmentId: "root:" + run.id,
+      prohibitedActionFingerprint: "afp-21",
+      stateFingerprint: stateFp,
+      reason: "REPEATED_ACTION_BLOCKED",
+    });
+
+    set = ctx.runtime.transitionEngine.getActiveStrategyConstraints(run.id, "root:" + run.id);
+    expect(set?.exhausted).toBe(true);
+    expect(set?.prohibitedActionFingerprints.length).toBe(20); // No eviction, kept all 20
+
+    // Any tool execution under this unchanged state fails closed with STRATEGY_SET_EXHAUSTED
+    let threwExhausted = false;
+    try {
+      await ctx.adapter.onToolExecuteBefore({
+        tool: "read",
+        sessionID,
+        callID: "call-any-new-tool",
+        args: { path: "brand-new-path.json" },
+      });
+    } catch (err: any) {
+      threwExhausted = true;
+      expect(err.message).toContain("STRATEGY_SET_EXHAUSTED");
+    }
+    expect(threwExhausted).toBe(true);
+
+    // Meaningful state progress clears the exhausted constraint
+    ctx.runtime.progressObservationService.incrementMeaningfulStateVersion(run.id);
+
+    // Now tool execution is permitted again under new state
+    await ctx.adapter.onToolExecuteBefore({
+      tool: "read",
+      sessionID,
+      callID: "call-allowed-after-progress",
+      args: { path: "brand-new-path.json" },
+    });
+
+    await releaseProjectRuntime(TEST_DIR);
+  });
+
+  // 52. deferred-replacement-survives-restart-and-resumes-once
+  it("52. deferred-replacement-survives-restart-and-resumes-once", async () => {
+    const abortMock = mock(() => Promise.reject(new Error("Native process stuck")));
+    const mockClient = { session: { abort: abortMock, promptAsync: mock(() => Promise.resolve(true)) } };
+    const ctx1 = acquireProjectRuntime(TEST_DIR, mockClient);
+    const sessionID = "sess-deferred-restart";
+
+    await ctx1.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "m-def-1" },
+      { message: {} as any, parts: [{ type: "text", text: "Original plan to build backend telemetry", id: "1", sessionID, messageID: "m-def-1" }] }
+    );
+    const run1 = (await ctx1.adapter.resolveActiveRunForSession(sessionID))!;
+
+    const del = await ctx1.runtime.childExecutionLifecycleService.registerDelegation({
+      runId: run1.id,
+      parentSessionId: sessionID,
+      taskCallId: "call-del-restart",
+      targetAgent: "coder",
+    });
+
+    ctx1.runtime.childExecutionLifecycleService.bindChildSession({
+      parentSessionId: sessionID,
+      childSessionId: "child-to-restart-sess",
+      agentId: "coder",
+      taskCallId: del.taskCallId,
+    });
+
+    await ctx1.runtime.childExecutionLifecycleService.markStarted({ childSessionId: "child-to-restart-sess" });
+
+    // User sends REPLACE intent -> abort fails -> deferred replacement is persisted in SQLite
+    await ctx1.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "m-def-2" },
+      { message: {} as any, parts: [{ type: "text", text: "Forget that, refactor database schema and implement frontend telemetry across all services", id: "2", sessionID, messageID: "m-def-2" }] }
+    );
+
+    // Shutdown and restart runtime
+    await releaseProjectRuntime(TEST_DIR);
+
+    const ctx2 = acquireProjectRuntime(TEST_DIR, mockClient);
+
+    // Ensure pending deferred replacement exists in SQLite
+    const savedDeferred = ctx2.runtime.deferredReplacementRepo.findCurrentForSession(sessionID);
+    expect(savedDeferred).not.toBeNull();
+    expect(savedDeferred?.status).toBe("pending_termination");
+    expect(savedDeferred?.effectiveGoal).toContain("refactor database schema");
+
+    // Child termination event arrives in new runtime instance
+    await ctx2.adapter.onEvent({
+      type: "session.deleted",
+      properties: { sessionID: "child-to-restart-sess" },
+    } as any);
+
+    // Second duplicate session.deleted event (to assert exactly-once idempotent resume)
+    await ctx2.adapter.onEvent({
+      type: "session.deleted",
+      properties: { sessionID: "child-to-restart-sess" },
+    } as any);
+
+    const activeNewRun = await ctx2.adapter.resolveActiveRunForSession(sessionID);
+    expect(activeNewRun).not.toBeNull();
+    expect(activeNewRun?.id).not.toBe(run1.id);
+
+    const finalDef = ctx2.runtime.deferredReplacementRepo.findCurrentForSession(sessionID);
+    expect(finalDef).toBeNull(); // No longer pending_termination/resuming
+
+    await releaseProjectRuntime(TEST_DIR);
+  });
+
+  // 53. newer-deferred-replacement-supersedes-older-deferred-replacement
+  it("53. newer-deferred-replacement-supersedes-older-deferred-replacement", async () => {
+    const abortMock = mock(() => Promise.reject(new Error("Native process stuck")));
+    const mockClient = { session: { abort: abortMock, promptAsync: mock(() => Promise.resolve(true)) } };
+    const ctx = acquireProjectRuntime(TEST_DIR, mockClient);
+    const sessionID = "sess-supersession";
+
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "m-sup-1" },
+      { message: {} as any, parts: [{ type: "text", text: "Original plan to build backend telemetry", id: "1", sessionID, messageID: "m-sup-1" }] }
+    );
+    const run1 = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
+
+    const del = await ctx.runtime.childExecutionLifecycleService.registerDelegation({
+      runId: run1.id,
+      parentSessionId: sessionID,
+      taskCallId: "call-del-sup",
+      targetAgent: "coder",
+    });
+
+    ctx.runtime.childExecutionLifecycleService.bindChildSession({
+      parentSessionId: sessionID,
+      childSessionId: "child-to-sup-sess",
+      agentId: "coder",
+      taskCallId: del.taskCallId,
+    });
+
+    await ctx.runtime.childExecutionLifecycleService.markStarted({ childSessionId: "child-to-sup-sess" });
+
+    // User sends replacement 1
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "m-sup-2" },
+      { message: {} as any, parts: [{ type: "text", text: "Forget that, create analytics dashboard version 1", id: "2", sessionID, messageID: "m-sup-2" }] }
+    );
+
+    // User sends replacement 2 before child finishes
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "m-sup-3" },
+      { message: {} as any, parts: [{ type: "text", text: "Forget that too, refactor full database schema and analytics dashboard version 2", id: "3", sessionID, messageID: "m-sup-3" }] }
+    );
+
+    // Confirm child deleted
+    await ctx.adapter.onEvent({
+      type: "session.deleted",
+      properties: { sessionID: "child-to-sup-sess" },
+    } as any);
+
+    const activeNewRun = await ctx.adapter.resolveActiveRunForSession(sessionID);
+    expect(activeNewRun).not.toBeNull();
+
+    // The active route decision must reflect the newer intent (replacement 2)
+    const route = ctx.adapter.getUserTurnVersion(sessionID);
+    expect(route).toBeGreaterThan(1);
+
+    await releaseProjectRuntime(TEST_DIR);
+  });
+
+  // 54. true-production-stall-detected-via-session-idle
+  it("54. true-production-stall-detected-via-session-idle", async () => {
+    const ctx = acquireProjectRuntime(TEST_DIR);
+    const sessionID = "sess-true-stall";
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "m1" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m1" }] }
+    );
+    const run = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
+    const initSnap = ctx.runtime.orchestrationSnapshotService.getSnapshot(run.id, sessionID)!;
+    ctx.runtime.transitionEngine.transitionPhase({
+      runId: run.id,
+      targetPhase: OP.EXECUTING,
+      expectedPhase: initSnap.phase,
+      expectedAggregateVersion: initSnap.aggregateVersion,
+    });
+
+    // Perform 5 repeated tool attempts with same tool and non-mutating output to drive AdaptiveExecutionControl to stall
+    for (let i = 1; i <= 5; i++) {
+      await ctx.adapter.onToolExecuteBefore({
+        tool: "read",
+        sessionID,
+        callID: `call-stall-rep-${i}`,
+        args: { path: "stalled-target.ts" },
+      });
+      await ctx.adapter.onToolExecuteAfter(
+        { tool: "read", sessionID, callID: `call-stall-rep-${i}`, args: { path: "stalled-target.ts" } },
+        { output: "const a = 1;", metadata: {} }
+      );
+    }
+
+    const snap = ctx.runtime.orchestrationSnapshotService.getSnapshot(run.id, sessionID)!;
+    expect(snap.progress.stalled).toBe(true);
+
+    // Call production onSessionIdle WITHOUT passing any manual fingerprint
+    await ctx.adapter.onSessionIdle(sessionID);
+
+    // Transition engine transitioned to RECOVERING with STALL_DETECTED
+    const snapAfter = ctx.runtime.orchestrationSnapshotService.getSnapshot(run.id, sessionID)!;
+    expect(snapAfter.phase).toBe(OP.RECOVERING);
+
+    const constraint = ctx.runtime.transitionEngine.getActiveStrategyConstraint(run.id, "root:" + run.id);
+    expect(constraint?.reason).toBe("STALL_DETECTED");
+
+    // Attempting same action under unchanged state throws REPEATED_ACTION_BLOCKED
+    let threwStall = false;
+    try {
+      await ctx.adapter.onToolExecuteBefore({
+        tool: "read",
+        sessionID,
+        callID: "call-stall-rep-6",
+        args: { path: "stalled-target.ts" },
+      });
+    } catch (err: any) {
+      threwStall = true;
+      expect(err.message).toContain("REPEATED_ACTION_BLOCKED");
+    }
+    expect(threwStall).toBe(true);
+
+    await releaseProjectRuntime(TEST_DIR);
+  });
+
+  // 55. migration-checksum-mismatch-throws-error
+  it("55. migration-checksum-mismatch-throws-error", () => {
+    const db = new Database(":memory:");
+    runMigrations(db);
+
+    // Corrupt the checksum for version 12 in the database ledger
+    db.query("UPDATE schema_migrations SET checksum = 'corrupted_fake_checksum' WHERE version = 12").run();
+
+    expect(() => {
+      runMigrations(db);
+    }).toThrow(MigrationChecksumError);
+
+    db.close();
+  });
+
+  // 56. legacy-pre-v12-upgrades-v13-and-backfills-defaults
+  it("56. legacy-pre-v12-upgrades-v13-and-backfills-defaults", () => {
+    const db = new Database(":memory:");
+    // Setup pre-v12 table without attempt_count/last_attempt_at
+    db.exec(`
+      CREATE TABLE schema_migrations (
+        version INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        applied_at TEXT NOT NULL,
+        checksum TEXT NOT NULL,
+        duration_ms INTEGER NOT NULL
+      );
+      CREATE TABLE continuation_dispatches (
+        identity TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        user_turn_version INTEGER NOT NULL,
+        run_aggregate_version INTEGER NOT NULL,
+        transition_reason TEXT NOT NULL,
+        current_work_item_id TEXT,
+        state_fingerprint TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('pending', 'dispatched', 'failed')),
+        created_at TEXT NOT NULL,
+        dispatched_at TEXT,
+        error TEXT
+      );
+    `);
+    // Populate ledger with exact checksums from MIGRATIONS 1..11
+    for (const m of MIGRATIONS) {
+      if (m.version > 11) break;
+      db.query("INSERT INTO schema_migrations VALUES (?, ?, datetime('now'), ?, 1)").run(m.version, m.name, m.checksum);
+    }
+
+    db.query(`
+      INSERT INTO continuation_dispatches (
+        identity, run_id, session_id, user_turn_version, run_aggregate_version,
+        transition_reason, current_work_item_id, state_fingerprint, status,
+        created_at
+      ) VALUES ('id-legacy', 'run-leg', 'sess-leg', 1, 1, 'PROGRESS_CONFIRMED', 'as-1', 'fp-leg', 'dispatched', '2026-08-01T10:00:00Z')
+    `).run();
+
+    // Run migrations (applies v12 historical and v13)
+    runMigrations(db);
+    expect(getCurrentVersion(db)).toBe(13);
+
+    const row = db.query("SELECT * FROM continuation_dispatches WHERE identity = 'id-legacy'").get() as any;
+    expect(row.attempt_count).toBe(1);
+    expect(row.last_attempt_at).toBe("2026-08-01T10:00:00Z");
+
+    db.close();
+  });
+
+  // 57. meaningful-state-version-persists-across-restart-and-increments-on-mutations
+  it("57. meaningful-state-version-persists-across-restart-and-increments-on-mutations", async () => {
+    const ctx1 = acquireProjectRuntime(TEST_DIR);
+    const sessionID = "sess-meaningful-restart";
+    await ctx1.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "m1" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m1" }] }
+    );
+    const run = (await ctx1.adapter.resolveActiveRunForSession(sessionID))!;
+
+    expect(ctx1.runtime.progressObservationService.getMeaningfulStateVersion(run.id)).toBe(0);
+
+    // Mutation 1: file written during tool execution
+    mkdirSync(join(TEST_DIR, "src"), { recursive: true });
+    await ctx1.adapter.onToolExecuteBefore({
+      tool: "write",
+      sessionID,
+      callID: "call-m-1",
+      args: { path: "src/a.ts", content: "export const a = 1;" },
+    });
+    writeFileSync(join(TEST_DIR, "src/a.ts"), "export const a = 1;");
+    await ctx1.adapter.onToolExecuteAfter(
+      { tool: "write", sessionID, callID: "call-m-1", args: { path: "src/a.ts" } },
+      { output: "ok", metadata: {} }
+    );
+    expect(ctx1.runtime.progressObservationService.getMeaningfulStateVersion(run.id)).toBe(1);
+
+    // Informational read: does NOT increment
+    await ctx1.adapter.onToolExecuteBefore({
+      tool: "read",
+      sessionID,
+      callID: "call-m-read",
+      args: { path: "src/a.ts" },
+    });
+    await ctx1.adapter.onToolExecuteAfter(
+      { tool: "read", sessionID, callID: "call-m-read", args: { path: "src/a.ts" } },
+      { output: "export const a = 1;", metadata: {} }
+    );
+    expect(ctx1.runtime.progressObservationService.getMeaningfulStateVersion(run.id)).toBe(1);
+
+    // Mutation 2: write new file b.ts
+    await ctx1.adapter.onToolExecuteBefore({
+      tool: "write",
+      sessionID,
+      callID: "call-m-2",
+      args: { path: "src/b.ts", content: "export const b = 2;" },
+    });
+    writeFileSync(join(TEST_DIR, "src/b.ts"), "export const b = 2;");
+    await ctx1.adapter.onToolExecuteAfter(
+      { tool: "write", sessionID, callID: "call-m-2", args: { path: "src/b.ts" } },
+      { output: "ok", metadata: {} }
+    );
+    expect(ctx1.runtime.progressObservationService.getMeaningfulStateVersion(run.id)).toBe(2);
+
+    await releaseProjectRuntime(TEST_DIR);
+
+    // Restart and assert version remains 2
+    const ctx2 = acquireProjectRuntime(TEST_DIR);
+    expect(ctx2.runtime.progressObservationService.getMeaningfulStateVersion(run.id)).toBe(2);
+
+    await releaseProjectRuntime(TEST_DIR);
+  });
+
+  // 58. concurrent-duplicate-message-id-competing-parallel
+  it("58. concurrent-duplicate-message-id-competing-parallel", async () => {
+    const ctx = acquireProjectRuntime(TEST_DIR);
+    const sessionID = "sess-conc-msg-compete";
+
+    const [vA, vB] = await Promise.all([
+      Promise.resolve().then(() => ctx.runtime.sessionTurnRepo.incrementTurnVersion({
+        sessionId: sessionID,
+        messageId: "msg-compete-1",
+        messageHash: "hash-compete-1",
+      })),
+      Promise.resolve().then(() => ctx.runtime.sessionTurnRepo.incrementTurnVersion({
+        sessionId: sessionID,
+        messageId: "msg-compete-1",
+        messageHash: "hash-compete-1",
+      })),
+    ]);
+
+    expect(vA).toBe(1);
+    expect(vB).toBe(1);
+    expect(ctx.runtime.sessionTurnRepo.getTurnVersion(sessionID)).toBe(1);
 
     await releaseProjectRuntime(TEST_DIR);
   });
