@@ -1,12 +1,12 @@
 {
   "milestone": "M9",
   "title": "Verification Attestation & Cryptographic Evidence Binding",
-  "functional_source_sha": "11a3387d6cd9ffa4bef0bc7813e6886def763b71",
-  "binary_source_sha": "11a3387d6cd9ffa4bef0bc7813e6886def763b71",
-  "binary_sha256": "4d21cd694bc64ff2e098be34c4261415dcd994c73add4ee2f9093b8e0c5820e2",
-  "benchmark_harness_sha": "e1834b4665d18bacc6526d0db2bb451e44b93057",
-  "qualification_head_sha": "e1834b4665d18bacc6526d0db2bb451e44b93057",
-  "timestamp": "2026-08-24T09:29:51.324Z",
+  "functional_source_sha": "a3bffac13ba5087c97766ebdcedf21da1e274ebe",
+  "binary_source_sha": "a3bffac13ba5087c97766ebdcedf21da1e274ebe",
+  "binary_sha256": "53b19a74d9e0c281818350100de1a497498350b04676bf47f932c81c0fc3cbb7",
+  "benchmark_harness_sha": "f37127a656979f0d775ec676d961a5eadc9992f5",
+  "qualification_head_sha": "f37127a656979f0d775ec676d961a5eadc9992f5",
+  "timestamp": "2026-08-24T10:30:26.325Z",
   "platform": "linux",
   "arch": "x64",
   "node_version": "v24.19.0",
@@ -25,7 +25,7 @@
   },
   "preflights": [
     {
-      "name": "in_toto_statement_v1_shape",
+      "name": "in_toto_statement_v1_exact_single_subject",
       "status": "passed",
       "details": {}
     },
@@ -35,12 +35,12 @@
       "details": {}
     },
     {
-      "name": "qualified_M8_contract_required",
+      "name": "qualified_M8_contract_v2_required",
       "status": "passed",
       "details": {}
     },
     {
-      "name": "legacy_M8_contract_rejected",
+      "name": "future_M8_contract_rejected",
       "status": "passed",
       "details": {}
     },
@@ -70,12 +70,22 @@
       "details": {}
     },
     {
-      "name": "assurance_never_upgraded",
+      "name": "assurance_exactly_preserved",
       "status": "passed",
       "details": {}
     },
     {
-      "name": "unresolved_obligations_preserved",
+      "name": "structured_unresolved_obligations_preserved",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "dirty_workspace_cleanliness_not_claimed",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "uncertainty_secret_redacted_everywhere",
       "status": "passed",
       "details": {}
     },
@@ -90,92 +100,67 @@
       "details": {}
     },
     {
-      "name": "M7_M8_check_mismatch_rejected",
+      "name": "extra_subject_rejected",
       "status": "passed",
       "details": {}
     },
     {
-      "name": "deterministic_canonical_bytes",
+      "name": "unknown_predicate_field_rejected",
       "status": "passed",
       "details": {}
     },
     {
-      "name": "deterministic_attestation_sha256",
+      "name": "noncanonical_attestation_bytes_rejected",
       "status": "passed",
       "details": {}
     },
     {
-      "name": "tampered_run_artifact_detected",
+      "name": "managed_filename_digest_mismatch_rejected",
       "status": "passed",
       "details": {}
     },
     {
-      "name": "tampered_attestation_subject_detected",
+      "name": "external_file_without_expected_digest_rejected",
       "status": "passed",
       "details": {}
     },
     {
-      "name": "tampered_attestation_predicate_detected",
+      "name": "external_file_correct_expected_digest_passes",
       "status": "passed",
       "details": {}
     },
     {
-      "name": "unknown_statement_type_rejected",
+      "name": "external_file_wrong_expected_digest_rejected",
       "status": "passed",
       "details": {}
     },
     {
-      "name": "unknown_predicate_type_rejected",
+      "name": "tampered_M7_artifact_detected",
       "status": "passed",
       "details": {}
     },
     {
-      "name": "unknown_predicate_version_rejected",
+      "name": "atomic_no_clobber_same_content",
       "status": "passed",
       "details": {}
     },
     {
-      "name": "malformed_attestation_rejected",
+      "name": "atomic_no_clobber_conflict",
       "status": "passed",
       "details": {}
     },
     {
-      "name": "secret_excerpts_not_serialized",
+      "name": "attestation_directory_symlink_escape_rejected",
       "status": "passed",
       "details": {}
     },
     {
-      "name": "absolute_repo_path_not_serialized",
+      "name": "path_traversal_rejected",
       "status": "passed",
       "details": {}
     },
     {
-      "name": "dirty_workspace_does_not_claim_source_snapshot_subject",
-      "status": "passed",
-      "details": {}
-    },
-    {
-      "name": "atomic_attestation_persistence",
-      "status": "passed",
-      "details": {}
-    },
-    {
-      "name": "same_attestation_idempotent",
-      "status": "passed",
-      "details": {}
-    },
-    {
-      "name": "contradictory_existing_attestation_rejected",
-      "status": "passed",
-      "details": {}
-    },
-    {
-      "name": "attestation_path_traversal_rejected",
-      "status": "passed",
-      "details": {}
-    },
-    {
-      "name": "global_history_incomplete_recorded_without_false_failure",
+      "name": "global_history_incomplete_recorded_as_generation_snapshot",
       "status": "passed",
       "details": {}
     },
@@ -188,23 +173,23 @@
   "metrics": {
     "attest_create_single_run_ms": {
       "count": 15,
-      "min": 4.75,
-      "max": 5.55,
-      "mean": 5.06,
-      "median": 4.93,
-      "p95": 5.55
+      "min": 4.42,
+      "max": 5.42,
+      "mean": 4.61,
+      "median": 4.54,
+      "p95": 5.42
     },
     "attest_verify_single_run_ms": {
       "count": 15,
-      "min": 3.27,
-      "max": 5.23,
-      "mean": 3.75,
-      "median": 3.65,
-      "p95": 5.23
+      "min": 3.98,
+      "max": 4.49,
+      "mean": 4.15,
+      "median": 4.12,
+      "p95": 4.49
     },
-    "attest_create_100_runs_total_ms": 473.07,
-    "attest_create_avg_per_run_ms": 4.73,
-    "attest_verify_100_runs_total_ms": 354.17,
-    "attest_verify_avg_per_run_ms": 3.54
+    "attest_create_100_runs_total_ms": 454.03,
+    "attest_create_avg_per_run_ms": 4.54,
+    "attest_verify_100_runs_total_ms": 805.13,
+    "attest_verify_avg_per_run_ms": 8.05
   }
 }
