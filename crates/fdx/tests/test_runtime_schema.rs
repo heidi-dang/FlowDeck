@@ -3,8 +3,8 @@ use fdx::intelligence::schema::CURRENT_SCHEMA_VERSION;
 use tempfile::tempdir;
 
 #[test]
-fn test_runtime_schema_version_is_6_and_tables_exist() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 6);
+fn test_runtime_schema_version_is_7_and_tables_exist() {
+    assert_eq!(CURRENT_SCHEMA_VERSION, 7);
 
     let dir = tempdir().unwrap();
     let db = EvidenceDatabase::open(dir.path(), DatabaseOpenMode::ReadWrite).unwrap();
@@ -26,6 +26,33 @@ fn test_runtime_schema_version_is_6_and_tables_exist() {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(count, 1, "table {} does not exist in schema v6", table);
+        assert_eq!(count, 1, "table {} does not exist in schema v7", table);
     }
+
+    // Verify v7 columns exist
+    let contract_col: i64 = db
+        .conn
+        .query_row(
+            "SELECT count(*) FROM pragma_table_info('runtime_runs') WHERE name = 'ingestion_contract_version'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        contract_col, 1,
+        "ingestion_contract_version column exists in runtime_runs"
+    );
+
+    let physical_col: i64 = db
+        .conn
+        .query_row(
+            "SELECT count(*) FROM pragma_table_info('runtime_check_observations') WHERE name = 'has_physical_execution'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        physical_col, 1,
+        "has_physical_execution column exists in runtime_check_observations"
+    );
 }

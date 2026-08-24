@@ -1,8 +1,9 @@
 //! SQLite schema and migration definitions for M8 Runtime Verification History.
 
-pub const RUNTIME_SCHEMA_VERSION: u32 = 6;
+pub const RUNTIME_SCHEMA_VERSION: u32 = 7;
 
 /// Migration SQL for v5 -> v6 (Milestone 8 Runtime Verification History tables).
+/// Immutable historical migration: never edit in place.
 pub const MIGRATE_V5_TO_V6_SQL: &str = r#"
 -- Top-level verification runs
 CREATE TABLE IF NOT EXISTS runtime_runs (
@@ -74,4 +75,15 @@ CREATE TABLE IF NOT EXISTS runtime_ingestion_state (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+"#;
+
+/// Migration SQL for v6 -> v7 (Milestone 8 Runtime Verification History hardening).
+///
+/// v7 additions:
+/// - runtime_runs.ingestion_contract_version (1 = legacy/unqualified v6, 2 = exact-byte v7)
+/// - runtime_check_observations.has_physical_execution (boolean indicating physical OS process)
+pub const MIGRATE_V6_TO_V7_SQL: &str = r#"
+ALTER TABLE runtime_runs ADD COLUMN ingestion_contract_version INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE runtime_check_observations ADD COLUMN has_physical_execution BOOLEAN NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS idx_runtime_runs_contract ON runtime_runs(ingestion_contract_version);
 "#;

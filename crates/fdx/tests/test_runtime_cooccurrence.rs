@@ -1,12 +1,14 @@
 use fdx::intelligence::change::model::{SemanticChange, SemanticChangeKind};
 use fdx::intelligence::db::{DatabaseOpenMode, EvidenceDatabase};
 use fdx::intelligence::runtime::cooccurrence::query_check_cooccurrences;
-use fdx::intelligence::runtime::ingest_verification_run;
-use fdx::intelligence::testplan::model::VerificationPlan;
+use fdx::intelligence::runtime::ingest_verification_artifact;
+use fdx::intelligence::testplan::model::{
+    PlannedCheck, SelectionReason, VerificationCheckKind, VerificationPlan,
+};
 use fdx::intelligence::verify::model::{
     CheckExecutionResult, CheckExecutionStatus, VerificationOutcome, VerificationRun,
 };
-use fdx::protocol::AssuranceLevel;
+use fdx::protocol::{AssuranceLevel, EvidenceStrength};
 use tempfile::tempdir;
 
 #[test]
@@ -31,7 +33,19 @@ fn test_runtime_cooccurrence_observations_query() {
                 reasons: vec![],
             }],
             impacted_targets: vec![],
-            selected_checks: vec![],
+            selected_checks: vec![PlannedCheck {
+                check_id: check_id.to_string(),
+                display_name: check_id.to_string(),
+                kind: VerificationCheckKind::UnitTest,
+                scope: "pkg:npm:.".to_string(),
+                reason: "changed".to_string(),
+                selection: SelectionReason::Evidence,
+                strength: EvidenceStrength::Precise,
+                evidence_path: None,
+                evidence_refs: vec![],
+                widening_reason: None,
+                mandatory: true,
+            }],
             uncertainty: vec![],
             unresolved_obligations: vec![],
         },
@@ -39,7 +53,7 @@ fn test_runtime_cooccurrence_observations_query() {
         assurance: AssuranceLevel::Exact,
         checks: vec![CheckExecutionResult {
             check_id: check_id.to_string(),
-            kind: fdx::intelligence::testplan::model::VerificationCheckKind::UnitTest,
+            kind: VerificationCheckKind::UnitTest,
             status: CheckExecutionStatus::Passed,
             execution_id: "exec_1".to_string(),
             reused_execution: false,
@@ -67,7 +81,8 @@ fn test_runtime_cooccurrence_observations_query() {
         duration_ms: 20,
     };
 
-    ingest_verification_run(&mut db.conn, &run, None).unwrap();
+    let bytes = serde_json::to_vec(&run).unwrap();
+    ingest_verification_artifact(&mut db.conn, &bytes).unwrap();
 
     let coocs = query_check_cooccurrences(&db.conn, check_id).unwrap();
     assert_eq!(coocs.len(), 1);

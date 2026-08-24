@@ -1,6 +1,6 @@
 use fdx::intelligence::db::{DatabaseOpenMode, EvidenceDatabase};
 use fdx::intelligence::runtime::model::RuntimeIngestResult;
-use fdx::intelligence::runtime::{ingest_verification_run, list_historical_runs};
+use fdx::intelligence::runtime::{ingest_verification_artifact, list_historical_runs};
 use fdx::intelligence::testplan::model::VerificationPlan;
 use fdx::intelligence::verify::model::{VerificationOutcome, VerificationRun};
 use fdx::protocol::AssuranceLevel;
@@ -32,10 +32,11 @@ fn test_runtime_same_artifact_ingest_is_idempotent() {
         duration_ms: 10,
     };
 
-    let res1 = ingest_verification_run(&mut db.conn, &run, None).unwrap();
+    let bytes = serde_json::to_vec(&run).unwrap();
+    let res1 = ingest_verification_artifact(&mut db.conn, &bytes).unwrap();
     assert!(matches!(res1, RuntimeIngestResult::Imported { .. }));
 
-    let res2 = ingest_verification_run(&mut db.conn, &run, None).unwrap();
+    let res2 = ingest_verification_artifact(&mut db.conn, &bytes).unwrap();
     assert!(matches!(res2, RuntimeIngestResult::AlreadyImported { .. }));
 
     let runs = list_historical_runs(&db.conn, 10).unwrap();

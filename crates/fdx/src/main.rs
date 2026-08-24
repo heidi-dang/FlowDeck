@@ -1668,15 +1668,23 @@ fn main() {
                         }
                     }
                     // Optional M8 history ingestion: failure never alters M7 verification truth
-                    if let Ok(mut db) = fdx::intelligence::db::EvidenceDatabase::open(
-                        &repo_root,
-                        fdx::intelligence::db::DatabaseOpenMode::ReadWrite,
-                    ) {
-                        let _ = fdx::intelligence::runtime::ingest_verification_run(
-                            &mut db.conn,
-                            &run,
-                            None,
-                        );
+                    // Only ingest if M7 persisted the artifact to disk, establishing exact artifact bytes
+                    if let fdx::intelligence::verify::model::PersistenceStatus::Persisted {
+                        ref path,
+                    } = run.persistence_status
+                    {
+                        let artifact_path = repo_root.join(path);
+                        if let Ok(raw_bytes) = std::fs::read(&artifact_path) {
+                            if let Ok(mut db) = fdx::intelligence::db::EvidenceDatabase::open(
+                                &repo_root,
+                                fdx::intelligence::db::DatabaseOpenMode::ReadWrite,
+                            ) {
+                                let _ = fdx::intelligence::runtime::ingest_verification_artifact(
+                                    &mut db.conn,
+                                    &raw_bytes,
+                                );
+                            }
+                        }
                     }
 
                     if run.outcome != fdx::intelligence::verify::VerificationOutcome::Passed {
