@@ -13,13 +13,15 @@ pub mod verify;
 pub use build::{
     build_verification_attestation, query_global_history_completeness, validate_run_id,
 };
-pub use canonical::{canonicalize_to_string, canonicalize_to_vec, compute_canonical_sha256};
+pub use canonical::{
+    canonicalize_to_string, canonicalize_to_vec, compute_canonical_sha256, MAX_SAFE_INTEGER,
+};
 pub use model::{
     AttestationGenerator, AttestedCheck, AttestedExecution, AttestedPlan, AttestedRunIdentity,
-    AttestedUncertainty, AttestedVerificationResult, InTotoDigest, InTotoStatement, InTotoSubject,
-    RuntimeHistoryQualification, SourceContext, VerificationAttestation, VerificationPredicateV1,
-    FDX_ATTESTATION_PREDICATE_VERSION, FDX_VERIFICATION_PREDICATE_V1_TYPE,
-    IN_TOTO_STATEMENT_V1_TYPE,
+    AttestedUncertainty, AttestedUnresolvedObligation, AttestedVerificationResult, InTotoDigest,
+    InTotoStatement, InTotoSubject, RuntimeHistoryQualification, SourceContext,
+    VerificationAttestation, VerificationPredicateV1, FDX_ATTESTATION_PREDICATE_VERSION,
+    FDX_VERIFICATION_PREDICATE_V1_TYPE, IN_TOTO_STATEMENT_V1_TYPE,
 };
 pub use persist::{
     attestation_file_path, attestations_dir, load_attestation_from_path, persist_attestation,

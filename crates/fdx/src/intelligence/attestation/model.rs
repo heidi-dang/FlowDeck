@@ -19,6 +19,7 @@ pub const FDX_ATTESTATION_PREDICATE_VERSION: u32 = 1;
 
 /// Generic in-toto Statement v1 envelope.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct InTotoStatement<T> {
     #[serde(rename = "_type")]
     pub statement_type: String,
@@ -30,6 +31,7 @@ pub struct InTotoStatement<T> {
 
 /// Subject resource bound by the attestation statement.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct InTotoSubject {
     pub name: String,
     pub digest: InTotoDigest,
@@ -37,12 +39,14 @@ pub struct InTotoSubject {
 
 /// Cryptographic digest container for in-toto subjects.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct InTotoDigest {
     pub sha256: String,
 }
 
 /// FlowDeck Verification Predicate v1.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct VerificationPredicateV1 {
     pub schema_version: u32,
     pub run: AttestedRunIdentity,
@@ -58,6 +62,7 @@ pub struct VerificationPredicateV1 {
 
 /// Cryptographically bound identity of the verification run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AttestedRunIdentity {
     pub run_id: String,
     pub artifact_sha256: String,
@@ -68,6 +73,7 @@ pub struct AttestedRunIdentity {
 
 /// Verification plan summary bound in the attestation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AttestedPlan {
     pub plan_id: String,
     pub plan_sha256: String,
@@ -76,16 +82,28 @@ pub struct AttestedPlan {
     pub advisory_obligations: usize,
 }
 
+/// Preserved unresolved obligation with structured scope, reason, and source.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AttestedUnresolvedObligation {
+    pub scope: String,
+    pub reason: String,
+    pub source: String,
+}
+
 /// Outcome and assurance achieved by the verification run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AttestedVerificationResult {
     pub outcome: VerificationOutcome,
     pub assurance: AssuranceLevel,
     pub unresolved_obligation_count: usize,
+    pub unresolved_obligations: Vec<AttestedUnresolvedObligation>,
 }
 
 /// Qualified physical OS process execution observation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AttestedExecution {
     pub execution_id: String,
     pub program: String,
@@ -95,8 +113,10 @@ pub struct AttestedExecution {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
     pub duration_ms: u64,
-    pub stdout_digest: String,
-    pub stderr_digest: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stdout_digest: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stderr_digest: Option<String>,
     pub stdout_captured_bytes: u64,
     pub stderr_captured_bytes: u64,
     pub output_truncated: bool,
@@ -104,6 +124,7 @@ pub struct AttestedExecution {
 
 /// Verified check observation mapped to its execution group.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AttestedCheck {
     pub check_id: String,
     pub kind: VerificationCheckKind,
@@ -116,9 +137,9 @@ pub struct AttestedCheck {
 
 /// Structured uncertainty reason preserved without loss.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AttestedUncertainty {
     pub code: String,
-    pub trigger: String,
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
@@ -126,14 +147,16 @@ pub struct AttestedUncertainty {
 
 /// Historical runtime qualification status.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RuntimeHistoryQualification {
     pub run_contract_version: i64,
     pub run_qualified: bool,
-    pub global_history_complete: bool,
+    pub global_history_complete_at_generation: bool,
 }
 
 /// Source workspace context reported at time of verification.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SourceContext {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base_ref: Option<String>,
@@ -141,11 +164,13 @@ pub struct SourceContext {
     pub head_ref: Option<String>,
     pub changed_files_count: usize,
     pub impacted_targets_count: usize,
-    pub workspace_clean: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_clean: Option<bool>,
 }
 
 /// Metadata identifying the attestation generator tool.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AttestationGenerator {
     pub name: String,
     pub version: String,

@@ -2,10 +2,10 @@
 
 use crate::intelligence::attestation::model::{
     AttestationGenerator, AttestedCheck, AttestedExecution, AttestedPlan, AttestedRunIdentity,
-    AttestedUncertainty, AttestedVerificationResult, InTotoDigest, InTotoStatement, InTotoSubject,
-    RuntimeHistoryQualification, SourceContext, VerificationAttestation, VerificationPredicateV1,
-    FDX_ATTESTATION_PREDICATE_VERSION, FDX_VERIFICATION_PREDICATE_V1_TYPE,
-    IN_TOTO_STATEMENT_V1_TYPE,
+    AttestedUncertainty, AttestedUnresolvedObligation, AttestedVerificationResult, InTotoDigest,
+    InTotoStatement, InTotoSubject, RuntimeHistoryQualification, SourceContext,
+    VerificationAttestation, VerificationPredicateV1, FDX_ATTESTATION_PREDICATE_VERSION,
+    FDX_VERIFICATION_PREDICATE_V1_TYPE, IN_TOTO_STATEMENT_V1_TYPE,
 };
 use crate::intelligence::runtime::model::INGESTION_CONTRACT_VERSION_V2;
 use crate::intelligence::runtime::query::get_historical_run;
@@ -102,10 +102,10 @@ pub fn build_verification_attestation(
 
     let (run_obs, executions, check_obs) = historical;
 
-    // 3. Verify M8 contract version
-    if run_obs.ingestion_contract_version < INGESTION_CONTRACT_VERSION_V2 {
+    // 3. Verify M8 contract version - exact supported contract required
+    if run_obs.ingestion_contract_version != INGESTION_CONTRACT_VERSION_V2 {
         return Err(format!(
-            "Run {:?} has legacy/unqualified ingestion contract version {} (expected version {}). Run 'fdx history reconcile' to qualify exact artifact bytes.",
+            "Run {:?} has unsupported ingestion contract version {} (expected exact version {}).",
             run_id, run_obs.ingestion_contract_version, INGESTION_CONTRACT_VERSION_V2
         ));
     }
@@ -242,8 +242,8 @@ pub fn build_verification_attestation(
             status: e.status,
             exit_code: e.exit_code,
             duration_ms: e.duration_ms,
-            stdout_digest: e.stdout_digest.clone().unwrap_or_default(),
-            stderr_digest: e.stderr_digest.clone().unwrap_or_default(),
+            stdout_digest: e.stdout_digest.clone(),
+            stderr_digest: e.stderr_digest.clone(),
             stdout_captured_bytes: e.stdout_captured_bytes,
             stderr_captured_bytes: e.stderr_captured_bytes,
             output_truncated: e.output_truncated,
@@ -251,33 +251,69 @@ pub fn build_verification_attestation(
         .collect();
     attested_executions.sort_by(|a, b| a.execution_id.cmp(&b.execution_id));
 
-    // 10. Build and sort deterministic uncertainties
-    let mut uncertainty_map: BTreeMap<
-        (String, String, Option<String>, String),
-        AttestedUncertainty,
-    > = BTreeMap::new();
+    // 10. Build, redact, and sort deterministic uncertainties
+    let mut uncertainty_map: BTreeMap<(String, String, Option<String>), AttestedUncertainty> =
+        BTreeMap::new();
 
     for u in run.uncertainty.iter().chain(run.plan.uncertainty.iter()) {
         let code = u.code().to_string();
-        let trigger = format!("{:?}", u);
-        let redacted_msg = redact_secrets(&trigger);
-        let key = (code.clone(), trigger.clone(), None, redacted_msg.clone());
+        let (message, target) = match u {
+            crate::intelligence::change::uncertainty::UncertaintyReason::ProviderMissing(s) => (format!("provider missing: {}", redact_secrets(s)), Some(redact_secrets(s))),
+            crate::intelligence::change::uncertainty::UncertaintyReason::ProviderStale(s) => (format!("provider stale: {}", redact_secrets(s)), Some(redact_secrets(s))),
+            crate::intelligence::change::uncertainty::UncertaintyReason::ProviderFailed(s) => (format!("provider failed: {}", redact_secrets(s)), Some(redact_secrets(s))),
+            crate::intelligence::change::uncertainty::UncertaintyReason::UnsupportedLanguage(s) => (format!("unsupported language: {}", redact_secrets(s)), Some(redact_secrets(s))),
+            crate::intelligence::change::uncertainty::UncertaintyReason::SemanticChangeUnknown(s) => (format!("semantic change unknown: {}", redact_secrets(s)), Some(redact_secrets(s))),
+            crate::intelligence::change::uncertainty::UncertaintyReason::DepthLimitReached { max_depth } => (format!("depth limit reached: {}", max_depth), None),
+            crate::intelligence::change::uncertainty::UncertaintyReason::NodeLimitReached { max_nodes } => (format!("node limit reached: {}", max_nodes), None),
+            crate::intelligence::change::uncertainty::UncertaintyReason::EdgeLimitReached { max_edges } => (format!("edge limit reached: {}", max_edges), None),
+            crate::intelligence::change::uncertainty::UncertaintyReason::AmbiguousSymbol(s) => (format!("ambiguous symbol: {}", redact_secrets(s)), Some(redact_secrets(s))),
+            crate::intelligence::change::uncertainty::UncertaintyReason::MissingBeforeEvidence(s) => (format!("missing before evidence: {}", redact_secrets(s)), Some(redact_secrets(s))),
+            crate::intelligence::change::uncertainty::UncertaintyReason::MissingAfterEvidence(s) => (format!("missing after evidence: {}", redact_secrets(s)), Some(redact_secrets(s))),
+            crate::intelligence::change::uncertainty::UncertaintyReason::FallbackUsed(s) => (format!("fallback used: {}", redact_secrets(s)), Some(redact_secrets(s))),
+            crate::intelligence::change::uncertainty::UncertaintyReason::GraphAbsent(s) => (format!("graph absent: {}", redact_secrets(s)), Some(redact_secrets(s))),
+            crate::intelligence::change::uncertainty::UncertaintyReason::GraphIncompatible(s) => (format!("graph incompatible: {}", redact_secrets(s)), Some(redact_secrets(s))),
+            crate::intelligence::change::uncertainty::UncertaintyReason::GraphCorrupt(s) => (format!("graph corrupt: {}", redact_secrets(s)), Some(redact_secrets(s))),
+            crate::intelligence::change::uncertainty::UncertaintyReason::GraphUnavailable(s) => (format!("graph unavailable: {}", redact_secrets(s)), Some(redact_secrets(s))),
+            crate::intelligence::change::uncertainty::UncertaintyReason::UnknownGraphRelation(s) => (format!("unknown graph relation: {}", redact_secrets(s)), Some(redact_secrets(s))),
+            crate::intelligence::change::uncertainty::UncertaintyReason::BuildProviderMissing(s) => (format!("build provider missing: {}", redact_secrets(s)), Some(redact_secrets(s))),
+            crate::intelligence::change::uncertainty::UncertaintyReason::BuildProviderStale(s) => (format!("build provider stale: {}", redact_secrets(s)), Some(redact_secrets(s))),
+            crate::intelligence::change::uncertainty::UncertaintyReason::BuildProviderFailed(s) => (format!("build provider failed: {}", redact_secrets(s)), Some(redact_secrets(s))),
+            crate::intelligence::change::uncertainty::UncertaintyReason::MalformedConfig(s) => (format!("malformed config: {}", redact_secrets(s)), Some(redact_secrets(s))),
+            crate::intelligence::change::uncertainty::UncertaintyReason::ConfigCycleDetected(s) => (format!("config cycle detected: {}", redact_secrets(s)), Some(redact_secrets(s))),
+            crate::intelligence::change::uncertainty::UncertaintyReason::UnknownWorkspaceMembership(s) => (format!("unknown workspace membership: {}", redact_secrets(s)), Some(redact_secrets(s))),
+            crate::intelligence::change::uncertainty::UncertaintyReason::DynamicConfigExpression(s) => (format!("dynamic config expression: {}", redact_secrets(s)), Some(redact_secrets(s))),
+            crate::intelligence::change::uncertainty::UncertaintyReason::BuildLimitReached(s) => (format!("build limit reached: {}", redact_secrets(s)), Some(redact_secrets(s))),
+        };
+        let key = (code.clone(), message.clone(), target.clone());
         uncertainty_map
             .entry(key)
             .or_insert_with(|| AttestedUncertainty {
                 code,
-                trigger,
-                message: redacted_msg,
-                target: None,
+                message,
+                target,
             });
     }
 
     let attested_uncertainties: Vec<AttestedUncertainty> = uncertainty_map.into_values().collect();
 
-    // 11. Query global history status
+    // 11. Build, redact, and sort deterministic unresolved obligations
+    let mut attested_unresolved: Vec<AttestedUnresolvedObligation> = run
+        .plan
+        .unresolved_obligations
+        .iter()
+        .map(|u| AttestedUnresolvedObligation {
+            scope: redact_secrets(&u.scope),
+            reason: redact_secrets(&u.reason),
+            source: redact_secrets(&u.source),
+        })
+        .collect();
+    attested_unresolved
+        .sort_by(|a, b| (&a.scope, &a.reason, &a.source).cmp(&(&b.scope, &b.reason, &b.source)));
+
+    // 12. Query global history status at generation time
     let global_history_complete = query_global_history_completeness(conn)?;
 
-    // 12. Calculate planned check counts
+    // 13. Calculate planned check counts
     let total_obligations = run.plan.selected_checks.len();
     let mandatory_obligations = run
         .plan
@@ -287,7 +323,7 @@ pub fn build_verification_attestation(
         .count();
     let advisory_obligations = total_obligations - mandatory_obligations;
 
-    // 13. Construct Predicate v1
+    // 14. Construct Predicate v1
     let predicate = VerificationPredicateV1 {
         schema_version: FDX_ATTESTATION_PREDICATE_VERSION,
         run: AttestedRunIdentity {
@@ -310,7 +346,8 @@ pub fn build_verification_attestation(
         result: AttestedVerificationResult {
             outcome: run.outcome,
             assurance: run.assurance,
-            unresolved_obligation_count: run.plan.unresolved_obligations.len(),
+            unresolved_obligation_count: attested_unresolved.len(),
+            unresolved_obligations: attested_unresolved,
         },
         executions: attested_executions,
         checks: attested_checks,
@@ -318,14 +355,14 @@ pub fn build_verification_attestation(
         runtime_history: RuntimeHistoryQualification {
             run_contract_version: INGESTION_CONTRACT_VERSION_V2,
             run_qualified: true,
-            global_history_complete,
+            global_history_complete_at_generation: global_history_complete,
         },
         source_context: SourceContext {
             base_ref: run.base.clone(),
             head_ref: run.head.clone(),
             changed_files_count: run.plan.changed.len(),
             impacted_targets_count: run.plan.impacted_targets.len(),
-            workspace_clean: run.base.is_some() && run.head.is_some(),
+            workspace_clean: None,
         },
         generator: AttestationGenerator {
             name: "fdx".to_string(),
@@ -333,7 +370,7 @@ pub fn build_verification_attestation(
         },
     };
 
-    // 14. Construct in-toto Statement v1 envelope
+    // 15. Construct in-toto Statement v1 envelope with exactly one subject
     let statement = InTotoStatement {
         statement_type: IN_TOTO_STATEMENT_V1_TYPE.to_string(),
         subject: vec![InTotoSubject {

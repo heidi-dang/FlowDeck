@@ -98,4 +98,7 @@ fn test_uncertainty_preservation_and_redaction() {
     assert!(!attestation.predicate.uncertainty[0]
         .message
         .contains("secret-token-123"));
+
+    let canonical = canonicalize_to_string(&attestation).unwrap();
+    assert!(!canonical.contains("secret-token-123"));
 }
