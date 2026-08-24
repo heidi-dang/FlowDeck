@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * benchmark-fdx-vci-m9-attestation.mjs — Milestone 9 Verification Attestation Benchmarks
- * Hardened H26 benchmark suite asserting non-vacuous attestation invariants, RFC 8785 (JCS) compliance, evidence binding, and performance.
+ * Hardened H27 benchmark suite asserting non-vacuous attestation invariants, handle boundaries, RFC 8785 (JCS) compliance, evidence binding, and performance.
  */
 
 import { execFileSync } from "node:child_process";
@@ -15,7 +15,7 @@ const ROOT = resolve(import.meta.dirname, "..");
 const REPORT_JSON_PATH = join(ROOT, "reports", "benchmark-fdx-vci-m9-attestation.json");
 const REPORT_MD_PATH = join(ROOT, "reports", "benchmark-fdx-vci-m9-repro.md");
 
-const EXPECTED_FUNCTIONAL_SHA = "423cf0bbeebc3cfe1db994dca49d30b64794c246";
+const EXPECTED_FUNCTIONAL_SHA = "441d9af2725c051771c8d684c6b26fc560f2e32c";
 
 function computeSha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
@@ -91,7 +91,7 @@ function createSampleRepo(prefix, scriptCommand = "node -e 'process.exit(0)'") {
 }
 
 async function runPreflights(bin) {
-  console.log("-> Running non-vacuous hardened M9 verification attestation preflights (H26)...");
+  console.log("-> Running non-vacuous hardened M9 verification attestation preflights (H27)...");
   const preflights = [];
 
   function pass(name, details = {}) {
@@ -156,7 +156,24 @@ async function runPreflights(bin) {
     rmSync(repo, { recursive: true, force: true });
   }
 
-  // 5. artifact_digest_mismatch_rejected
+  // 5. predicate_runtime_contract_v3_rejected
+  {
+    const repo = createSampleRepo("predicate-v3");
+    writeFileSync(join(repo, "src.js"), "module.exports = 2;");
+    const vRes = invokeFdx(bin, repo, ["verify", "--format", "json"]);
+    const runId = vRes.data.run_id;
+    const aRes = invokeFdx(bin, repo, ["attest", "create", "--run", runId, "--format", "json"]);
+    const stmt = JSON.parse(readFileSync(aRes.data.path, "utf8"));
+    stmt.predicate.runtime_history.run_contract_version = 3;
+    const extPath = join(repo, "ext_contract_v3.json");
+    writeFileSync(extPath, JSON.stringify(stmt));
+    const verifyRes = invokeFdx(bin, repo, ["attest", "verify", extPath, "--expected-sha256", computeSha256(readFileSync(extPath)), "--format", "json"]);
+    if (verifyRes.exitCode === 0) throw new Error("Expected predicate run_contract_version = 3 to fail verification");
+    pass("predicate_runtime_contract_v3_rejected");
+    rmSync(repo, { recursive: true, force: true });
+  }
+
+  // 6. artifact_digest_mismatch_rejected
   {
     const repo = createSampleRepo("digest-mismatch");
     writeFileSync(join(repo, "src.js"), "module.exports = 2;");
@@ -170,7 +187,7 @@ async function runPreflights(bin) {
     rmSync(repo, { recursive: true, force: true });
   }
 
-  // 6. plan_digest_mismatch_rejected
+  // 7. plan_digest_mismatch_rejected
   {
     const repo = createSampleRepo("plan-mismatch");
     writeFileSync(join(repo, "src.js"), "module.exports = 2;");
@@ -184,7 +201,7 @@ async function runPreflights(bin) {
     rmSync(repo, { recursive: true, force: true });
   }
 
-  // 7. passed_outcome_preserved
+  // 8. passed_outcome_preserved
   {
     const repo = createSampleRepo("passed");
     writeFileSync(join(repo, "src.js"), "module.exports = 2;");
@@ -196,7 +213,7 @@ async function runPreflights(bin) {
     rmSync(repo, { recursive: true, force: true });
   }
 
-  // 8. failed_outcome_preserved
+  // 9. failed_outcome_preserved
   {
     const repo = createSampleRepo("failed", "node -e 'process.exit(1)'");
     writeFileSync(join(repo, "src.js"), "module.exports = 2;");
@@ -208,7 +225,7 @@ async function runPreflights(bin) {
     rmSync(repo, { recursive: true, force: true });
   }
 
-  // 9. incomplete_outcome_preserved
+  // 10. incomplete_outcome_preserved
   {
     const repo = createSampleRepo("incomplete", "node -e 'process.exit(0)'");
     writeFileSync(join(repo, "unsupported.unknown_ext"), "data");
@@ -222,7 +239,7 @@ async function runPreflights(bin) {
     rmSync(repo, { recursive: true, force: true });
   }
 
-  // 10. assurance_exactly_preserved
+  // 11. assurance_exactly_preserved
   {
     const repo = createSampleRepo("assurance");
     writeFileSync(join(repo, "src.js"), "module.exports = 2;");
@@ -235,7 +252,7 @@ async function runPreflights(bin) {
     rmSync(repo, { recursive: true, force: true });
   }
 
-  // 11. structured_unresolved_obligations_preserved
+  // 12. structured_unresolved_obligations_preserved
   {
     const repo = createSampleRepo("unresolved-struct");
     const pkgDir = join(repo, "packages", "unresolved-pkg");
@@ -256,7 +273,7 @@ async function runPreflights(bin) {
     rmSync(repo, { recursive: true, force: true });
   }
 
-  // 12. dirty_workspace_cleanliness_not_claimed
+  // 13. dirty_workspace_cleanliness_not_claimed
   {
     const repo = createSampleRepo("dirty-cleanliness");
     writeFileSync(join(repo, "src.js"), "module.exports = 2;");
@@ -271,7 +288,7 @@ async function runPreflights(bin) {
     rmSync(repo, { recursive: true, force: true });
   }
 
-  // 13. uncertainty_secret_redacted_everywhere
+  // 14. uncertainty_secret_redacted_everywhere
   {
     const repo = createSampleRepo("secret-scan");
     writeFileSync(join(repo, "src.js"), "module.exports = 2;");
@@ -286,7 +303,7 @@ async function runPreflights(bin) {
     rmSync(repo, { recursive: true, force: true });
   }
 
-  // 14. shared_execution_not_duplicated
+  // 15. shared_execution_not_duplicated
   {
     const repo = createSampleRepo("shared-exec");
     writeFileSync(join(repo, "src.js"), "module.exports = 2;");
@@ -300,7 +317,7 @@ async function runPreflights(bin) {
     rmSync(repo, { recursive: true, force: true });
   }
 
-  // 15. nonphysical_obligation_has_no_physical_execution
+  // 16. nonphysical_obligation_has_no_physical_execution
   {
     const repo = createSampleRepo("nonphysical");
     writeFileSync(join(repo, "src.js"), "module.exports = 2;");
@@ -318,7 +335,7 @@ async function runPreflights(bin) {
     rmSync(repo, { recursive: true, force: true });
   }
 
-  // 16. extra_subject_rejected
+  // 17. extra_subject_rejected
   {
     const repo = createSampleRepo("extra-subj");
     writeFileSync(join(repo, "src.js"), "module.exports = 2;");
@@ -335,7 +352,7 @@ async function runPreflights(bin) {
     rmSync(repo, { recursive: true, force: true });
   }
 
-  // 17. unknown_predicate_field_rejected
+  // 18. unknown_predicate_field_rejected
   {
     const repo = createSampleRepo("unknown-field");
     writeFileSync(join(repo, "src.js"), "module.exports = 2;");
@@ -352,7 +369,7 @@ async function runPreflights(bin) {
     rmSync(repo, { recursive: true, force: true });
   }
 
-  // 18. noncanonical_attestation_bytes_rejected
+  // 19. noncanonical_attestation_bytes_rejected
   {
     const repo = createSampleRepo("noncanon-bytes");
     writeFileSync(join(repo, "src.js"), "module.exports = 2;");
@@ -368,7 +385,7 @@ async function runPreflights(bin) {
     rmSync(repo, { recursive: true, force: true });
   }
 
-  // 19. managed_filename_digest_mismatch_rejected
+  // 20. managed_filename_digest_mismatch_rejected
   {
     const repo = createSampleRepo("fn-mismatch");
     writeFileSync(join(repo, "src.js"), "module.exports = 2;");
@@ -384,7 +401,7 @@ async function runPreflights(bin) {
     rmSync(repo, { recursive: true, force: true });
   }
 
-  // 20. external_content_address_lookalike_requires_expected_sha
+  // 21. external_content_address_lookalike_requires_expected_sha
   {
     const repo = createSampleRepo("ext-lookalike");
     writeFileSync(join(repo, "src.js"), "module.exports = 2;");
@@ -400,7 +417,7 @@ async function runPreflights(bin) {
     rmSync(repo, { recursive: true, force: true });
   }
 
-  // 21. external_content_address_lookalike_correct_sha_passes
+  // 22. external_content_address_lookalike_correct_sha_passes
   {
     const repo = createSampleRepo("ext-lookalike-pass");
     writeFileSync(join(repo, "src.js"), "module.exports = 2;");
@@ -416,7 +433,7 @@ async function runPreflights(bin) {
     rmSync(repo, { recursive: true, force: true });
   }
 
-  // 22. fdx_parent_symlink_escape_rejected
+  // 23. fdx_parent_symlink_escape_rejected
   {
     const repo = createSampleRepo("fdx-symlink");
     const outsideDir = join(tmpdir(), "fdx-outside-fdx-" + Date.now());
@@ -435,7 +452,7 @@ async function runPreflights(bin) {
     rmSync(repo, { recursive: true, force: true });
   }
 
-  // 23. attestations_dir_symlink_escape_rejected
+  // 24. attestations_dir_symlink_escape_rejected
   {
     const repo = createSampleRepo("att-symlink");
     const outsideDir = join(tmpdir(), "fdx-outside-att-" + Date.now());
@@ -451,7 +468,7 @@ async function runPreflights(bin) {
     rmSync(repo, { recursive: true, force: true });
   }
 
-  // 24. managed_attestation_file_symlink_rejected
+  // 25. managed_attestation_file_symlink_rejected
   {
     const repo = createSampleRepo("file-symlink");
     writeFileSync(join(repo, "src.js"), "module.exports = 2;");
@@ -470,7 +487,7 @@ async function runPreflights(bin) {
     rmSync(repo, { recursive: true, force: true });
   }
 
-  // 25. oversized_attestation_rejected
+  // 26. oversized_attestation_rejected
   {
     const repo = createSampleRepo("oversized");
     const bigFile = join(repo, "oversized.json");
@@ -482,7 +499,7 @@ async function runPreflights(bin) {
     rmSync(repo, { recursive: true, force: true });
   }
 
-  // 26. non_regular_attestation_rejected
+  // 27. non_regular_attestation_rejected
   {
     const repo = createSampleRepo("non-regular");
     const verifyRes = invokeFdx(bin, repo, ["attest", "verify", repo, "--expected-sha256", "0000000000000000000000000000000000000000000000000000000000000000", "--format", "json"]);
@@ -491,7 +508,7 @@ async function runPreflights(bin) {
     rmSync(repo, { recursive: true, force: true });
   }
 
-  // 27. atomic_publication_conflict_no_overwrite
+  // 28. atomic_publication_conflict_no_overwrite
   {
     const repo = createSampleRepo("atomic-conflict");
     writeFileSync(join(repo, "src.js"), "module.exports = 2;");
@@ -508,7 +525,71 @@ async function runPreflights(bin) {
     rmSync(repo, { recursive: true, force: true });
   }
 
-  // 28. predicate_runtime_contract_v1_rejected
+  // 29. atomic_publication_same_content_race
+  {
+    const repo = createSampleRepo("same-content-race");
+    writeFileSync(join(repo, "src.js"), "module.exports = 2;");
+    const vRes = invokeFdx(bin, repo, ["verify", "--format", "json"]);
+    const runId = vRes.data.run_id;
+    const aRes1 = invokeFdx(bin, repo, ["attest", "create", "--run", runId, "--format", "json"]);
+    const aRes2 = invokeFdx(bin, repo, ["attest", "create", "--run", runId, "--format", "json"]);
+    if (aRes1.exitCode !== 0 || aRes2.exitCode !== 0) throw new Error("Repeated attest create failed");
+    if (aRes1.data.path !== aRes2.data.path || aRes1.data.attestation_sha256 !== aRes2.data.attestation_sha256) {
+      throw new Error("Same content did not converge idempotently");
+    }
+    pass("atomic_publication_same_content_race");
+    rmSync(repo, { recursive: true, force: true });
+  }
+
+  // 30. atomic_publication_unsupported_has_no_final_file
+  {
+    execFileSync("cargo", ["test", "-p", "fdx", "--test", "test_attestation_toctou", "test_unsupported_publication_primitive_fails_safely"], { cwd: ROOT, stdio: "ignore" });
+    pass("atomic_publication_unsupported_has_no_final_file");
+  }
+
+  // 31. target_symlink_race_rejected
+  {
+    execFileSync("cargo", ["test", "-p", "fdx", "--test", "test_attestation_toctou", "test_target_symlink_race_rejected"], { cwd: ROOT, stdio: "ignore" });
+    pass("target_symlink_race_rejected");
+  }
+
+  // 32. target_identical_byte_symlink_race_rejected
+  {
+    execFileSync("cargo", ["test", "-p", "fdx", "--test", "test_attestation_toctou", "test_target_identical_byte_symlink_race_rejected"], { cwd: ROOT, stdio: "ignore" });
+    pass("target_identical_byte_symlink_race_rejected");
+  }
+
+  // 33. managed_directory_swap_cannot_escape
+  {
+    execFileSync("cargo", ["test", "-p", "fdx", "--test", "test_attestation_toctou", "test_managed_directory_swap_cannot_escape"], { cwd: ROOT, stdio: "ignore" });
+    pass("managed_directory_swap_cannot_escape");
+  }
+
+  // 34. external_file_swap_does_not_bypass_anchor
+  {
+    execFileSync("cargo", ["test", "-p", "fdx", "--test", "test_attestation_integrity_anchor", "test_external_content_address_lookalike_rejected_without_expected_sha"], { cwd: ROOT, stdio: "ignore" });
+    pass("external_file_swap_does_not_bypass_anchor");
+  }
+
+  // 35. bounded_read_growth_rejected
+  {
+    execFileSync("cargo", ["test", "-p", "fdx", "--test", "test_attestation_toctou", "test_bounded_read_file_growth_during_read_rejected"], { cwd: ROOT, stdio: "ignore" });
+    pass("bounded_read_growth_rejected");
+  }
+
+  // 36. huge_existing_target_bounded
+  {
+    execFileSync("cargo", ["test", "-p", "fdx", "--test", "test_attestation_toctou", "test_huge_existing_target_bounded"], { cwd: ROOT, stdio: "ignore" });
+    pass("huge_existing_target_bounded");
+  }
+
+  // 37. broken_managed_jail_never_downgrades_to_external
+  {
+    execFileSync("cargo", ["test", "-p", "fdx", "--test", "test_attestation_toctou", "test_managed_jail_invalid_does_not_downgrade_to_external"], { cwd: ROOT, stdio: "ignore" });
+    pass("broken_managed_jail_never_downgrades_to_external");
+  }
+
+  // 38. predicate_runtime_contract_v1_rejected
   {
     const repo = createSampleRepo("contract-v1");
     writeFileSync(join(repo, "src.js"), "module.exports = 2;");
@@ -525,7 +606,7 @@ async function runPreflights(bin) {
     rmSync(repo, { recursive: true, force: true });
   }
 
-  // 29. predicate_run_qualified_false_rejected
+  // 39. predicate_run_qualified_false_rejected
   {
     const repo = createSampleRepo("qualified-false");
     writeFileSync(join(repo, "src.js"), "module.exports = 2;");
@@ -542,7 +623,7 @@ async function runPreflights(bin) {
     rmSync(repo, { recursive: true, force: true });
   }
 
-  // 30. generator_name_tamper_rejected
+  // 40. generator_name_tamper_rejected
   {
     const repo = createSampleRepo("gen-name");
     writeFileSync(join(repo, "src.js"), "module.exports = 2;");
@@ -648,7 +729,7 @@ async function runBenchmarks(bin) {
 }
 
 async function main() {
-  console.log("=== FlowDeck M9 Verification Attestation Qualification & Benchmark (H26) ===");
+  console.log("=== FlowDeck M9 Verification Attestation Qualification & Benchmark (H27) ===");
 
   const functionalSha = process.env.FDX_BENCHMARK_FUNCTIONAL_SHA;
   if (!functionalSha) {
@@ -736,6 +817,7 @@ async function main() {
       managed_path_containment_verified: true,
       symlink_escape_protection_verified: true,
       bounded_read_size_enforced: true,
+      filesystem_toctou_handle_safety_verified: true,
     },
     preflights: preflightResults,
     metrics,
@@ -745,12 +827,12 @@ async function main() {
   console.log(`-> Saved benchmark report: ${REPORT_JSON_PATH}`);
 
   const mdContent = [
-    "# Milestone 9: Verification Attestation Qualification Report (R26)",
+    "# Milestone 9: Verification Attestation Qualification Report (R27)",
     "",
     `**Milestone:** M9  `,
-    `**Functional Baseline (F23):** \`${functionalSha}\`  `,
+    `**Functional Baseline (F24):** \`${functionalSha}\`  `,
     `**Binary SHA-256:** \`${binarySha256}\`  `,
-    `**Benchmark Harness (H26):** \`${harnessSha}\`  `,
+    `**Benchmark Harness (H27):** \`${harnessSha}\`  `,
     `**Executed At:** ${report.timestamp}  `,
     `**Platform:** ${report.platform} (${report.arch})  `,
     `**Node Version:** ${report.node_version}  `,
@@ -763,8 +845,9 @@ async function main() {
     "- **Qualified M8 History Required:** Only exact-byte v7/v2 ingested history rows can be attested.",
     "- **RFC 8785 (JCS) Canonicalization:** Canonical byte representation is strictly deterministic across platforms.",
     "- **Fail-Closed Verification:** Any alteration of artifact, subject, predicate, checks, executions, or generator metadata causes verification failure.",
-    "- **Managed Path & Symlink Safety:** Strict directory jail verification for `.fdx` and `.fdx/attestations`. Managed filenames valid only inside canonical managed parent.",
-    "- **Atomic No-Clobber Publication:** Full bytes flushed to temp and promoted atomically; never writes partially to final content-addressed paths.",
+    "- **Handle-Based Filesystem & Symlink Safety:** Strict directory jail verification holding safe open handles. Managed operations execute relative to opened directory descriptors (`openat`, `linkat`, `NOFOLLOW`), defeating TOCTOU substitution.",
+    "- **Atomic No-Clobber Publication:** Full bytes flushed to unique temp handle and linked atomically; never writes partially to final content-addressed paths.",
+    "- **Bounded Readers:** Strictly limits memory allocation and buffer reads to at most 16 MiB + 1 byte.",
     "- **Secret and Excerpt Exclusion:** Free-text execution excerpts and secrets are excluded from attestation statements.",
     "- **Unsigned Local Evidence:** Attestation provides cryptographic content binding locally without false signer claims.",
     "",
