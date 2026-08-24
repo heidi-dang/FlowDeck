@@ -1,0 +1,210 @@
+{
+  "milestone": "M9",
+  "title": "Verification Attestation & Cryptographic Evidence Binding",
+  "functional_source_sha": "11a3387d6cd9ffa4bef0bc7813e6886def763b71",
+  "binary_source_sha": "11a3387d6cd9ffa4bef0bc7813e6886def763b71",
+  "binary_sha256": "4d21cd694bc64ff2e098be34c4261415dcd994c73add4ee2f9093b8e0c5820e2",
+  "benchmark_harness_sha": "e1834b4665d18bacc6526d0db2bb451e44b93057",
+  "qualification_head_sha": "e1834b4665d18bacc6526d0db2bb451e44b93057",
+  "timestamp": "2026-08-24T09:29:51.324Z",
+  "platform": "linux",
+  "arch": "x64",
+  "node_version": "v24.19.0",
+  "schema_version": 1,
+  "invariants": {
+    "in_toto_statement_v1_envelope": true,
+    "exact_artifact_sha256_subject_digest": true,
+    "qualified_m8_history_bound": true,
+    "rfc_8785_jcs_canonical_serialization": true,
+    "deterministic_attestation_digest": true,
+    "tamper_detection_verified": true,
+    "secrets_and_excerpts_excluded": true,
+    "absolute_paths_excluded": true,
+    "atomic_idempotent_persistence": true,
+    "offline_verification_supported": true
+  },
+  "preflights": [
+    {
+      "name": "in_toto_statement_v1_shape",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "exact_M7_artifact_subject_digest",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "qualified_M8_contract_required",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "legacy_M8_contract_rejected",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "artifact_digest_mismatch_rejected",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "plan_digest_mismatch_rejected",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "passed_outcome_preserved",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "failed_outcome_preserved",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "incomplete_outcome_preserved",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "assurance_never_upgraded",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "unresolved_obligations_preserved",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "shared_execution_not_duplicated",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "nonphysical_obligation_has_no_physical_execution",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "M7_M8_check_mismatch_rejected",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "deterministic_canonical_bytes",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "deterministic_attestation_sha256",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "tampered_run_artifact_detected",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "tampered_attestation_subject_detected",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "tampered_attestation_predicate_detected",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "unknown_statement_type_rejected",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "unknown_predicate_type_rejected",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "unknown_predicate_version_rejected",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "malformed_attestation_rejected",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "secret_excerpts_not_serialized",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "absolute_repo_path_not_serialized",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "dirty_workspace_does_not_claim_source_snapshot_subject",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "atomic_attestation_persistence",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "same_attestation_idempotent",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "contradictory_existing_attestation_rejected",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "attestation_path_traversal_rejected",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "global_history_incomplete_recorded_without_false_failure",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "offline_verify_roundtrip",
+      "status": "passed",
+      "details": {}
+    }
+  ],
+  "metrics": {
+    "attest_create_single_run_ms": {
+      "count": 15,
+      "min": 4.75,
+      "max": 5.55,
+      "mean": 5.06,
+      "median": 4.93,
+      "p95": 5.55
+    },
+    "attest_verify_single_run_ms": {
+      "count": 15,
+      "min": 3.27,
+      "max": 5.23,
+      "mean": 3.75,
+      "median": 3.65,
+      "p95": 5.23
+    },
+    "attest_create_100_runs_total_ms": 473.07,
+    "attest_create_avg_per_run_ms": 4.73,
+    "attest_verify_100_runs_total_ms": 354.17,
+    "attest_verify_avg_per_run_ms": 3.54
+  }
+}
