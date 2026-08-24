@@ -82,6 +82,19 @@ export class SqliteTransactionalRunWriter implements TransactionalRunWriter {
         outboxEntry.id,
       );
 
+      // 4. Atomically persist authoritative correlation claim in execution_metadata
+      if (run.correlationId) {
+        db.query(`
+          INSERT INTO execution_metadata (id, run_id, key, value, created_at)
+          VALUES (?, ?, ?, ?, datetime('now'))
+        `).run(
+          "run_correlation:" + run.correlationId,
+          run.id,
+          "run_correlation:" + run.correlationId,
+          run.id,
+        );
+      }
+
       return run;
     });
   }

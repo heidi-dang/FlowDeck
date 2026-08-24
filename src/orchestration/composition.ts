@@ -174,9 +174,9 @@ export class SqliteRunRepository implements IRunRepository {
       ).run(run.id, contractId, run.runType, mapRunStatusToTaskRunState(run.status), "0000000000000000000000000000000000000000", "main");
       if (run.correlationId) {
         this.db.query(
-          `INSERT OR REPLACE INTO execution_metadata (id, run_id, key, value, created_at)
+          `INSERT INTO execution_metadata (id, run_id, key, value, created_at)
            VALUES (?, ?, ?, ?, datetime('now'))`
-        ).run("corr-" + run.correlationId, run.id, "run_correlation:" + run.correlationId, run.id);
+        ).run("run_correlation:" + run.correlationId, run.id, "run_correlation:" + run.correlationId, run.id);
       }
       return run;
     });
@@ -216,11 +216,15 @@ export class SqliteRunRepository implements IRunRepository {
     if (!isValidPersistedPhase(row.state as string)) {
       throw new Error(`INVALID_PERSISTED_PHASE: "${row.state}" is not a valid persisted orchestration phase.`);
     }
+    const metaRow = this.db.query(
+      "SELECT key FROM execution_metadata WHERE run_id = ? AND key LIKE 'run_correlation:%' LIMIT 1"
+    ).get(id) as { key: string } | undefined;
+    const correlationId = metaRow ? metaRow.key.slice("run_correlation:".length) : (row.run_id as string);
     return {
       id: row.run_id as string,
       status: mapTaskRunStateToRunStatus(row.state as string),
       runType: (row.strategy as string) ?? "simple",
-      correlationId: row.run_id as string,
+      correlationId,
       contractId: row.contract_id as string,
       aggregateId: row.run_id as string,
       createdAt: (row.created_at as string) ?? new Date().toISOString(),

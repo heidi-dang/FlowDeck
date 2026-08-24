@@ -105,12 +105,21 @@ export class RunService {
       createdAt: now,
     };
 
-    // Atomic: persist run, event, and outbox inside UnitOfWork transaction
-    const saved = await this.unitOfWork.execute((ctx) => {
-      return this.writer.createRunWithEventAndOutbox(ctx.tx, this.db, run, event, outboxEntry);
-    });
-
-    return saved;
+    // Atomic: persist run, event, outbox, and correlation claim inside UnitOfWork transaction
+    try {
+      const saved = await this.unitOfWork.execute((ctx) => {
+        return this.writer.createRunWithEventAndOutbox(ctx.tx, this.db, run, event, outboxEntry);
+      });
+      return saved;
+    } catch (err: any) {
+      // If a concurrent transaction already inserted this correlation ID, conflict occurs.
+      // Re-read the authoritative winning Run.
+      const winner = await this.runRepo.findByCorrelationId(corrId);
+      if (winner) {
+        return winner;
+      }
+      throw err;
+    }
   }
 
   async updateRun(id: string, input: UpdateRunInput): Promise<Run> {
