@@ -4,8 +4,9 @@
   "functional_source_sha": "9f705270537e67c89c3db6655630a896fac762e0",
   "binary_source_sha": "9f705270537e67c89c3db6655630a896fac762e0",
   "binary_sha256": "4e2736be0a700668afc5ff373c9bd8250695a5b71c15ad4d297c2dd632b946f3",
-  "benchmark_harness_sha": "c94d87f94c6d8f18e3c5bafa1c3408e1fe12890e",
-  "timestamp": "2026-08-24T08:32:15.436Z",
+  "benchmark_harness_sha": "369c944fc0d1b1aaa396f691c6c91bac3dda50f2",
+  "qualification_head_sha": "369c944fc0d1b1aaa396f691c6c91bac3dda50f2",
+  "timestamp": "2026-08-24T08:47:20.235Z",
   "platform": "linux",
   "arch": "x64",
   "node_version": "v24.19.0",
@@ -149,35 +150,35 @@
   "metrics": {
     "single_run_verify_and_ingest_ms": {
       "count": 15,
-      "min": 121.86,
-      "max": 333.26,
-      "mean": 139.75,
-      "median": 122.43,
-      "p95": 333.26
+      "min": 121.53,
+      "max": 133.6,
+      "mean": 127.08,
+      "median": 122.95,
+      "p95": 133.6
     },
     "history_runs_query_50_ms": {
       "count": 20,
-      "min": 3.08,
-      "max": 3.88,
-      "mean": 3.34,
-      "median": 3.19,
-      "p95": 3.88
+      "min": 3,
+      "max": 3.8,
+      "mean": 3.22,
+      "median": 3.18,
+      "p95": 3.8
     },
     "history_stats_query_ms": {
       "count": 20,
-      "min": 3.11,
-      "max": 3.95,
-      "mean": 3.38,
-      "median": 3.36,
-      "p95": 3.95
+      "min": 2.94,
+      "max": 3.24,
+      "mean": 3.07,
+      "median": 3.05,
+      "p95": 3.24
     },
     "history_reconcile_50_artifacts_ms": {
       "count": 15,
-      "min": 7.23,
-      "max": 13.18,
-      "mean": 8.74,
-      "median": 7.96,
-      "p95": 13.18
+      "min": 6.89,
+      "max": 7.43,
+      "mean": 7.14,
+      "median": 7.12,
+      "p95": 7.43
     }
   },
   "database_metrics": {
