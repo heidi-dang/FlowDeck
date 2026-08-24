@@ -24,6 +24,11 @@ import {
   MIGRATION_V14_LIVE_VERIFICATION_AUTHORITY_CHECKSUM_SOURCE,
   applyV14Migration,
 } from "./migration-v14-live-verification-authority"
+import {
+  MIGRATION_V15_COMPLETION_POLICY_AUTHORITY_SQL,
+  MIGRATION_V15_COMPLETION_POLICY_AUTHORITY_CHECKSUM_SOURCE,
+  applyV15Migration,
+} from "./migration-v15-completion-policy-authority"
 
 export interface MigrationEntry {
   version: number
@@ -88,4 +93,5 @@ export const MIGRATIONS: MigrationEntry[] = [
   { version: 12, name: "orchestration_runtime_integrity_v2.0.0-alpha", sql: MIGRATION_V12_ORCHESTRATION_RUNTIME_INTEGRITY_SQL, checksum: computeChecksum(MIGRATION_V12_ORCHESTRATION_RUNTIME_INTEGRITY_SQL) },
   { version: 13, name: "convergence_integrity_v2.0.0-alpha", sql: MIGRATION_V13_CONVERGENCE_INTEGRITY_SQL, checksum: computeChecksum(MIGRATION_V13_CONVERGENCE_INTEGRITY_CHECKSUM_SOURCE), apply: applyV13Migration },
   { version: 14, name: "live_verification_authority_v2.0.0-alpha", sql: MIGRATION_V14_LIVE_VERIFICATION_AUTHORITY_SQL, checksum: computeChecksum(MIGRATION_V14_LIVE_VERIFICATION_AUTHORITY_CHECKSUM_SOURCE), apply: applyV14Migration },
+  { version: 15, name: "completion_policy_authority_v2.0.0-alpha", sql: MIGRATION_V15_COMPLETION_POLICY_AUTHORITY_SQL, checksum: computeChecksum(MIGRATION_V15_COMPLETION_POLICY_AUTHORITY_CHECKSUM_SOURCE), apply: applyV15Migration },
 ]

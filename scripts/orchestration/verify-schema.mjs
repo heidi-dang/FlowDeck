@@ -20,15 +20,16 @@ try {
   //   + v11 parallel execution DAG runs & nodes (2 tables + 2 indexes)
   //   + v12/v13 runtime and convergence persistence (5 tables + 6 indexes)
   //   + v14 live verification authority (2 indexes; verification_results columns)
-  // = 89 tables / 101 indexes / 38 triggers (the FTS virtual table is excluded by the count query).
+  //   + v15 CompletionPolicy authority (2 completion-review indexes)
+  // = 89 tables / 103 indexes / 38 triggers (the FTS virtual table is excluded by the count query).
   // The frozen-schema gate (scripts/check-schema-generated.mjs) still asserts
   // ONLY the v1 counts and must not change.
   console.log(`Schema Validation:`);
   console.log(`Tables: ${schemaV.cnt} (Expected: 89)`);
-  console.log(`Indexes: ${indexV.cnt} (Expected: 101)`);
+  console.log(`Indexes: ${indexV.cnt} (Expected: 103)`);
   console.log(`Triggers: ${triggerV.cnt} (Expected: 38)`);
 
-  if (schemaV.cnt !== 89 || indexV.cnt !== 101 || triggerV.cnt !== 38) {
+  if (schemaV.cnt !== 89 || indexV.cnt !== 103 || triggerV.cnt !== 38) {
     console.error(`Schema invariants violated!`);
     process.exit(1);
   }

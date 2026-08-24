@@ -37,6 +37,9 @@ export class TaskRunsRepository extends BaseRepository {
   }
 
   updateState(runId: string, state: string, sha?: string): boolean {
+    if (state === "completed") {
+      throw new Error("COMPLETION_POLICY_REQUIRED: direct task-run completion is forbidden");
+    }
     return this.tx.write(() => {
       const r = sha
         ? this.db.query("UPDATE task_runs SET state = ?, aggregate_version = aggregate_version + 1, current_sha = ? WHERE run_id = ?").run(state, sha, runId)

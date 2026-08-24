@@ -84,6 +84,7 @@ import { SqliteNativeChildExecutionRepository } from "./persistence/repositories
 import { ProgressObservationService } from "./services/progress-observation-service";
 import { OrchestrationSnapshotService } from "./services/orchestration-snapshot-service";
 import { RunTransitionEngine } from "./services/transition-engine";
+import { CompletionPolicy } from "./services/completion-policy";
 import { ContinuationPolicy, ContinuationDispatcher } from "./services/continuation-policy";
 import { TokenBudgetRuntime } from "../services/token-budget-runtime";
 import type { IsolatedWorkstreamExecutor } from "./execution/worktree-executor";
@@ -118,6 +119,7 @@ export interface ProductionOrchestrationRuntime {
     progressObservationService: ProgressObservationService;
     orchestrationSnapshotService: OrchestrationSnapshotService;
     transitionEngine: RunTransitionEngine;
+    completionPolicy: CompletionPolicy;
     continuationPolicy: ContinuationPolicy;
     continuationDispatcher: ContinuationDispatcher;
   };
@@ -126,6 +128,7 @@ export interface ProductionOrchestrationRuntime {
   progressObservationService: ProgressObservationService;
   orchestrationSnapshotService: OrchestrationSnapshotService;
   transitionEngine: RunTransitionEngine;
+  completionPolicy: CompletionPolicy;
   continuationPolicy: ContinuationPolicy;
   continuationDispatcher: ContinuationDispatcher;
   routingDecisionRepository: SqliteRoutingDecisionRepository;
@@ -188,6 +191,11 @@ export class SqliteRunRepository implements IRunRepository {
     return this.tx.write(() => {
       if (input.status !== undefined) {
         const persistedState = mapRunStatusToTaskRunState(input.status);
+        if (persistedState === "completed") {
+          throw OrchestrationError.fromCode(ErrorCodes.COMPLETION_POLICY_REQUIRED, {
+            message: "Only CompletionPolicy may transition a Run to completed.",
+          });
+        }
         this.db.query(
           "UPDATE task_runs SET state = ?, aggregate_version = aggregate_version + 1 WHERE run_id = ?",
         ).run(persistedState, id);
@@ -534,31 +542,66 @@ class SqliteVerificationRepo implements IVerificationRepository {
   ) {}
 
   private toVerification(row: Record<string, unknown>): VerificationResult {
-    const parseJsonArray = (value: unknown): string[] => {
-      if (typeof value !== "string" || value.length === 0) return [];
+    const isLiveAuthority = row.state_version !== null && row.state_version !== undefined
+      || row.verification_type === "live_orchestration";
+    const parseJsonArray = (value: unknown, field: string): string[] => {
+      if (typeof value !== "string" || value.length === 0) {
+        if (isLiveAuthority) throw new Error(`CORRUPT_LIVE_VERIFICATION_ROW:${field}`);
+        return [];
+      }
       try {
-        const parsed = JSON.parse(value);
-        return Array.isArray(parsed) ? parsed.map(String) : [];
-      } catch {
+        const parsed: unknown = JSON.parse(value);
+        if (!Array.isArray(parsed) || parsed.some(item => typeof item !== "string" || item.length === 0)) {
+          if (isLiveAuthority) throw new Error(`CORRUPT_LIVE_VERIFICATION_ROW:${field}`);
+          return [];
+        }
+        return [...new Set(parsed)].sort();
+      } catch (error) {
+        if (isLiveAuthority) {
+          if (error instanceof Error && error.message.startsWith("CORRUPT_LIVE_VERIFICATION_ROW:")) throw error;
+          throw new Error(`CORRUPT_LIVE_VERIFICATION_ROW:${field}`);
+        }
         return [];
       }
     };
+
+    const status = row.status;
+    const stateVersion = row.state_version;
+    const stateFingerprint = row.state_fingerprint;
+    const targetSha = row.target_sha;
+    if (isLiveAuthority) {
+      if (typeof status !== "string" || !["pending", "in_progress", "passed", "failed", "skipped", "error"].includes(status)) {
+        throw new Error("CORRUPT_LIVE_VERIFICATION_ROW:status");
+      }
+      if (!Number.isSafeInteger(stateVersion) || (stateVersion as number) < 1) {
+        throw new Error("CORRUPT_LIVE_VERIFICATION_ROW:state_version");
+      }
+      if (typeof stateFingerprint !== "string" || !/^[a-f0-9]{32}$/i.test(stateFingerprint)) {
+        throw new Error("CORRUPT_LIVE_VERIFICATION_ROW:state_fingerprint");
+      }
+      if (typeof targetSha !== "string" || !/^[a-f0-9]{40}$/i.test(targetSha)) {
+        throw new Error("CORRUPT_LIVE_VERIFICATION_ROW:target_sha");
+      }
+      if (row.is_stale !== 0 && row.is_stale !== 1) {
+        throw new Error("CORRUPT_LIVE_VERIFICATION_ROW:is_stale");
+      }
+    }
 
     return {
       id: row.id as string,
       runId: row.run_id as string,
       assignmentId: (row.assignment_id as string | null) ?? undefined,
       checkType: row.verification_type as string,
-      status: row.status as VerificationResult["status"],
+      status: status as VerificationResult["status"],
       correlationId: (row.correlation_id as string | null) ?? row.run_id as string,
       causationId: (row.causation_id as string | null) ?? undefined,
       result: (row.output_summary as string | null) ?? undefined,
       error: (row.error_output as string | null) ?? undefined,
-      evidenceIds: parseJsonArray(row.evidence_json),
-      failureReasons: parseJsonArray(row.failure_reasons),
-      stateVersion: (row.state_version as number | null) ?? undefined,
-      stateFingerprint: (row.state_fingerprint as string | null) ?? undefined,
-      targetSha: row.target_sha as string,
+      evidenceIds: parseJsonArray(row.evidence_json, "evidence_json"),
+      failureReasons: parseJsonArray(row.failure_reasons, "failure_reasons"),
+      stateVersion: (stateVersion as number | null) ?? undefined,
+      stateFingerprint: (stateFingerprint as string | null) ?? undefined,
+      targetSha: targetSha as string,
       isStale: row.is_stale === 1,
       createdAt: row.started_at as string,
       updatedAt: (row.updated_at as string | null) ?? (row.completed_at as string | null) ?? row.started_at as string,
@@ -827,6 +870,8 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
     orchestrationSnapshotService,
     txManager
   );
+  const completionPolicy = new CompletionPolicy(db, txManager, orchestrationSnapshotService, transitionEngine);
+  transitionEngine.bindCompletionPolicy(completionPolicy);
   const continuationPolicy = new ContinuationPolicy();
   const continuationDispatcher = new ContinuationDispatcher(db);
   // Reconcile restart-surviving pending continuation dispatches into outcome_unknown
@@ -862,6 +907,7 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
     progressObservationService,
     orchestrationSnapshotService,
     transitionEngine,
+    completionPolicy,
     continuationPolicy,
     continuationDispatcher,
   };
@@ -870,7 +916,7 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
   const commands = createCoreCommandRuntime(db, txManager, {
     db, executionRegistry, unitOfWork, eventBus, deliverySink, outboxWorker,
     sessionRepo, contextItemRepo, consumerOffsetRepo, sessionTurnRepo, taskRunsRepo, deferredReplacementRepo, services, router,
-    routingDecisionRepository, routingRevisionService, childExecutionLifecycleService, progressObservationService, orchestrationSnapshotService, transitionEngine, continuationPolicy, continuationDispatcher, metrics, executionRepository, executionScheduler,
+    routingDecisionRepository, routingRevisionService, childExecutionLifecycleService, progressObservationService, orchestrationSnapshotService, transitionEngine, completionPolicy, continuationPolicy, continuationDispatcher, metrics, executionRepository, executionScheduler,
     worktreeExecutionService, performanceRepository, authoritativeRouting,
     worktreeManager, integrationService, agentExecutor: options.agentExecutor,
     assignmentBindingCoordinator, faultHook: options.faultHook,
@@ -897,6 +943,7 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
     progressObservationService,
     orchestrationSnapshotService,
     transitionEngine,
+    completionPolicy,
     continuationPolicy,
     continuationDispatcher,
     metrics,

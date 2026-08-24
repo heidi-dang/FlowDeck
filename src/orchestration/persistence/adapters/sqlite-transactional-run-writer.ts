@@ -17,6 +17,7 @@ import {
 } from "../../types/runs";
 import type { OrchestrationEvent } from "../../types/events";
 import type { OutboxEntry } from "../../types/outbox";
+import { OrchestrationError, ErrorCodes } from "../../types/errors";
 
 export class SqliteTransactionalRunWriter implements TransactionalRunWriter {
   createRunWithEventAndOutbox(
@@ -111,6 +112,11 @@ export class SqliteTransactionalRunWriter implements TransactionalRunWriter {
       // 1. Update task_runs state
       if (input.status !== undefined) {
         const taskRunState = mapRunStatusToTaskRunState(input.status);
+        if (taskRunState === "completed") {
+          throw OrchestrationError.fromCode(ErrorCodes.COMPLETION_POLICY_REQUIRED, {
+            message: "Only CompletionPolicy may transition a Run to completed.",
+          });
+        }
         db.query(
           `UPDATE task_runs SET state = ?, aggregate_version = aggregate_version + 1 WHERE run_id = ?`,
         ).run(taskRunState, id);

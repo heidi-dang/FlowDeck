@@ -22,6 +22,7 @@ import type { ProgressObservationService } from "./progress-observation-service"
 import type { OrchestrationSnapshotService, OrchestrationSnapshot } from "./orchestration-snapshot-service";
 import type { SqliteNativeChildExecutionRepository } from "../persistence/repositories/native-child-execution";
 import type { TransactionManager } from "../persistence/transaction-manager";
+import type { CompletionPolicy } from "./completion-policy";
 
 export const LEGAL_PHASE_TRANSITIONS: Record<OrchestrationPhase, ReadonlyArray<OrchestrationPhase>> = {
   created: ["planning", "analysing", "executing", "cancelled", "failed"],
@@ -154,7 +155,9 @@ export interface TransitionPhaseCasInput {
   targetPhase: OrchestrationPhase;
   expectedPhase: OrchestrationPhase;
   expectedAggregateVersion: number;
-  authority?: "transition_engine" | "completion_policy" | "run_service";
+  authority?: "transition_engine" | "run_service";
+  /** Unforgeable-at-call-site capability bound to the constructed CompletionPolicy. */
+  completionPolicy?: CompletionPolicy;
   sha?: string;
 }
 
@@ -168,6 +171,16 @@ export class RunTransitionEngine {
     private readonly snapshotService: OrchestrationSnapshotService,
     private readonly txManager?: TransactionManager,
   ) {}
+
+  private completionPolicyAuthority: CompletionPolicy | null = null;
+
+  /** Composition binds exactly one policy instance after both collaborators exist. */
+  bindCompletionPolicy(policy: CompletionPolicy): void {
+    if (this.completionPolicyAuthority && this.completionPolicyAuthority !== policy) {
+      throw new Error("COMPLETION_POLICY_ALREADY_BOUND");
+    }
+    this.completionPolicyAuthority = policy;
+  }
 
   /**
    * Allocate the next atomic attempt number for a work item / Assignment / Root unit.
@@ -613,7 +626,7 @@ export class RunTransitionEngine {
    * Perform mandatory CAS phase transition.
    */
   transitionPhase(input: TransitionPhaseCasInput): boolean {
-    const { runId, targetPhase, expectedPhase, expectedAggregateVersion, authority } = input;
+    const { runId, targetPhase, expectedPhase, expectedAggregateVersion, completionPolicy } = input;
 
     // 1. Invariant: terminal phases are immutable
     if (TERMINAL_PHASES.has(expectedPhase)) {
@@ -623,11 +636,13 @@ export class RunTransitionEngine {
       return false;
     }
 
-    // 2. Invariant: transition to 'completed' restricted strictly to CompletionPolicy authority
-    if (targetPhase === OP.COMPLETED && authority !== "completion_policy") {
-      console.warn(
-        `[RunTransitionEngine] Phase transition rejected: transition to 'completed' requires authority 'completion_policy', received '${authority}'.`
-      );
+    // 2. Invariant: only the single policy instance bound by composition may
+    // request completion.  A string marker is forgeable by every caller and is
+    // therefore insufficient as a completion authority boundary.
+    if (targetPhase === OP.COMPLETED && (
+      !this.completionPolicyAuthority || completionPolicy !== this.completionPolicyAuthority
+    )) {
+      console.warn("[RunTransitionEngine] Phase transition rejected: transition to 'completed' requires the bound CompletionPolicy capability.");
       return false;
     }
 

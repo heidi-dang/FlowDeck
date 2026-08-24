@@ -84,12 +84,12 @@ describe("E2E Orchestration Pipeline", () => {
     expect(loaded!.state).toBe("created")
   })
 
-  it("2. transitions run states — created → running → completed", () => {
+  it("2. transitions run states but rejects direct completion outside CompletionPolicy", () => {
     runsRepo.create({ runId: "run-2", contractId: CFG.contract, strategy: "simple", baselineSha: "def456", repoBranch: "feature/x" })
     expect(runsRepo.updateState("run-2", "executing")).toBe(true)
     expect(runsRepo.findById("run-2")!.state).toBe("executing")
-    expect(runsRepo.updateState("run-2", "completed")).toBe(true)
-    expect(runsRepo.findById("run-2")!.state).toBe("completed")
+    expect(() => runsRepo.updateState("run-2", "completed")).toThrow("COMPLETION_POLICY_REQUIRED")
+    expect(runsRepo.findById("run-2")!.state).toBe("executing")
   })
 
   it("3. updateState with SHA tracking", () => {

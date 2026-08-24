@@ -821,6 +821,7 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
       stateFingerprint,
       checkType: "live_orchestration",
       correlationId: runId,
+      targetSha: this.runtime.taskRunsRepo.findById(runId)?.currentSha ?? this.runtime.taskRunsRepo.findById(runId)?.baselineSha,
       evidenceIds,
     });
 
@@ -883,6 +884,14 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
         "STATE_CHANGED_DURING_VERIFICATION_RESULT_APPLICATION",
       );
       return;
+    }
+
+    if (result.status === "passed" && observed.reasonCode === "VERIFICATION_PASSED") {
+      this.runtime.completionPolicy.evaluateAndComplete({
+        runId,
+        sessionId,
+        verificationId: result.id,
+      });
     }
 
     this.runtime.progressObservationService.recordVerificationObservation({

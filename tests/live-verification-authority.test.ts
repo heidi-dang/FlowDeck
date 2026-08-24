@@ -68,11 +68,12 @@ describe("Live Verification Authority", () => {
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true, force: true });
   });
 
-  it("creates one durable verification from persisted evidence and never completes the Run", async () => {
+  it("completes exactly once only after one durable live verification pass and policy review", async () => {
     const promptAsync = mock(() => Promise.resolve(true));
     const ctx = acquireProjectRuntime(TEST_DIR, { session: { promptAsync } });
     const sessionID = "live-verification-pass";
     const { run } = await createCompletedChild(ctx, sessionID, "Worker prose: PASS", true);
+    ctx.runtime.db.query("UPDATE task_runs SET baseline_sha = ? WHERE run_id = ?").run("a".repeat(40), run.id);
 
     await triggerAuthoritativeIdle(ctx, sessionID);
 
@@ -84,7 +85,11 @@ describe("Live Verification Authority", () => {
     expect(verificationPage.items[0]?.status).toBe("passed");
     expect(verificationPage.items[0]?.stateFingerprint).toBeDefined();
     expect(verificationPage.items[0]?.evidenceIds?.length).toBeGreaterThan(0);
-    expect(ctx.runtime.orchestrationSnapshotService.getSnapshot(run.id, sessionID)?.phase).toBe(OP.VERIFYING);
+    expect(ctx.runtime.orchestrationSnapshotService.getSnapshot(run.id, sessionID)?.phase).toBe(OP.COMPLETED);
+    const reviews = ctx.runtime.db.query("SELECT * FROM heidi_completion_reviews WHERE task_run_id = ?").all(run.id) as any[];
+    expect(reviews).toHaveLength(1);
+    expect(reviews[0]?.status).toBe("completed");
+    expect(reviews[0]?.verification_id).toBe(verificationPage.items[0]?.id);
     expect(promptAsync).not.toHaveBeenCalled();
 
     // A duplicate session.idle observes the same durable request and result.
@@ -95,6 +100,69 @@ describe("Live Verification Authority", () => {
     );
     expect(replayPage.total).toBe(1);
     expect(replayPage.items[0]?.id).toBe(verificationPage.items[0]?.id);
+    expect(ctx.runtime.db.query("SELECT COUNT(*) AS c FROM heidi_completion_reviews WHERE task_run_id = ?").get(run.id)).toEqual({ c: 1 });
+    expect(ctx.runtime.db.query("SELECT COUNT(*) AS c FROM event_outbox WHERE source_component = 'completion_policy' AND aggregate_id = ?").get(run.id)).toEqual({ c: 1 });
+  });
+
+  it("rejects the legacy direct completion service backdoor", async () => {
+    const ctx = acquireProjectRuntime(TEST_DIR);
+    await expect(ctx.runtime.services.completionService.completeRun("legacy-completion", "caller supplied success", "success"))
+      .rejects.toMatchObject({ code: "COMPLETION_POLICY_REQUIRED" });
+  });
+
+  it("fails closed when the CompletionPolicy has no durable passed verification", async () => {
+    const ctx = acquireProjectRuntime(TEST_DIR);
+    const sessionID = "completion-policy-missing-verification";
+    const { run } = await createCompletedChild(ctx, sessionID, "Worker prose: PASS", true);
+    ctx.runtime.transitionEngine.evaluate({ runId: run.id, sessionId: sessionID });
+
+    const result = ctx.runtime.completionPolicy.evaluateAndComplete({
+      runId: run.id,
+      sessionId: sessionID,
+      verificationId: "missing-live-verification",
+    });
+    expect(result.status).toBe("BLOCKED");
+    expect(result.blockerReasons).toContain("LIVE_VERIFICATION_MISSING");
+    expect(ctx.runtime.orchestrationSnapshotService.getSnapshot(run.id, sessionID)?.phase).toBe(OP.VERIFYING);
+  });
+
+  it("fails closed when a passed verification becomes stale or its authority JSON is corrupt", async () => {
+    const ctx = acquireProjectRuntime(TEST_DIR);
+    const sessionID = "completion-policy-stale-corrupt";
+    const { run, delegation } = await createCompletedChild(ctx, sessionID, "Worker prose: PASS", true);
+    ctx.runtime.db.query("UPDATE task_runs SET baseline_sha = ? WHERE run_id = ?").run("b".repeat(40), run.id);
+    ctx.runtime.transitionEngine.evaluate({ runId: run.id, sessionId: sessionID });
+    const snapshot = ctx.runtime.orchestrationSnapshotService.getSnapshot(run.id, sessionID)!;
+    const fingerprint = ctx.runtime.orchestrationSnapshotService.computeStateFingerprint(run.id, sessionID)!;
+    const request = await ctx.runtime.services.verificationService.requestLiveVerification({
+      runId: run.id,
+      stateVersion: snapshot.aggregateVersion,
+      stateFingerprint: fingerprint,
+      checkType: "live_orchestration",
+      correlationId: run.id,
+      targetSha: "b".repeat(40),
+      evidenceIds: snapshot.workItems.flatMap(item => item.evidenceIds),
+    });
+    await ctx.runtime.services.verificationService.evaluateLiveVerification(request.id, {
+      requiredChecksComplete: true,
+      requiredChecksPassed: true,
+      evidenceIds: request.evidenceIds ?? [],
+      failureReasons: [],
+    });
+
+    ctx.runtime.db.query(
+      "INSERT INTO assignment_files (id, assignment_id, file_path, change_type, content_hash) VALUES (?, ?, 'src/stale.ts', 'modify', 'stale-after-pass')",
+    ).run("completion-policy-stale-artifact", delegation.assignmentId);
+    const stale = ctx.runtime.completionPolicy.evaluateAndComplete({ runId: run.id, sessionId: sessionID, verificationId: request.id });
+    expect(stale.status).toBe("BLOCKED");
+    expect(stale.blockerReasons).toContain("VERIFICATION_STATE_FINGERPRINT_STALE");
+
+    ctx.runtime.db.query("UPDATE verification_results SET evidence_json = '{bad-json' WHERE id = ?").run(request.id);
+    const corrupt = ctx.runtime.completionPolicy.evaluateAndComplete({ runId: run.id, sessionId: sessionID, verificationId: request.id });
+    expect(corrupt.status).toBe("BLOCKED");
+    expect(corrupt.blockerReasons).toContain("LIVE_VERIFICATION_EVIDENCE_JSON_CORRUPT");
+    await expect(ctx.runtime.services.verificationService.getVerification(request.id)).rejects.toThrow("CORRUPT_LIVE_VERIFICATION_ROW:evidence_json");
+    expect(ctx.runtime.orchestrationSnapshotService.getSnapshot(run.id, sessionID)?.phase).toBe(OP.VERIFYING);
   });
 
   it("persists a verification failure and routes the Run through recovering rather than terminal completion", async () => {

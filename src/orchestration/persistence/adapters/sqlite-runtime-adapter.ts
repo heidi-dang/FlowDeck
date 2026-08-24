@@ -45,6 +45,9 @@ export class SqliteTaskRunAdapter {
 
   updateStateSync(runId: string, state: string, expectedVersion: number): void {
     const dbState = mapState(state);
+    if (dbState === "completed") {
+      throw new Error("COMPLETION_POLICY_REQUIRED: direct task-run completion is forbidden");
+    }
     const r = this.db.query("UPDATE task_runs SET state=?,aggregate_version=aggregate_version+1 WHERE run_id=? AND aggregate_version=?").run(dbState, runId, expectedVersion)
     if (r.changes === 0) throw new ConcurrencyError(1, `task_run ${runId} version mismatch: expected ${expectedVersion}`)
   }

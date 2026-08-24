@@ -48,24 +48,14 @@ export class CompletionService {
     return c;
   }
 
-  async completeRun(id: string, summary: string, outcome: "success" | "failure" | "partial"): Promise<Completion> {
-    const now = new Date().toISOString();
-    const updated = await this.completionRepo.update(id, {
-      status: CompletionStatus.COMPLETED, summary, outcome,
-      completedAt: now,
+  /**
+   * Kept only as an explicit compatibility rejection for the legacy endpoint.
+   * CompletionPolicy owns the Run phase transition and durable review/event
+   * record; arbitrary summaries and outcomes can never finalize a Run.
+   */
+  async completeRun(_id: string, _summary: string, _outcome: "success" | "failure" | "partial"): Promise<Completion> {
+    throw OrchestrationError.fromCode(ErrorCodes.COMPLETION_POLICY_REQUIRED, {
+      message: "Run completion is exclusively authorized by CompletionPolicy after durable state-bound verification.",
     });
-    if (!updated) throw OrchestrationError.fromCode(ErrorCodes.ENTITY_NOT_FOUND);
-
-    await this.eventBus.publish(createEvent(
-      OrchestrationEventType.COMPLETION_COMPLETED,
-      {
-        correlationId: updated.correlationId,
-        causationId: updated.correlationId,
-        aggregateId: id,
-        runId: updated.runId,
-        data: { outcome, summary },
-      },
-    ));
-    return updated;
   }
 }
