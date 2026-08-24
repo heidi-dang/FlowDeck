@@ -4,6 +4,7 @@ use crate::intelligence::policy::model::{
     POLICY_CONTRACT_VERSION,
 };
 use crate::intelligence::runtime::sha256_bytes;
+use crate::intelligence::testplan::model::{PlannedCheck, VerificationPlan};
 use serde::Serialize;
 
 pub fn compute_promotion_policy_digest(policy: &PromotionPolicy) -> Result<String, String> {
@@ -47,6 +48,14 @@ pub fn compute_candidate_digest(candidate: &PolicyCandidate) -> Result<String, S
         estimated_added_runtime_ms: candidate.estimated_added_runtime_ms,
         state: &candidate.state,
     })
+}
+
+pub fn compute_template_digest(template: &PlannedCheck) -> Result<String, String> {
+    compute_canonical_sha256(template)
+}
+
+pub fn compute_verification_plan_digest(plan: &VerificationPlan) -> Result<String, String> {
+    compute_canonical_sha256(plan)
 }
 
 pub fn compute_snapshot_digest(snapshot: &PolicySnapshot) -> Result<String, String> {

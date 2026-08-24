@@ -1,8 +1,51 @@
 use fdx::intelligence::migration::migrate_schema;
 use fdx::intelligence::policy::{
-    generate_candidates, promote_candidate, revoke_policy, PolicyState, PromotionPolicy,
+    active_policy_snapshot, compute_template_digest, generate_candidates,
+    load_persisted_overlay_templates, promote_candidate_with_materialized_template, revoke_policy,
+    MaterializedPolicyTemplate, PolicyCheckTemplate, PolicyState, PolicyTemplateProvenance,
+    PromotionPolicy,
 };
+use fdx::intelligence::testplan::model::{PlannedCheck, SelectionReason, VerificationCheckKind};
+use fdx::protocol::EvidenceStrength;
 use rusqlite::{params, Connection};
+
+fn materialized_template(
+    calibration_id: &str,
+    artifact: &str,
+    record: &str,
+) -> MaterializedPolicyTemplate {
+    materialized_template_for("cargo-test", calibration_id, artifact, record)
+}
+
+fn materialized_template_for(
+    check_id: &str,
+    calibration_id: &str,
+    artifact: &str,
+    record: &str,
+) -> MaterializedPolicyTemplate {
+    MaterializedPolicyTemplate {
+        template: PolicyCheckTemplate {
+            check: PlannedCheck {
+                check_id: check_id.to_string(),
+                display_name: check_id.to_string(),
+                kind: VerificationCheckKind::Custom,
+                scope: "pkg.alpha".to_string(),
+                reason: "learned additive policy check for scope pkg.alpha".to_string(),
+                selection: SelectionReason::PolicyWidening,
+                strength: EvidenceStrength::Structural,
+                evidence_path: None,
+                evidence_refs: Vec::new(),
+                widening_reason: Some("learned_policy_add_check".to_string()),
+                mandatory: true,
+            },
+        },
+        provenance: PolicyTemplateProvenance {
+            source_calibration_id: calibration_id.to_string(),
+            source_artifact_sha256: artifact.to_string(),
+            source_record_digest: record.to_string(),
+        },
+    }
+}
 
 #[allow(clippy::too_many_arguments)]
 fn insert_calibration_run(
@@ -705,12 +748,27 @@ fn test_explicit_promotion_revalidates_evidence_and_revocation_is_idempotent() {
         .unwrap()
         .remove(0);
 
-    let promoted = promote_candidate(&mut conn, &candidate.candidate_id, &policy, 2_000).unwrap();
+    let template =
+        materialized_template("promotion-a", "artifact-promotion-a", "record-promotion-a");
+    let promoted = promote_candidate_with_materialized_template(
+        &mut conn,
+        &candidate.candidate_id,
+        &policy,
+        &template,
+        2_000,
+    )
+    .unwrap();
     assert_eq!(promoted.state, PolicyState::Promoted);
     assert_eq!(
-        promote_candidate(&mut conn, &candidate.candidate_id, &policy, 3_000)
-            .unwrap()
-            .policy_id,
+        promote_candidate_with_materialized_template(
+            &mut conn,
+            &candidate.candidate_id,
+            &policy,
+            &template,
+            3_000,
+        )
+        .unwrap()
+        .policy_id,
         promoted.policy_id
     );
     let promotion_events: i64 = conn
@@ -741,6 +799,192 @@ fn test_explicit_promotion_revalidates_evidence_and_revocation_is_idempotent() {
         )
         .unwrap();
     assert_eq!(revocation_events, 1);
+}
+
+#[test]
+fn test_promotion_persists_exact_template_and_active_overlay_loading_fails_closed_on_tamper() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    migrate_schema(&mut conn, 0, 10).unwrap();
+    for (id, started, artifact, record) in [
+        (
+            "template-a",
+            200,
+            "artifact-template-a",
+            "record-template-a",
+        ),
+        (
+            "template-b",
+            100,
+            "artifact-template-b",
+            "record-template-b",
+        ),
+    ] {
+        insert_calibration_run(
+            &conn,
+            id,
+            started,
+            2,
+            "complete",
+            false,
+            Some(artifact),
+            Some(record),
+            true,
+            0,
+        );
+        insert_calibration_check(
+            &conn,
+            id,
+            "cargo-test",
+            "pkg.alpha",
+            false,
+            true,
+            true,
+            "failed",
+            "observed_shadow_miss",
+            true,
+            20,
+        );
+    }
+    let policy = PromotionPolicy::default();
+    let candidate = generate_candidates(&mut conn, &policy, 1_000)
+        .unwrap()
+        .remove(0);
+    let materialized =
+        materialized_template("template-a", "artifact-template-a", "record-template-a");
+    let expected_template_digest = compute_template_digest(&materialized.template.check).unwrap();
+    let promoted = promote_candidate_with_materialized_template(
+        &mut conn,
+        &candidate.candidate_id,
+        &policy,
+        &materialized,
+        2_000,
+    )
+    .unwrap();
+    assert_eq!(promoted.template_digest, expected_template_digest);
+
+    let snapshot = active_policy_snapshot(&conn).unwrap();
+    assert_eq!(snapshot.policies, vec![promoted.clone()]);
+    let templates = load_persisted_overlay_templates(&conn, &snapshot).unwrap();
+    assert_eq!(
+        templates.get(&promoted.template_digest),
+        Some(&materialized.template.check)
+    );
+    let stored_json: String = conn
+        .query_row(
+            "SELECT planned_check_json FROM policy_check_templates WHERE template_digest = ?1",
+            params![promoted.template_digest],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(stored_json.contains("learned_policy_add_check"));
+
+    conn.execute(
+        "UPDATE policy_check_templates SET planned_check_json = '{\"check_id\":\"tampered\"}' WHERE template_digest = ?1",
+        params![promoted.template_digest],
+    )
+    .unwrap();
+    assert!(load_persisted_overlay_templates(&conn, &snapshot).is_err());
+}
+
+#[test]
+fn test_active_policy_snapshot_fails_closed_for_null_template_unknown_action_and_bad_provenance() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    migrate_schema(&mut conn, 0, 10).unwrap();
+    for (id, started, artifact, record) in [
+        (
+            "snapshot-a",
+            200,
+            "artifact-snapshot-a",
+            "record-snapshot-a",
+        ),
+        (
+            "snapshot-b",
+            100,
+            "artifact-snapshot-b",
+            "record-snapshot-b",
+        ),
+    ] {
+        insert_calibration_run(
+            &conn,
+            id,
+            started,
+            2,
+            "complete",
+            false,
+            Some(artifact),
+            Some(record),
+            true,
+            0,
+        );
+        insert_calibration_check(
+            &conn,
+            id,
+            "cargo-test",
+            "pkg.alpha",
+            false,
+            true,
+            true,
+            "failed",
+            "observed_shadow_miss",
+            true,
+            20,
+        );
+    }
+    let policy = PromotionPolicy::default();
+    let candidate = generate_candidates(&mut conn, &policy, 1_000)
+        .unwrap()
+        .remove(0);
+    let materialized =
+        materialized_template("snapshot-a", "artifact-snapshot-a", "record-snapshot-a");
+    let promoted = promote_candidate_with_materialized_template(
+        &mut conn,
+        &candidate.candidate_id,
+        &policy,
+        &materialized,
+        2_000,
+    )
+    .unwrap();
+
+    conn.execute(
+        "UPDATE promoted_policies SET template_digest = NULL WHERE policy_id = ?1",
+        params![promoted.policy_id],
+    )
+    .unwrap();
+    assert!(active_policy_snapshot(&conn).is_err());
+    conn.execute(
+        "UPDATE promoted_policies SET template_digest = ?2 WHERE policy_id = ?1",
+        params![promoted.policy_id, promoted.template_digest],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE promoted_policies SET action = 'remove_check' WHERE policy_id = ?1",
+        params![promoted.policy_id],
+    )
+    .unwrap();
+    assert!(active_policy_snapshot(&conn).is_err());
+    conn.execute(
+        "UPDATE promoted_policies SET action = 'add_check' WHERE policy_id = ?1",
+        params![promoted.policy_id],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE promoted_policies SET state = 'candidate' WHERE policy_id = ?1",
+        params![promoted.policy_id],
+    )
+    .unwrap();
+    assert!(active_policy_snapshot(&conn).is_err());
+    conn.execute(
+        "UPDATE promoted_policies SET state = 'promoted' WHERE policy_id = ?1",
+        params![promoted.policy_id],
+    )
+    .unwrap();
+    let snapshot = active_policy_snapshot(&conn).unwrap();
+    conn.execute(
+        "UPDATE policy_check_templates SET source_record_digest = 'not-qualified' WHERE template_digest = ?1",
+        params![promoted.template_digest],
+    )
+    .unwrap();
+    assert!(load_persisted_overlay_templates(&conn, &snapshot).is_err());
 }
 
 #[test]
@@ -786,7 +1030,15 @@ fn test_promotion_fails_when_qualified_evidence_is_changed_after_candidate_gener
         [],
     )
     .unwrap();
-    let error = promote_candidate(&mut conn, &candidate.candidate_id, &policy, 2_000).unwrap_err();
+    let template = materialized_template("stale-a", "artifact-stale-a", "record-stale-a");
+    let error = promote_candidate_with_materialized_template(
+        &mut conn,
+        &candidate.candidate_id,
+        &policy,
+        &template,
+        2_000,
+    )
+    .unwrap_err();
     assert!(error.contains("evidence no longer satisfies"));
     let count: i64 = conn
         .query_row("SELECT count(*) FROM promoted_policies", [], |row| {
@@ -794,4 +1046,210 @@ fn test_promotion_fails_when_qualified_evidence_is_changed_after_candidate_gener
         })
         .unwrap();
     assert_eq!(count, 0);
+}
+
+#[test]
+fn test_concurrent_template_bound_promotions_commit_one_policy_and_one_event() {
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+
+    let db_path = std::env::temp_dir().join(format!(
+        "fdx-m11-policy-concurrency-{}-{}.sqlite",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let mut setup = Connection::open(&db_path).unwrap();
+    migrate_schema(&mut setup, 0, 10).unwrap();
+    for (id, started, artifact, record) in [
+        (
+            "concurrency-a",
+            200,
+            "artifact-concurrency-a",
+            "record-concurrency-a",
+        ),
+        (
+            "concurrency-b",
+            100,
+            "artifact-concurrency-b",
+            "record-concurrency-b",
+        ),
+    ] {
+        insert_calibration_run(
+            &setup,
+            id,
+            started,
+            2,
+            "complete",
+            false,
+            Some(artifact),
+            Some(record),
+            true,
+            0,
+        );
+        insert_calibration_check(
+            &setup,
+            id,
+            "cargo-test",
+            "pkg.alpha",
+            false,
+            true,
+            true,
+            "failed",
+            "observed_shadow_miss",
+            true,
+            20,
+        );
+    }
+    let policy = PromotionPolicy::default();
+    let candidate = generate_candidates(&mut setup, &policy, 1_000)
+        .unwrap()
+        .remove(0);
+    let candidate_id = candidate.candidate_id;
+    let template = materialized_template(
+        "concurrency-a",
+        "artifact-concurrency-a",
+        "record-concurrency-a",
+    );
+    drop(setup);
+
+    let workers = 20;
+    let barrier = Arc::new(Barrier::new(workers));
+    let mut handles = Vec::new();
+    for worker in 0..workers {
+        let barrier = Arc::clone(&barrier);
+        let db_path = db_path.clone();
+        let candidate_id = candidate_id.clone();
+        let policy = policy.clone();
+        let template = template.clone();
+        handles.push(thread::spawn(move || {
+            let mut conn = Connection::open(db_path).unwrap();
+            barrier.wait();
+            promote_candidate_with_materialized_template(
+                &mut conn,
+                &candidate_id,
+                &policy,
+                &template,
+                2_000 + worker as u64,
+            )
+        }));
+    }
+    let results = handles
+        .into_iter()
+        .map(|handle| handle.join().unwrap().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(results.len(), workers);
+    assert!(results
+        .iter()
+        .all(|item| item.policy_id == results[0].policy_id));
+
+    let conn = Connection::open(&db_path).unwrap();
+    let policy_count: i64 = conn
+        .query_row("SELECT count(*) FROM promoted_policies", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    let event_count: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM policy_events WHERE event_kind = 'promoted'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let template_count: i64 = conn
+        .query_row("SELECT count(*) FROM policy_check_templates", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(policy_count, 1);
+    assert_eq!(event_count, 1);
+    assert_eq!(template_count, 1);
+    std::fs::remove_file(db_path).unwrap();
+}
+
+#[test]
+fn test_promotion_enforces_per_trigger_additive_cap_without_mutating_second_candidate() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    migrate_schema(&mut conn, 0, 10).unwrap();
+    for (id, started, artifact, record) in [
+        ("cap-a", 200, "artifact-cap-a", "record-cap-a"),
+        ("cap-b", 100, "artifact-cap-b", "record-cap-b"),
+    ] {
+        insert_calibration_run(
+            &conn,
+            id,
+            started,
+            2,
+            "complete",
+            false,
+            Some(artifact),
+            Some(record),
+            true,
+            0,
+        );
+        for check_id in ["cargo-test", "cargo-test-extra"] {
+            insert_calibration_check(
+                &conn,
+                id,
+                check_id,
+                "pkg.alpha",
+                false,
+                true,
+                true,
+                "failed",
+                "observed_shadow_miss",
+                true,
+                20,
+            );
+        }
+    }
+    let policy = PromotionPolicy::default();
+    let candidates = generate_candidates(&mut conn, &policy, 1_000).unwrap();
+    assert_eq!(candidates.len(), 2);
+    let first = candidates
+        .iter()
+        .find(|candidate| candidate.check_id == "cargo-test")
+        .unwrap();
+    let second = candidates
+        .iter()
+        .find(|candidate| candidate.check_id == "cargo-test-extra")
+        .unwrap();
+    promote_candidate_with_materialized_template(
+        &mut conn,
+        &first.candidate_id,
+        &policy,
+        &materialized_template_for("cargo-test", "cap-a", "artifact-cap-a", "record-cap-a"),
+        2_000,
+    )
+    .unwrap();
+    let error = promote_candidate_with_materialized_template(
+        &mut conn,
+        &second.candidate_id,
+        &policy,
+        &materialized_template_for(
+            "cargo-test-extra",
+            "cap-a",
+            "artifact-cap-a",
+            "record-cap-a",
+        ),
+        3_000,
+    )
+    .unwrap_err();
+    assert!(error.contains("additive check cap"));
+    let second_state: String = conn
+        .query_row(
+            "SELECT state FROM policy_candidates WHERE candidate_id = ?1",
+            params![second.candidate_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(second_state, "eligible");
+    let promoted_count: i64 = conn
+        .query_row("SELECT count(*) FROM promoted_policies", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(promoted_count, 1);
 }
