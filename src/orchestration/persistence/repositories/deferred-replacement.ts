@@ -53,11 +53,11 @@ export class SqliteDeferredReplacementRepository {
 
     this.db.exec("BEGIN IMMEDIATE")
     try {
-      // 1. Mark existing active pending/resuming/handoff records as superseded by the new replacement
+      // 1. Mark existing active pending/resuming/handoff/blocked records as superseded by the new replacement
       this.db.query(`
         UPDATE deferred_replacements
         SET status = 'superseded', superseded_by_id = ?, updated_at = ?
-        WHERE parent_session_id = ? AND status IN ('pending_termination', 'resuming', 'handoff_pending', 'handoff_outcome_unknown')
+        WHERE parent_session_id = ? AND status IN ('pending_termination', 'resuming', 'handoff_pending', 'handoff_outcome_unknown', 'blocked')
       `).run(id, now, input.parentSessionId)
 
       // 2. Insert new pending replacement
@@ -108,7 +108,7 @@ export class SqliteDeferredReplacementRepository {
   findCurrentForSession(parentSessionId: string): DeferredReplacementRecord | null {
     const row = this.db.query(`
       SELECT * FROM deferred_replacements
-      WHERE parent_session_id = ? AND status IN ('pending_termination', 'resuming', 'handoff_pending', 'handoff_outcome_unknown')
+      WHERE parent_session_id = ? AND status IN ('pending_termination', 'resuming', 'handoff_pending', 'handoff_outcome_unknown', 'blocked')
       ORDER BY created_at DESC
       LIMIT 1
     `).get(parentSessionId) as any
@@ -132,7 +132,7 @@ export class SqliteDeferredReplacementRepository {
     const res = this.db.query(`
       UPDATE deferred_replacements
       SET status = 'resuming', updated_at = ?
-      WHERE id = ? AND status = 'pending_termination'
+      WHERE id = ? AND status IN ('pending_termination', 'handoff_pending')
     `).run(now, id)
 
     return res.changes > 0
@@ -187,7 +187,7 @@ export class SqliteDeferredReplacementRepository {
     const res = this.db.query(`
       UPDATE deferred_replacements
       SET status = 'superseded', superseded_by_id = ?, updated_at = ?
-      WHERE id = ? AND status IN ('pending_termination', 'resuming', 'handoff_pending', 'handoff_outcome_unknown')
+      WHERE id = ? AND status IN ('pending_termination', 'resuming', 'handoff_pending', 'handoff_outcome_unknown', 'blocked')
     `).run(supersededById, now, id)
 
     return res.changes > 0
@@ -198,7 +198,7 @@ export class SqliteDeferredReplacementRepository {
     const res = this.db.query(`
       UPDATE deferred_replacements
       SET status = 'cancelled', updated_at = ?
-      WHERE id = ? AND status IN ('pending_termination', 'resuming', 'handoff_pending', 'handoff_outcome_unknown')
+      WHERE id = ? AND status IN ('pending_termination', 'resuming', 'handoff_pending', 'handoff_outcome_unknown', 'blocked')
     `).run(now, id)
 
     return res.changes > 0
@@ -209,7 +209,7 @@ export class SqliteDeferredReplacementRepository {
     const res = this.db.query(`
       UPDATE deferred_replacements
       SET status = 'cancelled', updated_at = ?
-      WHERE parent_session_id = ? AND status IN ('pending_termination', 'resuming', 'handoff_pending', 'handoff_outcome_unknown')
+      WHERE parent_session_id = ? AND status IN ('pending_termination', 'resuming', 'handoff_pending', 'handoff_outcome_unknown', 'blocked')
     `).run(now, parentSessionId)
 
     return res.changes > 0
@@ -220,6 +220,11 @@ export class SqliteDeferredReplacementRepository {
       const rows = this.db.query(`
         SELECT * FROM deferred_replacements
         WHERE status = 'pending_termination'
+           OR (status = 'handoff_pending' AND id NOT IN (
+             SELECT SUBSTR(state_fingerprint, 17) FROM continuation_dispatches
+             WHERE state_fingerprint LIKE 'deferred_resume:%'
+               AND (status IN ('outcome_unknown', 'blocked') OR (status = 'failed' AND attempt_count >= 2))
+           ))
         ORDER BY created_at ASC
       `).all() as any[]
 
@@ -267,11 +272,11 @@ export class SqliteDeferredReplacementRepository {
       for (const row of pendingHandoffRows) {
         // Inspect continuation_dispatches status
         const dispatchRow = this.db.query(`
-          SELECT status FROM continuation_dispatches
+          SELECT status, attempt_count FROM continuation_dispatches
           WHERE state_fingerprint = ?
           ORDER BY created_at DESC
           LIMIT 1
-        `).get(`deferred_resume:${row.id}`) as { status: string } | null
+        `).get(`deferred_resume:${row.id}`) as { status: string; attempt_count: number } | null
 
         if (dispatchRow?.status === "dispatched") {
           this.db.query(`
@@ -280,13 +285,23 @@ export class SqliteDeferredReplacementRepository {
             WHERE id = ? AND status = 'handoff_pending'
           `).run(now, now, row.id)
           recoveredResumed++
-        } else {
+        } else if (dispatchRow?.status === "outcome_unknown") {
           this.db.query(`
             UPDATE deferred_replacements
             SET status = 'handoff_outcome_unknown', updated_at = ?
             WHERE id = ? AND status = 'handoff_pending'
           `).run(now, row.id)
           recoveredOutcomeUnknown++
+        } else if (dispatchRow?.status === "blocked" || (dispatchRow?.status === "failed" && dispatchRow.attempt_count >= 2)) {
+          this.db.query(`
+            UPDATE deferred_replacements
+            SET status = 'blocked', updated_at = ?
+            WHERE id = ? AND status = 'handoff_pending'
+          `).run(now, row.id)
+        } else if (dispatchRow?.status === "failed" && dispatchRow.attempt_count < 2) {
+          // Known failed with retry attempts remaining: keep status='handoff_pending' so startup drain can retry dispatch
+        } else {
+          // No dispatch row yet (crashed before claim inserted): keep handoff_pending so startup drain can resume
         }
       }
     } catch {}
