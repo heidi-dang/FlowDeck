@@ -1253,3 +1253,94 @@ fn test_promotion_enforces_per_trigger_additive_cap_without_mutating_second_cand
         .unwrap();
     assert_eq!(promoted_count, 1);
 }
+
+#[test]
+fn test_policy_selected_future_observation_cannot_self_reinforce_promoted_support() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    migrate_schema(&mut conn, 0, 10).unwrap();
+    for (calibration_id, started_at_ms, artifact, record) in [
+        ("initial-a", 200, "artifact-initial-a", "record-initial-a"),
+        ("initial-b", 100, "artifact-initial-b", "record-initial-b"),
+    ] {
+        insert_calibration_run(
+            &conn,
+            calibration_id,
+            started_at_ms,
+            2,
+            "complete",
+            false,
+            Some(artifact),
+            Some(record),
+            true,
+            0,
+        );
+        insert_calibration_check(
+            &conn,
+            calibration_id,
+            "cargo-test",
+            "pkg.alpha",
+            false,
+            true,
+            true,
+            "failed",
+            "observed_shadow_miss",
+            true,
+            25,
+        );
+    }
+    let policy = PromotionPolicy::default();
+    let initial = generate_candidates(&mut conn, &policy, 1_000).unwrap();
+    assert_eq!(initial.len(), 1);
+    let candidate = initial[0].clone();
+    assert_eq!(candidate.support_count, 2);
+    promote_candidate_with_materialized_template(
+        &mut conn,
+        &candidate.candidate_id,
+        &policy,
+        &materialized_template("initial-a", "artifact-initial-a", "record-initial-a"),
+        1_000,
+    )
+    .unwrap();
+
+    // This represents a future calibration in which the already-promoted policy selected the
+    // check. It must remain excluded even though the physical execution fails as a shadow miss.
+    insert_calibration_run(
+        &conn,
+        "future-policy-selected",
+        300,
+        2,
+        "complete",
+        false,
+        Some("artifact-future-policy"),
+        Some("record-future-policy"),
+        true,
+        0,
+    );
+    insert_calibration_check(
+        &conn,
+        "future-policy-selected",
+        "cargo-test",
+        "pkg.alpha",
+        true,
+        true,
+        true,
+        "failed",
+        "observed_shadow_miss",
+        true,
+        25,
+    );
+    let regenerated = generate_candidates(&mut conn, &policy, 2_000).unwrap();
+    let current = regenerated
+        .iter()
+        .find(|item| item.candidate_id == candidate.candidate_id)
+        .unwrap();
+    assert_eq!(current.support_count, 2);
+    let persisted_evidence_count: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM policy_candidate_evidence WHERE candidate_id = ?1",
+            params![candidate.candidate_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(persisted_evidence_count, 2);
+}

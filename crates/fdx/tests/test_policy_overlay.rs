@@ -166,3 +166,70 @@ fn test_overlay_noop_application_is_deterministic_and_additive() {
     assert_eq!(first.application, second.application);
     assert_eq!(first.base_check_ids, vec!["base-check"]);
 }
+
+#[test]
+fn test_duplicate_policy_additions_are_deduped_and_captured_snapshot_stays_immutable() {
+    let base = base_plan();
+    let (mut captured_snapshot, templates) = snapshot_and_templates("pkg.beta", "policy-check");
+    captured_snapshot.snapshot_digest = "captured-two-policy-snapshot".to_string();
+    let first = captured_snapshot.policies[0].clone();
+    let mut second = first.clone();
+    second.candidate_id = "candidate-policy-check-second".to_string();
+    second.candidate_digest = "candidate-digest-policy-check-second".to_string();
+    second.promotion_policy_digest = "promotion-policy-digest-policy-check-second".to_string();
+    second.policy_id = format!(
+        "policy_{}",
+        sha256_bytes(
+            format!(
+                "{}:{}:{}:{}",
+                second.candidate_id,
+                second.candidate_digest,
+                second.promotion_policy_digest,
+                second.template_digest
+            )
+            .as_bytes()
+        )
+    );
+    second.promoted_policy_digest = sha256_bytes(
+        format!(
+            "{}:{}:{}:{}:{}:{}:{}",
+            1,
+            second.candidate_id,
+            "add_check",
+            "scope",
+            second.trigger.scope,
+            second.check_id,
+            second.template_digest
+        )
+        .as_bytes(),
+    );
+    captured_snapshot.policies.push(second.clone());
+    let impacted = BTreeSet::from(["pkg.beta".to_string()]);
+
+    let from_captured =
+        apply_additive_overlay(&base, &captured_snapshot, &templates, &impacted).unwrap();
+    assert_eq!(from_captured.added_check_ids, vec!["policy-check"]);
+    assert_eq!(
+        from_captured
+            .plan
+            .selected_checks
+            .iter()
+            .filter(|check| check.check_id == "policy-check")
+            .count(),
+        1
+    );
+    assert_eq!(
+        from_captured.application.policy_snapshot_digest,
+        "captured-two-policy-snapshot"
+    );
+
+    let mut concurrently_revoked = captured_snapshot.clone();
+    concurrently_revoked.policies[1].state = PolicyState::Revoked;
+    assert!(apply_additive_overlay(&base, &concurrently_revoked, &templates, &impacted).is_err());
+    assert_eq!(
+        apply_additive_overlay(&base, &captured_snapshot, &templates, &impacted)
+            .unwrap()
+            .application,
+        from_captured.application
+    );
+}
