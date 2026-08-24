@@ -53,28 +53,18 @@ struct CalibrationRecordDigestInput<'a> {
 
 /// Compute the digest of semantic calibration evidence. Timestamps are intentionally excluded:
 /// they are operational metadata, not calibration evidence.
-pub fn compute_calibration_record_digest(
-    source_run_id: &str,
-    source_artifact_sha256: &str,
-    candidate_plan_digest: &str,
-    policy_digest: &str,
-    status: CalibrationStatus,
-    reference_truncated: bool,
-    checks: &[ShadowCheckObservation],
-    executions: &[ShadowExecutionObservation],
-    metrics: &CalibrationMetrics,
-) -> Result<String, String> {
+pub fn compute_calibration_record_digest(run: &CalibrationRun) -> Result<String, String> {
     compute_canonical_sha256(&CalibrationRecordDigestInput {
-        calibration_contract_version: CALIBRATION_CONTRACT_VERSION,
-        source_run_id,
-        source_artifact_sha256,
-        candidate_plan_digest,
-        policy_digest,
-        status,
-        reference_truncated,
-        checks,
-        executions,
-        metrics,
+        calibration_contract_version: run.calibration_contract_version,
+        source_run_id: &run.source_run_id,
+        source_artifact_sha256: &run.source_artifact_sha256,
+        candidate_plan_digest: &run.candidate_plan_digest,
+        policy_digest: &run.policy_digest,
+        status: run.status,
+        reference_truncated: run.reference_truncated,
+        checks: &run.checks,
+        executions: &run.executions,
+        metrics: &run.metrics,
     })
 }
 
@@ -354,19 +344,7 @@ pub fn run_calibration_with_source_artifact(
         .unwrap_or_default()
         .as_millis() as u64;
     let duration_ms = start_instant.elapsed().as_millis() as u64;
-    let record_digest = compute_calibration_record_digest(
-        &source_run.run_id,
-        source_artifact_sha256,
-        &candidate_plan_digest,
-        &policy_digest,
-        status,
-        reference_truncated,
-        &shadow_checks,
-        &shadow_executions,
-        &metrics,
-    )?;
-
-    Ok(CalibrationRun {
+    let mut calibration = CalibrationRun {
         calibration_id,
         calibration_contract_version: CALIBRATION_CONTRACT_VERSION,
         source_run_id: source_run.run_id.clone(),
@@ -380,11 +358,13 @@ pub fn run_calibration_with_source_artifact(
         checks: shadow_checks,
         executions: shadow_executions,
         metrics,
-        record_digest,
+        record_digest: String::new(),
         started_at_ms: start_wall,
         completed_at_ms: completed_wall,
         duration_ms,
-    })
+    };
+    calibration.record_digest = compute_calibration_record_digest(&calibration)?;
+    Ok(calibration)
 }
 
 fn validate_reference_superset(

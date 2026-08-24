@@ -13,17 +13,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// record digest is identical. Divergent evidence for an existing key is always a conflict.
 pub fn persist_calibration_run(conn: &mut Connection, run: &CalibrationRun) -> Result<(), String> {
     validate_run_for_persistence(run)?;
-    let recomputed_digest = compute_calibration_record_digest(
-        &run.source_run_id,
-        &run.source_artifact_sha256,
-        &run.candidate_plan_digest,
-        &run.policy_digest,
-        run.status,
-        run.reference_truncated,
-        &run.checks,
-        &run.executions,
-        &run.metrics,
-    )?;
+    let recomputed_digest = compute_calibration_record_digest(run)?;
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
