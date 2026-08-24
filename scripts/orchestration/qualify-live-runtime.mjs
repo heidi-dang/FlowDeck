@@ -119,14 +119,14 @@ for (let index = 1; index <= 3; index += 1) {
   ], `authority-performance-${index}`));
 }
 const performanceDurations = performanceRuns.map(run => run.durationMs).sort((left, right) => left - right);
-const performance = {
+const performanceSummary = {
   runs: performanceRuns.map(run => ({ passed: run.passed, durationMs: run.durationMs })),
   medianMs: performanceDurations[1],
   maxMs: performanceDurations[performanceDurations.length - 1],
   thresholdMs: 5000,
   passed: performanceRuns.every(run => run.passed) && performanceDurations[performanceDurations.length - 1] < 5000,
 };
-checks.push({ label: "authority-performance", ...performance });
+checks.push({ label: "authority-performance", ...performanceSummary });
 
 const report = {
   schemaVersion: 1,
