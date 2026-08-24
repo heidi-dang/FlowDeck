@@ -10,7 +10,7 @@ import {
 } from "../services/heidi-route-state";
 import { classifyTask, type RouterDecision, stableHash } from "../services/heidi-fast-router";
 import type { Event, UserMessage, Part, TextPart } from "@opencode-ai/sdk";
-import { isTerminalRunStatus, type Run } from "../orchestration/types/runs";
+import { isTerminalRunStatus, OrchestrationPhase as OP, type Run } from "../orchestration/types/runs";
 import type { DeferredReplacementRecord } from "../orchestration/persistence/repositories/deferred-replacement";
 import { ErrorCodes } from "../orchestration/types/errors";
 import {
@@ -808,6 +808,95 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
     }
   }
 
+  private async runLiveVerification(runId: string, sessionId: string): Promise<void> {
+    const snapshot = this.runtime.orchestrationSnapshotService.getSnapshot(runId, sessionId);
+    const stateFingerprint = this.runtime.orchestrationSnapshotService.computeStateFingerprint(runId, sessionId);
+    if (!snapshot || !stateFingerprint || snapshot.phase !== OP.VERIFYING || snapshot.terminalState?.isTerminal) return;
+
+    const requiredWorkItems = snapshot.workItems.filter(item => item.isRequired);
+    const evidenceIds = requiredWorkItems.flatMap(item => item.evidenceIds);
+    const request = await this.runtime.services.verificationService.requestLiveVerification({
+      runId,
+      stateVersion: snapshot.aggregateVersion,
+      stateFingerprint,
+      checkType: "live_orchestration",
+      correlationId: runId,
+      evidenceIds,
+    });
+
+    // Reconstruct state after the durable request. The request alone is not a result.
+    const currentSnapshot = this.runtime.orchestrationSnapshotService.getSnapshot(runId, sessionId);
+    const currentFingerprint = this.runtime.orchestrationSnapshotService.computeStateFingerprint(runId, sessionId);
+    if (
+      !currentSnapshot ||
+      currentSnapshot.aggregateVersion !== request.stateVersion ||
+      currentFingerprint !== request.stateFingerprint ||
+      currentSnapshot.phase !== OP.VERIFYING
+    ) {
+      await this.runtime.services.verificationService.markLiveVerificationStale(
+        request.id,
+        "STATE_CHANGED_BEFORE_VERIFICATION_EVALUATION",
+      );
+      return;
+    }
+
+    const currentRequired = currentSnapshot.workItems.filter(item => item.isRequired);
+    const allRequiredSatisfied = currentRequired.length > 0 && currentRequired.every(item => item.isSatisfied);
+    const evaluationEvidenceIds = currentRequired.flatMap(item => item.evidenceIds);
+    const failureReasons: string[] = [];
+    if (!allRequiredSatisfied) failureReasons.push("REQUIRED_WORK_INCOMPLETE");
+    if (currentSnapshot.childState.activeRequired > 0) failureReasons.push("REQUIRED_CHILD_ACTIVE");
+    if (currentSnapshot.childState.failedRequired > 0) failureReasons.push("REQUIRED_CHILD_FAILED");
+    if (currentSnapshot.lifecycleBlocks.cancellationPending) failureReasons.push("CANCELLATION_BARRIER_UNRESOLVED");
+    if (currentSnapshot.lifecycleBlocks.unresolvedDeferredReplacement) failureReasons.push("DEFERRED_REPLACEMENT_UNRESOLVED");
+
+    const result = await this.runtime.services.verificationService.evaluateLiveVerification(request.id, {
+      requiredChecksComplete: allRequiredSatisfied && currentSnapshot.childState.activeRequired === 0,
+      requiredChecksPassed: failureReasons.length === 0,
+      evidenceIds: evaluationEvidenceIds,
+      failureReasons,
+    });
+
+    // A result may only influence the Run if it still belongs to the same persisted state.
+    const applyFingerprint = this.runtime.orchestrationSnapshotService.computeStateFingerprint(runId, sessionId);
+    if (
+      result.stateVersion === undefined ||
+      !result.stateFingerprint ||
+      applyFingerprint !== result.stateFingerprint
+    ) {
+      await this.runtime.services.verificationService.markLiveVerificationStale(
+        result.id,
+        "STATE_CHANGED_BEFORE_VERIFICATION_RESULT_APPLICATION",
+      );
+      return;
+    }
+
+    const observed = this.runtime.transitionEngine.observeVerificationResult({
+      runId,
+      stateVersion: result.stateVersion,
+      stateFingerprint: result.stateFingerprint,
+      status: result.status === "passed" ? "passed" : "failed",
+    });
+    if (observed.reasonCode === "VERIFICATION_STALE") {
+      await this.runtime.services.verificationService.markLiveVerificationStale(
+        result.id,
+        "STATE_CHANGED_DURING_VERIFICATION_RESULT_APPLICATION",
+      );
+      return;
+    }
+
+    this.runtime.progressObservationService.recordVerificationObservation({
+      runId,
+      sessionId,
+      verificationId: result.id,
+      status: result.status,
+      passed: result.status === "passed" ? 1 : 0,
+      failed: result.status === "failed" ? 1 : 0,
+      evidenceIds: result.evidenceIds,
+      fingerprint: `${result.status === "passed" ? 1 : 0}:${result.status === "failed" ? 1 : 0}:${result.stateFingerprint}`,
+    });
+  }
+
   async onSessionIdle(sessionID: string) {
     if (this.disposed) return;
     // 1. Only retire the route if this session is currently in an active FAST_DIRECT turn token
@@ -835,6 +924,13 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
       if (refreshed) {
         snapshot = refreshed;
       }
+    }
+
+    // session.idle merely triggers this deterministic path. Durable work, child,
+    // barrier, and evidence state decide whether verification can happen.
+    if (transition.reasonCode === "READY_FOR_VERIFICATION" && snapshot.phase === OP.VERIFYING) {
+      await this.runLiveVerification(activeRun.id, sessionID);
+      return;
     }
 
     const continuation = this.runtime.continuationPolicy.evaluate({

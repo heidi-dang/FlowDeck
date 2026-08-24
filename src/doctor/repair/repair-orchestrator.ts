@@ -7,6 +7,7 @@ import { repairPluginRegistration } from "./repairers/plugin-registration-repair
 import { repairSkillsAndLockfile } from "./repairers/skills-repairer"
 import { repairFdxBinary } from "./repairers/fdx-repairer"
 import { repairMcpConfiguration } from "./repairers/mcp-repairer"
+import { applyAutoFixes } from "../apply/apply"
 import type {
   AutoFixResult,
   CheckResult,
@@ -187,6 +188,10 @@ export class DoctorRepairOrchestrator {
   private async dispatchRepairer(check: CheckResult): Promise<AutoFixResult | null> {
     const id = check.id
 
+    if (id === "plugin.bundle") {
+      const [result] = await applyAutoFixes([check], { ...this.options, directory: this.directory })
+      return result ?? null
+    }
     if (id.startsWith("filesystem.permissions")) {
       return repairPermissions(this.directory)
     }

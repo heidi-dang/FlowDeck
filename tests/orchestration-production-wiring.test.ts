@@ -1518,7 +1518,7 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
 
     // 1. Run migrations up to v12 (simulate historical database that has v12 ledger)
     runMigrations(db);
-    expect(getCurrentVersion(db)).toBe(13);
+    expect(getCurrentVersion(db)).toBe(14);
 
     // 2. Now test upgrade from exact historical v12 state:
     const db2 = new Database(":memory:");
@@ -1545,9 +1545,9 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
       )
     `).run();
 
-    // Run migrations to apply v13
+    // Run migrations to apply V13 and the forward-only V14 follow-up.
     runMigrations(db2);
-    expect(getCurrentVersion(db2)).toBe(13);
+    expect(getCurrentVersion(db2)).toBe(14);
 
     // Assert attempt_count=2 and last_attempt_at='2026-08-20T10:05:00Z' were preserved!
     const row = db2.query("SELECT * FROM continuation_dispatches WHERE identity = 'id-v12-existing'").get() as any;
@@ -2107,9 +2107,9 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
       ) VALUES ('id-legacy', 'run-leg', 'sess-leg', 1, 1, 'PROGRESS_CONFIRMED', 'as-1', 'fp-leg', 'dispatched', '2026-08-01T10:00:00Z')
     `).run();
 
-    // Run migrations (applies v12 historical and v13)
+    // Run migrations (applies V12 historical, V13, and the V14 follow-up).
     runMigrations(db);
-    expect(getCurrentVersion(db)).toBe(13);
+    expect(getCurrentVersion(db)).toBe(14);
 
     const row = db.query("SELECT * FROM continuation_dispatches WHERE identity = 'id-legacy'").get() as any;
     expect(row.attempt_count).toBe(1);
@@ -2795,7 +2795,7 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     // 3. Verifies tamper with ledger throws MigrationChecksumError
     const db = new Database(":memory:");
     runMigrations(db);
-    expect(getCurrentVersion(db)).toBe(13);
+    expect(getCurrentVersion(db)).toBe(14);
 
     db.query("UPDATE schema_migrations SET checksum = 'tampered_v13_checksum' WHERE version = 13").run();
     expect(() => {

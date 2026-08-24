@@ -64,6 +64,10 @@ export interface OrchestrationSnapshot {
     failedOptional: number;
     cancelRequested: number;
   };
+  lifecycleBlocks: {
+    cancellationPending: boolean;
+    unresolvedDeferredReplacement: boolean;
+  };
   verificationState?: {
     lastVerificationHash?: string;
   };
@@ -87,8 +91,57 @@ export class OrchestrationSnapshotService {
   computeStateFingerprint(runId: string, sessionId?: string): string | null {
     const snap = this.getSnapshot(runId, sessionId);
     if (!snap) return null;
-    const raw = `${snap.runId}:${snap.aggregateVersion}:${snap.phase}:${snap.currentWorkItemId ?? ""}:${snap.childState.activeRequired}:${snap.childState.failedRequired}:${snap.progress.noProgressCount}:${snap.progress.lastRepositoryDelta}:${snap.progress.lastEvidenceDelta}`;
-    return createHash("sha256").update(raw).digest("hex").slice(0, 16);
+    const repositoryArtifacts = this.db.query(
+      `SELECT af.assignment_id, af.file_path, af.change_type, COALESCE(af.content_hash, '') AS content_hash
+       FROM assignment_files af
+       INNER JOIN assignments a ON a.id = af.assignment_id
+       WHERE a.run_id = ?
+       ORDER BY af.assignment_id, af.file_path, af.change_type, af.id`,
+    ).all(runId);
+    const assignmentResults = this.db.query(
+      `SELECT ar.id, ar.assignment_id, ar.step_number, ar.status,
+              COALESCE(ar.tests_passed, 0) AS tests_passed,
+              COALESCE(ar.tests_failed, 0) AS tests_failed,
+              COALESCE(ar.output_summary, '') AS output_summary,
+              COALESCE(ar.error_output, '') AS error_output,
+              COALESCE(ar.completed_at, '') AS completed_at
+       FROM assignment_results ar
+       INNER JOIN assignments a ON a.id = ar.assignment_id
+       WHERE a.run_id = ?
+       ORDER BY ar.assignment_id, ar.step_number, ar.id`,
+    ).all(runId);
+    const runEvidence = this.db.query(
+      `SELECT e.id, e.evidence_type, e.source, COALESCE(e.source_id, '') AS source_id,
+              e.content_hash, e.sha, COALESCE(el.status, 'current') AS lifecycle_status
+       FROM evidence e
+       LEFT JOIN evidence_lifecycle el ON el.evidence_id = e.id
+       WHERE e.run_id = ?
+       ORDER BY e.id`,
+    ).all(runId);
+    const state = {
+      runId: snap.runId,
+      aggregateVersion: snap.aggregateVersion,
+      phase: snap.phase,
+      currentWorkItemId: snap.currentWorkItemId ?? "",
+      workItems: snap.workItems.map(item => ({
+        id: item.id,
+        status: item.status,
+        isRequired: item.isRequired,
+        isSatisfied: item.isSatisfied,
+        evidenceIds: [...item.evidenceIds].sort(),
+        lastResultFingerprint: item.lastResultFingerprint ?? "",
+      })),
+      childState: snap.childState,
+      lifecycleBlocks: snap.lifecycleBlocks,
+      repositoryArtifacts,
+      assignmentResults,
+      runEvidence,
+      progress: {
+        lastRepositoryDelta: snap.progress.lastRepositoryDelta,
+        lastEvidenceDelta: snap.progress.lastEvidenceDelta,
+      },
+    };
+    return createHash("sha256").update(JSON.stringify(state)).digest("hex").slice(0, 32);
   }
 
   getSnapshot(runId: string, sessionId?: string): OrchestrationSnapshot | null {
@@ -111,6 +164,28 @@ export class OrchestrationSnapshotService {
     const assignmentRows = this.db.query("SELECT * FROM assignments WHERE run_id = ? ORDER BY created_at ASC, id ASC").all(runId) as Record<string, unknown>[];
     const childRecords = this.nativeChildRepo.listAll(runId);
     const childByAssignment = new Map(childRecords.map(c => [c.assignmentId, c]));
+
+    // Verification may only consume explicit, completed command/test evidence.
+    // A child-session result or successful tool exit is not verification evidence.
+    const assignmentResultRows = this.db.query(
+      `SELECT ar.*
+       FROM assignment_results ar
+       INNER JOIN assignments a ON a.id = ar.assignment_id
+       WHERE a.run_id = ?`,
+    ).all(runId) as Record<string, unknown>[];
+    const verificationEvidenceByAssignment = new Map<string, string[]>();
+    for (const result of assignmentResultRows) {
+      const isCompleted = result.completed_at !== null && result.completed_at !== undefined;
+      const passedTests = Number(result.tests_passed ?? 0) > 0;
+      const failedTests = Number(result.tests_failed ?? 0) === 0;
+      const resultStatus = String(result.status ?? "").toLowerCase();
+      if (isCompleted && passedTests && failedTests && (resultStatus === "passed" || resultStatus === "completed")) {
+        const assignmentId = String(result.assignment_id);
+        const evidence = verificationEvidenceByAssignment.get(assignmentId) ?? [];
+        evidence.push(`assignment_result:${String(result.id)}`);
+        verificationEvidenceByAssignment.set(assignmentId, evidence);
+      }
+    }
 
     // Read attempt records from execution_metadata for this run if any
     const attemptRows = this.db.query("SELECT * FROM execution_metadata WHERE run_id = ? AND key LIKE 'attempt:%'").all(runId) as Record<string, unknown>[];
@@ -143,7 +218,7 @@ export class OrchestrationSnapshotService {
         isRequired,
         isSatisfied,
         attempts: Math.max(attempts.length, row.status === "in_progress" || row.status === "running" ? 1 : 0),
-        evidenceIds: child?.result ? [`child_res:${child.executionId}`] : [],
+        evidenceIds: verificationEvidenceByAssignment.get(id) ?? [],
         lastActionFingerprint: latestAttempt?.actionFingerprint,
         lastResultFingerprint: latestAttempt?.resultFingerprint,
         blockedReason: row.status === "failed" ? String(child?.error ?? "") : undefined,
@@ -186,10 +261,24 @@ export class OrchestrationSnapshotService {
       if (c.cancelRequested && !c.nativeTerminationConfirmed) childCancelRequested += 1;
     }
 
-    // 6. Progress & Diagnostics
+    // 6. Lifecycle barriers must be represented in the same authoritative state
+    // used for verification eligibility and stale-result detection.
+    let unresolvedDeferredReplacement = false;
+    try {
+      const row = this.db.query(
+        `SELECT COUNT(*) AS count FROM deferred_replacements
+         WHERE old_run_id = ? AND status IN ('pending_termination', 'resuming', 'handoff_pending', 'handoff_outcome_unknown')`,
+      ).get(runId) as { count: number } | undefined;
+      unresolvedDeferredReplacement = (row?.count ?? 0) > 0;
+    } catch {
+      // Older pre-V13 databases are not eligible for live verification authority.
+      unresolvedDeferredReplacement = true;
+    }
+
+    // 7. Progress & Diagnostics
     const progDiag = this.progressService.getDiagnosticsForRun(runId);
 
-    // 7. Phase & Terminal status
+    // 8. Phase & Terminal status
     const phase = taskRun.state as OrchestrationPhase;
     const isTerminal = phase === "completed" || phase === "failed" || phase === "cancelled";
 
@@ -221,6 +310,10 @@ export class OrchestrationSnapshotService {
         failedRequired: childFailedRequired,
         failedOptional: childFailedOptional,
         cancelRequested: childCancelRequested,
+      },
+      lifecycleBlocks: {
+        cancellationPending: childCancelRequested > 0,
+        unresolvedDeferredReplacement,
       },
       verificationState: {
         lastVerificationHash: undefined,

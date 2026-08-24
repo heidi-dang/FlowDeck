@@ -70,6 +70,9 @@ export type TransitionReasonCode =
   | "RECOVERY_PROGRESS"
   | "VERIFICATION_REQUIRED"
   | "READY_FOR_VERIFICATION"
+  | "VERIFICATION_PASSED"
+  | "VERIFICATION_FAILED"
+  | "VERIFICATION_STALE"
   | "ALL_WORK_ITEMS_COMPLETE"
   | "WAITING_FOR_CHILDREN"
   | "USER_CANCELLED"
@@ -943,7 +946,25 @@ export class RunTransitionEngine {
       }
     }
 
-    // 5. If child tasks are actively running in the background, must wait (Required-aware)
+    // 5. Verification cannot start while cancellation or deferred replacement has not
+    // durably settled, regardless of a session.idle trigger.
+    if (snapshot.lifecycleBlocks.cancellationPending || snapshot.lifecycleBlocks.unresolvedDeferredReplacement) {
+      return {
+        runId: input.runId,
+        currentPhase,
+        phaseChanged: false,
+        currentWorkItemId: currentWorkItem?.id,
+        workItemChanged: false,
+        strategyDecision: "BLOCK",
+        reasonCode: "BLOCKED",
+        requiresAction: false,
+        blockerReason: snapshot.lifecycleBlocks.cancellationPending
+          ? "Cancellation barrier remains unresolved"
+          : "Deferred replacement barrier remains unresolved",
+      };
+    }
+
+    // 6. If child tasks are actively running in the background, must wait (Required-aware)
     const activeRequiredChildren = snapshot.childState.activeRequired;
     if (activeRequiredChildren > 0) {
       return {
@@ -958,7 +979,7 @@ export class RunTransitionEngine {
       };
     }
 
-    // 6. Check if all required work items are satisfied
+    // 7. Check if all required work items are satisfied
     const requiredWorkItems = workItems.filter(w => w.isRequired);
     const allRequiredSatisfied = requiredWorkItems.length > 0 && requiredWorkItems.every(w => w.isSatisfied);
 
@@ -1001,7 +1022,7 @@ export class RunTransitionEngine {
       };
     }
 
-    // 7. Check if next work item is ready
+    // 8. Check if next work item is ready
     if (currentWorkItem && currentWorkItem.status === "pending") {
       return {
         runId: input.runId,
@@ -1015,7 +1036,7 @@ export class RunTransitionEngine {
       };
     }
 
-    // 8. Conservative fallback: no authoritative delta -> NO_PROGRESS, no autonomous continuation
+    // 9. Conservative fallback: no authoritative delta -> NO_PROGRESS, no autonomous continuation
     return {
       runId: input.runId,
       currentPhase,
@@ -1025,6 +1046,81 @@ export class RunTransitionEngine {
       strategyDecision: "EXECUTE_CURRENT",
       reasonCode: "NO_PROGRESS",
       requiresAction: false,
+    };
+  }
+
+  /**
+   * Applies only a durable result that still names the current authoritative Run state.
+   * A pass remains non-terminal: CompletionPolicy is the sole future authority for
+   * completed. A failure returns the Run to existing recovery semantics.
+   */
+  observeVerificationResult(input: {
+    runId: string;
+    stateVersion: number;
+    stateFingerprint: string;
+    status: "passed" | "failed";
+  }): TransitionEvaluationResult {
+    const snapshot = this.snapshotService.getSnapshot(input.runId);
+    if (!snapshot || TERMINAL_PHASES.has(snapshot.phase)) {
+      return {
+        runId: input.runId,
+        currentPhase: snapshot?.phase ?? OP.FAILED,
+        phaseChanged: false,
+        workItemChanged: false,
+        strategyDecision: "BLOCK",
+        reasonCode: "BLOCKED",
+        requiresAction: false,
+        blockerReason: "Run is absent or terminal before verification result application",
+      };
+    }
+
+    const currentFingerprint = this.snapshotService.computeStateFingerprint(input.runId);
+    if (
+      snapshot.phase !== OP.VERIFYING ||
+      snapshot.aggregateVersion !== input.stateVersion ||
+      currentFingerprint !== input.stateFingerprint
+    ) {
+      return {
+        runId: input.runId,
+        currentPhase: snapshot.phase,
+        phaseChanged: false,
+        workItemChanged: false,
+        strategyDecision: "BLOCK",
+        reasonCode: "VERIFICATION_STALE",
+        requiresAction: false,
+        blockerReason: "Verification result does not match the current authoritative Run state",
+      };
+    }
+
+    if (input.status === "passed") {
+      return {
+        runId: input.runId,
+        currentPhase: OP.VERIFYING,
+        phaseChanged: false,
+        workItemChanged: false,
+        strategyDecision: "EXECUTE_CURRENT",
+        reasonCode: "VERIFICATION_PASSED",
+        requiresAction: false,
+      };
+    }
+
+    const transitioned = this.transitionPhase({
+      runId: input.runId,
+      targetPhase: OP.RECOVERING,
+      expectedPhase: OP.VERIFYING,
+      expectedAggregateVersion: snapshot.aggregateVersion,
+      authority: "transition_engine",
+    });
+    return {
+      runId: input.runId,
+      currentPhase: transitioned ? OP.RECOVERING : OP.VERIFYING,
+      targetPhase: transitioned ? OP.RECOVERING : undefined,
+      phaseChanged: transitioned,
+      workItemChanged: false,
+      strategyDecision: transitioned ? "CHANGE_STRATEGY" : "BLOCK",
+      reasonCode: transitioned ? "VERIFICATION_FAILED" : "TRANSITION_CONFLICT",
+      requiresAction: transitioned,
+      blockerReason: transitioned ? undefined : "CAS transition conflict applying verification failure",
     };
   }
 }

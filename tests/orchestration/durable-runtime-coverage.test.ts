@@ -565,6 +565,7 @@ describe("SqliteVerificationRepo", () => {
           updatedAt: r.createdAt.toISOString(),
         }))
       },
+      findByLiveIdentity: async () => null,
       findMany: async (_filter: Partial<VerificationResult>, pagination: PagePaginationRequest) => {
         const countRow = tdb.db.query("SELECT COUNT(*) AS c FROM verification_results").get() as { c: number }
         const limit = pagination.limit ?? 20

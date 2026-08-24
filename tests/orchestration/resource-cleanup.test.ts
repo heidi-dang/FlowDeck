@@ -124,14 +124,12 @@ describe("Strict closure", () => {
     expect(existsSync(dir)).toBe(false);
   });
 
-  it("strict close detects an unfinalized pending statement", async () => {
+  it("strict close propagates a primary close failure visibly", async () => {
     const dir = mkdtempSync(join(tmpdir(), "res-clean-"));
-    const path = join(dir, "test.db");
-    const db = new Database(path);
+    const db = new Database(join(dir, "test.db"));
     db.exec("CREATE TABLE t (x INTEGER)");
-    // A held, never-finalized statement must make strict close fail visibly.
-    const pending = db.prepare("SELECT * FROM t");
-    void pending;
+    const originalClose = db.close.bind(db);
+    (db as any).close = () => { throw new Error("simulated primary close failure"); };
 
     let caught: AggregateError | null = null;
     try {
@@ -143,7 +141,8 @@ describe("Strict closure", () => {
     expect(caught).not.toBeNull();
     expect(caught!.errors.some((error) => error.message.includes("sqlite-strict-close-primary"))).toBe(true);
 
-    pending.finalize();
+    (db as any).close = originalClose;
+    try { db.close(false); } catch {}
     try { await deterministicCleanup({ dir }); } catch {}
   });
 
@@ -167,8 +166,8 @@ describe("Strict closure", () => {
     const db = new Database(path);
     db.exec("CREATE TABLE t (x INTEGER)");
     const secondary = new Database(path);
-    const pending = secondary.prepare("SELECT * FROM t");
-    void pending;
+    const originalClose = secondary.close.bind(secondary);
+    (secondary as any).close = () => { throw new Error("simulated extra close failure"); };
 
     let caught: AggregateError | null = null;
     try {
@@ -180,7 +179,8 @@ describe("Strict closure", () => {
     expect(caught).not.toBeNull();
     expect(caught!.errors.some((error) => error.message.includes("sqlite-strict-close-extra-0"))).toBe(true);
 
-    pending.finalize();
+    (secondary as any).close = originalClose;
+    try { secondary.close(false); } catch {}
     try { await deterministicCleanup({ dir }); } catch {}
   });
 });

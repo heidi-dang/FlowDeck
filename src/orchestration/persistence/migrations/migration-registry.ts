@@ -19,6 +19,11 @@ import {
   MIGRATION_V13_CONVERGENCE_INTEGRITY_CHECKSUM_SOURCE,
   applyV13Migration,
 } from "./migration-v13-convergence-integrity"
+import {
+  MIGRATION_V14_LIVE_VERIFICATION_AUTHORITY_SQL,
+  MIGRATION_V14_LIVE_VERIFICATION_AUTHORITY_CHECKSUM_SOURCE,
+  applyV14Migration,
+} from "./migration-v14-live-verification-authority"
 
 export interface MigrationEntry {
   version: number
@@ -82,4 +87,5 @@ export const MIGRATIONS: MigrationEntry[] = [
   { version: 11, name: "heidi_parallel_engine_v2.0.0-alpha", sql: MIGRATION_V11_HEIDI_PARALLEL_ENGINE_SQL, checksum: computeChecksum(MIGRATION_V11_HEIDI_PARALLEL_ENGINE_SQL) },
   { version: 12, name: "orchestration_runtime_integrity_v2.0.0-alpha", sql: MIGRATION_V12_ORCHESTRATION_RUNTIME_INTEGRITY_SQL, checksum: computeChecksum(MIGRATION_V12_ORCHESTRATION_RUNTIME_INTEGRITY_SQL) },
   { version: 13, name: "convergence_integrity_v2.0.0-alpha", sql: MIGRATION_V13_CONVERGENCE_INTEGRITY_SQL, checksum: computeChecksum(MIGRATION_V13_CONVERGENCE_INTEGRITY_CHECKSUM_SOURCE), apply: applyV13Migration },
+  { version: 14, name: "live_verification_authority_v2.0.0-alpha", sql: MIGRATION_V14_LIVE_VERIFICATION_AUTHORITY_SQL, checksum: computeChecksum(MIGRATION_V14_LIVE_VERIFICATION_AUTHORITY_CHECKSUM_SOURCE), apply: applyV14Migration },
 ]

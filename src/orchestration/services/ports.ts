@@ -74,6 +74,8 @@ export interface IVerificationRepository {
   findMany(filter: VerificationFilter, pagination: PagePaginationRequest): Promise<PaginatedResult<VerificationResult>>;
   count(filter: VerificationFilter): Promise<number>;
   findByRunId(runId: string): Promise<VerificationResult[]>;
+  /** Finds the one durable live-verification request for an authoritative Run state. */
+  findByLiveIdentity(runId: string, stateVersion: number, stateFingerprint: string, checkType: string): Promise<VerificationResult | null>;
 }
 
 // ── Completion repository ─────────────────────────────────────────────────

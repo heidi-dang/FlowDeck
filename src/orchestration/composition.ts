@@ -533,12 +533,70 @@ class SqliteVerificationRepo implements IVerificationRepository {
     private readonly tx: TransactionManager,
   ) {}
 
+  private toVerification(row: Record<string, unknown>): VerificationResult {
+    const parseJsonArray = (value: unknown): string[] => {
+      if (typeof value !== "string" || value.length === 0) return [];
+      try {
+        const parsed = JSON.parse(value);
+        return Array.isArray(parsed) ? parsed.map(String) : [];
+      } catch {
+        return [];
+      }
+    };
+
+    return {
+      id: row.id as string,
+      runId: row.run_id as string,
+      assignmentId: (row.assignment_id as string | null) ?? undefined,
+      checkType: row.verification_type as string,
+      status: row.status as VerificationResult["status"],
+      correlationId: (row.correlation_id as string | null) ?? row.run_id as string,
+      causationId: (row.causation_id as string | null) ?? undefined,
+      result: (row.output_summary as string | null) ?? undefined,
+      error: (row.error_output as string | null) ?? undefined,
+      evidenceIds: parseJsonArray(row.evidence_json),
+      failureReasons: parseJsonArray(row.failure_reasons),
+      stateVersion: (row.state_version as number | null) ?? undefined,
+      stateFingerprint: (row.state_fingerprint as string | null) ?? undefined,
+      targetSha: row.target_sha as string,
+      isStale: row.is_stale === 1,
+      createdAt: row.started_at as string,
+      updatedAt: (row.updated_at as string | null) ?? (row.completed_at as string | null) ?? row.started_at as string,
+    };
+  }
+
   async create(v: VerificationResult): Promise<VerificationResult> {
     return this.tx.write(() => {
       this.db.query(
-        "INSERT INTO verification_results (id, run_id, verification_type, status, target_sha, started_at) VALUES (?, ?, ?, ?, ?, datetime('now'))",
-      ).run(v.id, v.runId, v.checkType ?? "unknown", v.status ?? "pending", (v as any).targetSha ?? "0000000000000000000000000000000000000000");
-      return v;
+        `INSERT OR IGNORE INTO verification_results (
+          id, run_id, verification_type, status, target_sha, output_summary, error_output,
+          is_stale, started_at, state_version, state_fingerprint, evidence_json,
+          failure_reasons, correlation_id, causation_id, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, ?, datetime('now'))`,
+      ).run(
+        v.id,
+        v.runId,
+        v.checkType ?? "unknown",
+        v.status ?? "pending",
+        v.targetSha ?? "0000000000000000000000000000000000000000",
+        v.result ?? null,
+        v.error ?? null,
+        v.isStale ? 1 : 0,
+        v.stateVersion ?? null,
+        v.stateFingerprint ?? null,
+        JSON.stringify(v.evidenceIds ?? []),
+        JSON.stringify(v.failureReasons ?? []),
+        v.correlationId,
+        v.causationId ?? null,
+      );
+
+      const row = v.stateVersion !== undefined
+        ? this.db.query(
+          "SELECT * FROM verification_results WHERE run_id = ? AND state_version = ? AND state_fingerprint = ? AND verification_type = ?",
+        ).get(v.runId, v.stateVersion, v.stateFingerprint ?? "", v.checkType) as Record<string, unknown> | undefined
+        : this.db.query("SELECT * FROM verification_results WHERE id = ?").get(v.id) as Record<string, unknown> | undefined;
+      if (!row) throw new Error(`Verification persistence failed for ${v.id}`);
+      return this.toVerification(row);
     });
   }
 
@@ -547,8 +605,7 @@ class SqliteVerificationRepo implements IVerificationRepository {
     if (!existing) return null;
     return this.tx.write(() => {
       const sets: string[] = [];
-      const values: (string | number)[] = [];
-      // Map input fields to verification_results columns
+      const values: (string | number | null)[] = [];
       if (input.status !== undefined) {
         sets.push("status = ?");
         values.push(input.status);
@@ -561,49 +618,52 @@ class SqliteVerificationRepo implements IVerificationRepository {
         sets.push("error_output = ?");
         values.push(input.error);
       }
-      // completed_at and duration_ms would be set when status moves to terminal
-      if (sets.length === 0) {
-        // No fields to update, return existing as-is
-        return existing;
+      if (input.evidenceIds !== undefined) {
+        sets.push("evidence_json = ?");
+        values.push(JSON.stringify(input.evidenceIds));
       }
-      // Add completed_at when moving to terminal status
-      if (input.status === 'passed' || input.status === 'failed' || input.status === 'skipped') {
+      if (input.failureReasons !== undefined) {
+        sets.push("failure_reasons = ?");
+        values.push(JSON.stringify(input.failureReasons));
+      }
+      if (input.isStale !== undefined) {
+        sets.push("is_stale = ?");
+        values.push(input.isStale ? 1 : 0);
+      }
+      if (input.stateFingerprint !== undefined) {
+        sets.push("state_fingerprint = ?");
+        values.push(input.stateFingerprint);
+      }
+      if (input.targetSha !== undefined) {
+        sets.push("target_sha = ?");
+        values.push(input.targetSha);
+      }
+      if (sets.length === 0) return existing;
+      if (input.status === "passed" || input.status === "failed" || input.status === "skipped") {
         sets.push("completed_at = datetime('now')");
       }
+      sets.push("updated_at = datetime('now')");
       values.push(id);
-      const sql = `UPDATE verification_results SET ${sets.join(", ")} WHERE id = ?`;
-      const result = this.db.query(sql).run(...values);
-      if (result.changes === 0) {
-        // Verification result no longer exists after update attempt
-        return null;
-      }
-      // Re-read the durable row
+      const result = this.db.query(`UPDATE verification_results SET ${sets.join(", ")} WHERE id = ?`).run(...values);
+      if (result.changes === 0) return null;
       const row = this.db.query("SELECT * FROM verification_results WHERE id = ?").get(id) as Record<string, unknown> | undefined;
-      if (!row) return null;
-      return {
-        id: row.id as string,
-        runId: row.run_id as string,
-        status: row.status as VerificationResult["status"],
-        checkType: row.verification_type as string,
-        correlationId: row.run_id as string,
-        createdAt: row.started_at as string,
-        updatedAt: row.completed_at as string ?? row.started_at as string,
-      };
+      return row ? this.toVerification(row) : null;
     });
   }
 
   async findById(id: string): Promise<VerificationResult | null> {
     const row = this.db.query("SELECT * FROM verification_results WHERE id = ?").get(id) as Record<string, unknown> | undefined;
-    if (!row) return null;
-    return { id: row.id as string, runId: row.run_id as string, status: row.status as VerificationResult["status"], checkType: row.verification_type as string, correlationId: row.run_id as string, createdAt: row.started_at as string, updatedAt: row.started_at as string };
+    return row ? this.toVerification(row) : null;
   }
 
-  async findMany(_filter: Partial<VerificationResult>, pagination: PagePaginationRequest): Promise<PaginatedResult<VerificationResult>> {
+  async findMany(filter: Partial<VerificationResult>, pagination: PagePaginationRequest): Promise<PaginatedResult<VerificationResult>> {
     const limit = pagination.limit ?? 20;
     const offset = ((pagination.page ?? 1) - 1) * limit;
-    const countRow = this.db.query("SELECT COUNT(*) AS c FROM verification_results").get() as { c: number };
-    const rows = this.db.query("SELECT * FROM verification_results ORDER BY started_at DESC LIMIT ? OFFSET ?").all(limit, offset) as Record<string, unknown>[];
-    return { items: rows.map(r => ({ id: r.id, runId: r.run_id, status: r.status as VerificationResult["status"], checkType: r.verification_type, correlationId: r.run_id, createdAt: r.started_at }) as unknown as VerificationResult), total: countRow.c, page: pagination.page ?? 1, limit };
+    const where = filter.runId ? " WHERE run_id = ?" : "";
+    const args = filter.runId ? [filter.runId] : [];
+    const countRow = this.db.query(`SELECT COUNT(*) AS c FROM verification_results${where}`).get(...args) as { c: number };
+    const rows = this.db.query(`SELECT * FROM verification_results${where} ORDER BY started_at DESC LIMIT ? OFFSET ?`).all(...args, limit, offset) as Record<string, unknown>[];
+    return { items: rows.map(row => this.toVerification(row)), total: countRow.c, page: pagination.page ?? 1, limit };
   }
 
   async count(): Promise<number> {
@@ -613,7 +673,14 @@ class SqliteVerificationRepo implements IVerificationRepository {
 
   async findByRunId(runId: string): Promise<VerificationResult[]> {
     const rows = this.db.query("SELECT * FROM verification_results WHERE run_id = ? ORDER BY started_at DESC").all(runId) as Record<string, unknown>[];
-    return rows.map(r => ({ id: r.id, runId: r.run_id, status: r.status as VerificationResult["status"], checkType: r.verification_type, correlationId: r.run_id, createdAt: r.started_at }) as unknown as VerificationResult);
+    return rows.map(row => this.toVerification(row));
+  }
+
+  async findByLiveIdentity(runId: string, stateVersion: number, stateFingerprint: string, checkType: string): Promise<VerificationResult | null> {
+    const row = this.db.query(
+      "SELECT * FROM verification_results WHERE run_id = ? AND state_version = ? AND state_fingerprint = ? AND verification_type = ?",
+    ).get(runId, stateVersion, stateFingerprint, checkType) as Record<string, unknown> | undefined;
+    return row ? this.toVerification(row) : null;
   }
 }
 
