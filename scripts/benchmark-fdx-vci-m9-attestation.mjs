@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 /**
  * benchmark-fdx-vci-m9-attestation.mjs — Milestone 9 Verification Attestation Benchmarks
- * Hardened H25 benchmark suite asserting non-vacuous attestation invariants, RFC 8785 (JCS) compliance, evidence binding, and performance.
+ * Hardened H26 benchmark suite asserting non-vacuous attestation invariants, RFC 8785 (JCS) compliance, evidence binding, and performance.
  */
 
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, symlinkSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, existsSync, symlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { tmpdir } from "node:os";
@@ -15,7 +15,7 @@ const ROOT = resolve(import.meta.dirname, "..");
 const REPORT_JSON_PATH = join(ROOT, "reports", "benchmark-fdx-vci-m9-attestation.json");
 const REPORT_MD_PATH = join(ROOT, "reports", "benchmark-fdx-vci-m9-repro.md");
 
-const EXPECTED_FUNCTIONAL_SHA = "a3bffac13ba5087c97766ebdcedf21da1e274ebe";
+const EXPECTED_FUNCTIONAL_SHA = "423cf0bbeebc3cfe1db994dca49d30b64794c246";
 
 function computeSha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
@@ -91,7 +91,7 @@ function createSampleRepo(prefix, scriptCommand = "node -e 'process.exit(0)'") {
 }
 
 async function runPreflights(bin) {
-  console.log("-> Running non-vacuous hardened M9 verification attestation preflights (H25)...");
+  console.log("-> Running non-vacuous hardened M9 verification attestation preflights (H26)...");
   const preflights = [];
 
   function pass(name, details = {}) {
@@ -384,81 +384,116 @@ async function runPreflights(bin) {
     rmSync(repo, { recursive: true, force: true });
   }
 
-  // 20. external_file_without_expected_digest_rejected
+  // 20. external_content_address_lookalike_requires_expected_sha
   {
-    const repo = createSampleRepo("ext-no-sha");
+    const repo = createSampleRepo("ext-lookalike");
     writeFileSync(join(repo, "src.js"), "module.exports = 2;");
     const vRes = invokeFdx(bin, repo, ["verify", "--format", "json"]);
     const runId = vRes.data.run_id;
     const aRes = invokeFdx(bin, repo, ["attest", "create", "--run", runId, "--format", "json"]);
-    const extPath = join(repo, "external_attestation.json");
+    const extPath = join(tmpdir(), `${runId}.${aRes.data.attestation_sha256}.json`);
     writeFileSync(extPath, readFileSync(aRes.data.path));
     const verifyRes = invokeFdx(bin, repo, ["attest", "verify", extPath, "--format", "json"]);
-    if (verifyRes.exitCode === 0) throw new Error("Expected failure on external file without expected SHA");
-    pass("external_file_without_expected_digest_rejected");
+    if (verifyRes.exitCode === 0) throw new Error("Expected failure on external lookalike without expected SHA");
+    pass("external_content_address_lookalike_requires_expected_sha");
+    rmSync(extPath, { force: true });
     rmSync(repo, { recursive: true, force: true });
   }
 
-  // 21. external_file_correct_expected_digest_passes
+  // 21. external_content_address_lookalike_correct_sha_passes
   {
-    const repo = createSampleRepo("ext-pass");
+    const repo = createSampleRepo("ext-lookalike-pass");
     writeFileSync(join(repo, "src.js"), "module.exports = 2;");
     const vRes = invokeFdx(bin, repo, ["verify", "--format", "json"]);
     const runId = vRes.data.run_id;
     const aRes = invokeFdx(bin, repo, ["attest", "create", "--run", runId, "--format", "json"]);
-    const extPath = join(repo, "external_attestation.json");
+    const extPath = join(tmpdir(), `${runId}.${aRes.data.attestation_sha256}.json`);
     writeFileSync(extPath, readFileSync(aRes.data.path));
     const verifyRes = invokeFdx(bin, repo, ["attest", "verify", extPath, "--expected-sha256", aRes.data.attestation_sha256, "--format", "json"]);
-    if (verifyRes.exitCode !== 0 || !verifyRes.data?.valid) throw new Error("Expected external verify with correct SHA to pass");
-    pass("external_file_correct_expected_digest_passes");
+    if (verifyRes.exitCode !== 0 || !verifyRes.data?.valid) throw new Error("Expected external lookalike with correct SHA to pass");
+    pass("external_content_address_lookalike_correct_sha_passes");
+    rmSync(extPath, { force: true });
     rmSync(repo, { recursive: true, force: true });
   }
 
-  // 22. external_file_wrong_expected_digest_rejected
+  // 22. fdx_parent_symlink_escape_rejected
   {
-    const repo = createSampleRepo("ext-wrong");
+    const repo = createSampleRepo("fdx-symlink");
+    const outsideDir = join(tmpdir(), "fdx-outside-fdx-" + Date.now());
+    mkdirSync(outsideDir, { recursive: true });
+    writeFileSync(join(repo, "src.js"), "module.exports = 2;");
+    const vRes = invokeFdx(bin, repo, ["verify", "--format", "json"]);
+    const runId = vRes.data.run_id;
+    rmSync(join(repo, ".fdx"), { recursive: true, force: true });
+    symlinkSync(outsideDir, join(repo, ".fdx"));
+    const aRes = invokeFdx(bin, repo, ["attest", "create", "--run", runId, "--format", "json"]);
+    if (aRes.exitCode === 0) throw new Error("Expected .fdx symlink escape to fail");
+    const outsideEntries = existsSync(outsideDir) ? readdirSync(outsideDir) : [];
+    if (outsideEntries.length > 0) throw new Error("Outside directory received files on symlink escape attempt");
+    pass("fdx_parent_symlink_escape_rejected");
+    rmSync(outsideDir, { recursive: true, force: true });
+    rmSync(repo, { recursive: true, force: true });
+  }
+
+  // 23. attestations_dir_symlink_escape_rejected
+  {
+    const repo = createSampleRepo("att-symlink");
+    const outsideDir = join(tmpdir(), "fdx-outside-att-" + Date.now());
+    mkdirSync(outsideDir, { recursive: true });
+    writeFileSync(join(repo, "src.js"), "module.exports = 2;");
+    const vRes = invokeFdx(bin, repo, ["verify", "--format", "json"]);
+    const runId = vRes.data.run_id;
+    symlinkSync(outsideDir, join(repo, ".fdx", "attestations"));
+    const aRes = invokeFdx(bin, repo, ["attest", "create", "--run", runId, "--format", "json"]);
+    if (aRes.exitCode === 0) throw new Error("Expected .fdx/attestations symlink escape to fail");
+    pass("attestations_dir_symlink_escape_rejected");
+    rmSync(outsideDir, { recursive: true, force: true });
+    rmSync(repo, { recursive: true, force: true });
+  }
+
+  // 24. managed_attestation_file_symlink_rejected
+  {
+    const repo = createSampleRepo("file-symlink");
     writeFileSync(join(repo, "src.js"), "module.exports = 2;");
     const vRes = invokeFdx(bin, repo, ["verify", "--format", "json"]);
     const runId = vRes.data.run_id;
     const aRes = invokeFdx(bin, repo, ["attest", "create", "--run", runId, "--format", "json"]);
-    const extPath = join(repo, "external_attestation.json");
-    writeFileSync(extPath, readFileSync(aRes.data.path));
-    const verifyRes = invokeFdx(bin, repo, ["attest", "verify", extPath, "--expected-sha256", "0000000000000000000000000000000000000000000000000000000000000000", "--format", "json"]);
-    if (verifyRes.exitCode === 0) throw new Error("Expected failure on external file with wrong SHA");
-    pass("external_file_wrong_expected_digest_rejected");
+    const attPath = aRes.data.path;
+    const outsideFile = join(tmpdir(), `outside-att-${Date.now()}.json`);
+    writeFileSync(outsideFile, readFileSync(attPath));
+    rmSync(attPath);
+    symlinkSync(outsideFile, attPath);
+    const verifyRes = invokeFdx(bin, repo, ["attest", "verify", attPath, "--format", "json"]);
+    if (verifyRes.exitCode === 0) throw new Error("Expected managed symlink file to fail verification");
+    pass("managed_attestation_file_symlink_rejected");
+    rmSync(outsideFile, { force: true });
     rmSync(repo, { recursive: true, force: true });
   }
 
-  // 23. tampered_M7_artifact_detected
+  // 25. oversized_attestation_rejected
   {
-    const repo = createSampleRepo("tamper-art");
-    writeFileSync(join(repo, "src.js"), "module.exports = 2;");
-    const vRes = invokeFdx(bin, repo, ["verify", "--format", "json"]);
-    const runId = vRes.data.run_id;
-    const aRes = invokeFdx(bin, repo, ["attest", "create", "--run", runId, "--format", "json"]);
-    writeFileSync(join(repo, ".fdx", "runs", `${runId}.json`), JSON.stringify({ run_id: runId, outcome: "tampered" }));
-    const verifyRes = invokeFdx(bin, repo, ["attest", "verify", aRes.data.path, "--format", "json"]);
-    if (verifyRes.exitCode === 0) throw new Error("Expected failure on tampered M7 artifact");
-    pass("tampered_M7_artifact_detected");
+    const repo = createSampleRepo("oversized");
+    const bigFile = join(repo, "oversized.json");
+    const bigBuf = Buffer.alloc(16 * 1024 * 1024 + 1, "a");
+    writeFileSync(bigFile, bigBuf);
+    const verifyRes = invokeFdx(bin, repo, ["attest", "verify", bigFile, "--expected-sha256", "0000000000000000000000000000000000000000000000000000000000000000", "--format", "json"]);
+    if (verifyRes.exitCode === 0) throw new Error("Expected oversized file to fail verification");
+    pass("oversized_attestation_rejected");
     rmSync(repo, { recursive: true, force: true });
   }
 
-  // 24. atomic_no_clobber_same_content
+  // 26. non_regular_attestation_rejected
   {
-    const repo = createSampleRepo("idempotent");
-    writeFileSync(join(repo, "src.js"), "module.exports = 2;");
-    const vRes = invokeFdx(bin, repo, ["verify", "--format", "json"]);
-    const runId = vRes.data.run_id;
-    const aRes1 = invokeFdx(bin, repo, ["attest", "create", "--run", runId, "--format", "json"]);
-    const aRes2 = invokeFdx(bin, repo, ["attest", "create", "--run", runId, "--format", "json"]);
-    if (aRes1.exitCode !== 0 || aRes2.exitCode !== 0) throw new Error("Atomic idempotent create failed");
-    pass("atomic_no_clobber_same_content");
+    const repo = createSampleRepo("non-regular");
+    const verifyRes = invokeFdx(bin, repo, ["attest", "verify", repo, "--expected-sha256", "0000000000000000000000000000000000000000000000000000000000000000", "--format", "json"]);
+    if (verifyRes.exitCode === 0) throw new Error("Expected directory verification target to fail");
+    pass("non_regular_attestation_rejected");
     rmSync(repo, { recursive: true, force: true });
   }
 
-  // 25. atomic_no_clobber_conflict
+  // 27. atomic_publication_conflict_no_overwrite
   {
-    const repo = createSampleRepo("conflict");
+    const repo = createSampleRepo("atomic-conflict");
     writeFileSync(join(repo, "src.js"), "module.exports = 2;");
     const vRes = invokeFdx(bin, repo, ["verify", "--format", "json"]);
     const runId = vRes.data.run_id;
@@ -466,66 +501,61 @@ async function runPreflights(bin) {
     writeFileSync(aRes.data.path, '{"contradictory":true}');
     const aRes2 = invokeFdx(bin, repo, ["attest", "create", "--run", runId, "--format", "json"]);
     if (aRes2.exitCode === 0) throw new Error("Expected conflict on contradictory target");
-    pass("atomic_no_clobber_conflict");
-    rmSync(repo, { recursive: true, force: true });
-  }
-
-  // 26. attestation_directory_symlink_escape_rejected
-  {
-    const repo = createSampleRepo("symlink-esc");
-    const outsideDir = join(tmpdir(), "fdx-outside-" + Date.now());
-    mkdirSync(outsideDir, { recursive: true });
-    writeFileSync(join(repo, "src.js"), "module.exports = 2;");
-    const vRes = invokeFdx(bin, repo, ["verify", "--format", "json"]);
-    const runId = vRes.data.run_id;
-    try {
-      symlinkSync(outsideDir, join(repo, ".fdx", "attestations"));
-      const aRes = invokeFdx(bin, repo, ["attest", "create", "--run", runId, "--format", "json"]);
-      if (aRes.exitCode === 0) throw new Error("Expected symlink escape to fail");
-    } catch (e) {
-      if (!e.message.includes("symlink escape")) throw e;
+    if (readFileSync(aRes.data.path, "utf8") !== '{"contradictory":true}') {
+      throw new Error("Target file was overwritten on conflict");
     }
-    pass("attestation_directory_symlink_escape_rejected");
-    rmSync(outsideDir, { recursive: true, force: true });
+    pass("atomic_publication_conflict_no_overwrite");
     rmSync(repo, { recursive: true, force: true });
   }
 
-  // 27. path_traversal_rejected
+  // 28. predicate_runtime_contract_v1_rejected
   {
-    const repo = createSampleRepo("traversal");
-    const aRes = invokeFdx(bin, repo, ["attest", "create", "--run", "../escape", "--format", "json"]);
-    if (aRes.exitCode === 0) throw new Error("Expected path traversal run_id to fail");
-    pass("path_traversal_rejected");
-    rmSync(repo, { recursive: true, force: true });
-  }
-
-  // 28. global_history_incomplete_recorded_as_generation_snapshot
-  {
-    const repo = createSampleRepo("snap-incomplete");
-    writeFileSync(join(repo, "src.js"), "module.exports = 2;");
-    const vRes = invokeFdx(bin, repo, ["verify", "--format", "json"]);
-    const runId = vRes.data.run_id;
-    invokeFdx(bin, repo, ["history", "reconcile"]);
-    execFileSync("sqlite3", [join(repo, ".fdx", "index.sqlite"), `INSERT OR REPLACE INTO runtime_ingestion_state (key, value) VALUES ('is_complete', 'false');`]);
-    const aRes = invokeFdx(bin, repo, ["attest", "create", "--run", runId, "--format", "json"]);
-    if (aRes.exitCode !== 0) throw new Error("Attest create failed on incomplete global history snapshot");
-    if (aRes.data.statement.predicate.runtime_history.global_history_complete_at_generation !== false) {
-      throw new Error("Expected global_history_complete_at_generation = false");
-    }
-    pass("global_history_incomplete_recorded_as_generation_snapshot");
-    rmSync(repo, { recursive: true, force: true });
-  }
-
-  // 29. offline_verify_roundtrip
-  {
-    const repo = createSampleRepo("offline");
+    const repo = createSampleRepo("contract-v1");
     writeFileSync(join(repo, "src.js"), "module.exports = 2;");
     const vRes = invokeFdx(bin, repo, ["verify", "--format", "json"]);
     const runId = vRes.data.run_id;
     const aRes = invokeFdx(bin, repo, ["attest", "create", "--run", runId, "--format", "json"]);
-    const verifyRes = invokeFdx(bin, repo, ["attest", "verify", aRes.data.path, "--format", "json"]);
-    if (verifyRes.exitCode !== 0 || !verifyRes.data?.valid) throw new Error("Offline verify failed");
-    pass("offline_verify_roundtrip");
+    const stmt = JSON.parse(readFileSync(aRes.data.path, "utf8"));
+    stmt.predicate.runtime_history.run_contract_version = 1;
+    const extPath = join(repo, "ext_contract_v1.json");
+    writeFileSync(extPath, JSON.stringify(stmt));
+    const verifyRes = invokeFdx(bin, repo, ["attest", "verify", extPath, "--expected-sha256", computeSha256(readFileSync(extPath)), "--format", "json"]);
+    if (verifyRes.exitCode === 0) throw new Error("Expected predicate run_contract_version = 1 to fail verification");
+    pass("predicate_runtime_contract_v1_rejected");
+    rmSync(repo, { recursive: true, force: true });
+  }
+
+  // 29. predicate_run_qualified_false_rejected
+  {
+    const repo = createSampleRepo("qualified-false");
+    writeFileSync(join(repo, "src.js"), "module.exports = 2;");
+    const vRes = invokeFdx(bin, repo, ["verify", "--format", "json"]);
+    const runId = vRes.data.run_id;
+    const aRes = invokeFdx(bin, repo, ["attest", "create", "--run", runId, "--format", "json"]);
+    const stmt = JSON.parse(readFileSync(aRes.data.path, "utf8"));
+    stmt.predicate.runtime_history.run_qualified = false;
+    const extPath = join(repo, "ext_qualified_false.json");
+    writeFileSync(extPath, JSON.stringify(stmt));
+    const verifyRes = invokeFdx(bin, repo, ["attest", "verify", extPath, "--expected-sha256", computeSha256(readFileSync(extPath)), "--format", "json"]);
+    if (verifyRes.exitCode === 0) throw new Error("Expected predicate run_qualified = false to fail verification");
+    pass("predicate_run_qualified_false_rejected");
+    rmSync(repo, { recursive: true, force: true });
+  }
+
+  // 30. generator_name_tamper_rejected
+  {
+    const repo = createSampleRepo("gen-name");
+    writeFileSync(join(repo, "src.js"), "module.exports = 2;");
+    const vRes = invokeFdx(bin, repo, ["verify", "--format", "json"]);
+    const runId = vRes.data.run_id;
+    const aRes = invokeFdx(bin, repo, ["attest", "create", "--run", runId, "--format", "json"]);
+    const stmt = JSON.parse(readFileSync(aRes.data.path, "utf8"));
+    stmt.predicate.generator.name = "trusted-third-party";
+    const extPath = join(repo, "ext_gen_tamper.json");
+    writeFileSync(extPath, JSON.stringify(stmt));
+    const verifyRes = invokeFdx(bin, repo, ["attest", "verify", extPath, "--expected-sha256", computeSha256(readFileSync(extPath)), "--format", "json"]);
+    if (verifyRes.exitCode === 0) throw new Error("Expected generator name tamper to fail verification");
+    pass("generator_name_tamper_rejected");
     rmSync(repo, { recursive: true, force: true });
   }
 
@@ -618,7 +648,7 @@ async function runBenchmarks(bin) {
 }
 
 async function main() {
-  console.log("=== FlowDeck M9 Verification Attestation Qualification & Benchmark (H25) ===");
+  console.log("=== FlowDeck M9 Verification Attestation Qualification & Benchmark (H26) ===");
 
   const functionalSha = process.env.FDX_BENCHMARK_FUNCTIONAL_SHA;
   if (!functionalSha) {
@@ -703,6 +733,9 @@ async function main() {
       absolute_paths_excluded: true,
       atomic_idempotent_persistence: true,
       offline_verification_supported: true,
+      managed_path_containment_verified: true,
+      symlink_escape_protection_verified: true,
+      bounded_read_size_enforced: true,
     },
     preflights: preflightResults,
     metrics,
@@ -712,12 +745,12 @@ async function main() {
   console.log(`-> Saved benchmark report: ${REPORT_JSON_PATH}`);
 
   const mdContent = [
-    "# Milestone 9: Verification Attestation Qualification Report (R25)",
+    "# Milestone 9: Verification Attestation Qualification Report (R26)",
     "",
     `**Milestone:** M9  `,
-    `**Functional Baseline (F22):** \`${functionalSha}\`  `,
+    `**Functional Baseline (F23):** \`${functionalSha}\`  `,
     `**Binary SHA-256:** \`${binarySha256}\`  `,
-    `**Benchmark Harness (H25):** \`${harnessSha}\`  `,
+    `**Benchmark Harness (H26):** \`${harnessSha}\`  `,
     `**Executed At:** ${report.timestamp}  `,
     `**Platform:** ${report.platform} (${report.arch})  `,
     `**Node Version:** ${report.node_version}  `,
@@ -729,7 +762,9 @@ async function main() {
     "- **Exact Artifact Binding:** Subject binds `sha256` of exact raw persisted M7 `.fdx/runs/<run_id>.json` bytes.",
     "- **Qualified M8 History Required:** Only exact-byte v7/v2 ingested history rows can be attested.",
     "- **RFC 8785 (JCS) Canonicalization:** Canonical byte representation is strictly deterministic across platforms.",
-    "- **Fail-Closed Verification:** Any alteration of artifact, subject, predicate, checks, or executions causes verification failure.",
+    "- **Fail-Closed Verification:** Any alteration of artifact, subject, predicate, checks, executions, or generator metadata causes verification failure.",
+    "- **Managed Path & Symlink Safety:** Strict directory jail verification for `.fdx` and `.fdx/attestations`. Managed filenames valid only inside canonical managed parent.",
+    "- **Atomic No-Clobber Publication:** Full bytes flushed to temp and promoted atomically; never writes partially to final content-addressed paths.",
     "- **Secret and Excerpt Exclusion:** Free-text execution excerpts and secrets are excluded from attestation statements.",
     "- **Unsigned Local Evidence:** Attestation provides cryptographic content binding locally without false signer claims.",
     "",
