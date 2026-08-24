@@ -1,6 +1,6 @@
 use fdx::intelligence::db::{DatabaseOpenMode, EvidenceDatabase};
 use fdx::intelligence::runtime::model::RuntimeIngestResult;
-use fdx::intelligence::runtime::{ingest_verification_run, list_historical_runs};
+use fdx::intelligence::runtime::{ingest_verification_artifact, list_historical_runs};
 use fdx::intelligence::testplan::model::VerificationPlan;
 use fdx::intelligence::verify::model::{VerificationOutcome, VerificationRun};
 use fdx::protocol::AssuranceLevel;
@@ -35,10 +35,13 @@ fn test_runtime_divergent_artifact_same_run_id_returns_conflict() {
     let mut run2 = run1.clone();
     run2.duration_ms = 999; // Mutated content changes artifact digest
 
-    let res1 = ingest_verification_run(&mut db.conn, &run1, None).unwrap();
+    let bytes1 = serde_json::to_vec(&run1).unwrap();
+    let bytes2 = serde_json::to_vec(&run2).unwrap();
+
+    let res1 = ingest_verification_artifact(&mut db.conn, &bytes1).unwrap();
     assert!(matches!(res1, RuntimeIngestResult::Imported { .. }));
 
-    let res2 = ingest_verification_run(&mut db.conn, &run2, None).unwrap();
+    let res2 = ingest_verification_artifact(&mut db.conn, &bytes2).unwrap();
     assert!(matches!(res2, RuntimeIngestResult::Conflict { .. }));
 
     let runs = list_historical_runs(&db.conn, 10).unwrap();

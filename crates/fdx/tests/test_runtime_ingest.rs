@@ -1,7 +1,7 @@
 use fdx::intelligence::db::{DatabaseOpenMode, EvidenceDatabase};
 use fdx::intelligence::runtime::model::RuntimeIngestResult;
 use fdx::intelligence::runtime::{
-    get_historical_run, ingest_verification_run, list_historical_runs,
+    get_historical_run, ingest_verification_artifact, list_historical_runs,
 };
 use fdx::intelligence::testplan::model::{
     PlannedCheck, SelectionReason, VerificationCheckKind, VerificationPlan,
@@ -74,7 +74,8 @@ fn test_runtime_ingest_single_run_and_query() {
     let mut db = EvidenceDatabase::open(dir.path(), DatabaseOpenMode::ReadWrite).unwrap();
 
     let run = dummy_run("run_test_1");
-    let res = ingest_verification_run(&mut db.conn, &run, None).unwrap();
+    let bytes = serde_json::to_vec(&run).unwrap();
+    let res = ingest_verification_artifact(&mut db.conn, &bytes).unwrap();
     assert!(matches!(res, RuntimeIngestResult::Imported { .. }));
 
     let runs = list_historical_runs(&db.conn, 10).unwrap();

@@ -7,6 +7,11 @@ use crate::intelligence::verify::model::{CheckExecutionStatus, VerificationOutco
 use crate::protocol::AssuranceLevel;
 use serde::{Deserialize, Serialize};
 
+/// Ingestion contract version for runtime runs.
+/// 1 = legacy/unqualified v6 ingestion
+/// 2 = exact-byte v7 ingestion
+pub const INGESTION_CONTRACT_VERSION_V2: i64 = 2;
+
 /// Observation record of an entire completed verification run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeRunObservation {
@@ -22,6 +27,12 @@ pub struct RuntimeRunObservation {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub head: Option<String>,
     pub imported_at_ms: u64,
+    #[serde(default = "default_contract_version")]
+    pub ingestion_contract_version: i64,
+}
+
+fn default_contract_version() -> i64 {
+    INGESTION_CONTRACT_VERSION_V2
 }
 
 /// Observation record of an actual OS process execution.
@@ -55,6 +66,8 @@ pub struct RuntimeCheckObservation {
     pub status: CheckExecutionStatus,
     pub reused_execution: bool,
     pub mandatory: bool,
+    #[serde(default)]
+    pub has_physical_execution: bool,
 }
 
 /// Observation record of changed entities that co-occurred during a verification run.

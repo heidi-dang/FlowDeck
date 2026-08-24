@@ -3,7 +3,7 @@ pub struct SchemaVersion {
     pub version: u32,
 }
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 6;
+pub const CURRENT_SCHEMA_VERSION: u32 = 7;
 
 pub const INITIALIZE_SCHEMA_SQL: &str = r#"
 PRAGMA user_version = 1;

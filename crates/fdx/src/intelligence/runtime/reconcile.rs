@@ -1,9 +1,10 @@
 //! Safe discovery, validation, and reconciliation of M7 .fdx/runs/*.json artifacts.
 
-use crate::intelligence::runtime::ingest::{ingest_verification_run, MAX_RUNTIME_ARTIFACT_BYTES};
+use crate::intelligence::runtime::ingest::{
+    ingest_verification_artifact, MAX_RUNTIME_ARTIFACT_BYTES,
+};
 use crate::intelligence::runtime::model::{HistoryReconciliationReport, RuntimeIngestResult};
-use crate::intelligence::verify::model::VerificationRun;
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -35,6 +36,7 @@ pub fn reconcile_runs_directory(
     };
 
     if !runs_dir.exists() {
+        persist_reconciliation_state(conn, &report)?;
         return Ok(report);
     }
 
@@ -43,6 +45,7 @@ pub fn reconcile_runs_directory(
         Err(e) => {
             report.is_complete = false;
             report.errors.push(format!("cannot read runs dir: {}", e));
+            persist_reconciliation_state(conn, &report)?;
             return Ok(report);
         }
     };
@@ -134,7 +137,7 @@ pub fn reconcile_runs_directory(
             continue;
         }
 
-        // 3. Read bounded bytes
+        // 3. Read bounded exact bytes
         let mut file = match File::open(&canonical_file) {
             Ok(f) => f,
             Err(e) => {
@@ -161,21 +164,8 @@ pub fn reconcile_runs_directory(
             continue;
         }
 
-        // 4. Parse VerificationRun
-        let run: VerificationRun = match serde_json::from_slice(&raw_bytes) {
-            Ok(r) => r,
-            Err(e) => {
-                report.artifacts_failed += 1;
-                report.is_complete = false;
-                report
-                    .errors
-                    .push(format!("malformed json in {:?}: {}", canonical_file, e));
-                continue;
-            }
-        };
-
-        // 5. Ingest
-        match ingest_verification_run(conn, &run, Some(&raw_bytes)) {
+        // 4. Ingest via authoritative exact-byte API
+        match ingest_verification_artifact(conn, &raw_bytes) {
             Ok(RuntimeIngestResult::Imported { .. }) => {
                 report.artifacts_imported += 1;
             }
@@ -212,5 +202,55 @@ pub fn reconcile_runs_directory(
         }
     }
 
+    persist_reconciliation_state(conn, &report)?;
     Ok(report)
+}
+
+/// Persist durable reconciliation completeness state in runtime_ingestion_state table.
+fn persist_reconciliation_state(
+    conn: &mut Connection,
+    report: &HistoryReconciliationReport,
+) -> Result<(), String> {
+    let tx = conn
+        .transaction()
+        .map_err(|e| format!("failed to begin tx for reconciliation state: {}", e))?;
+
+    let entries = [
+        ("last_reconciled_at_ms", report.reconciled_at_ms.to_string()),
+        (
+            "artifacts_discovered",
+            report.artifacts_discovered.to_string(),
+        ),
+        ("artifacts_imported", report.artifacts_imported.to_string()),
+        (
+            "artifacts_already_present",
+            report.artifacts_already_present.to_string(),
+        ),
+        (
+            "artifacts_conflicted",
+            report.artifacts_conflicted.to_string(),
+        ),
+        ("artifacts_failed", report.artifacts_failed.to_string()),
+        (
+            "is_complete",
+            if report.is_complete {
+                "true".to_string()
+            } else {
+                "false".to_string()
+            },
+        ),
+    ];
+
+    for (k, v) in entries {
+        tx.execute(
+            "INSERT OR REPLACE INTO runtime_ingestion_state (key, value) VALUES (?1, ?2)",
+            params![k, v],
+        )
+        .map_err(|e| format!("failed to write ingestion state {}: {}", k, e))?;
+    }
+
+    tx.commit()
+        .map_err(|e| format!("failed to commit reconciliation state: {}", e))?;
+
+    Ok(())
 }

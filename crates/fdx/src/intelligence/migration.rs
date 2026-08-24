@@ -54,8 +54,12 @@ pub fn migrate_schema(
                 tx.execute_batch(crate::intelligence::schema::MIGRATE_V4_TO_V5_SQL)?;
             }
             5 => {
-                // Migrate v5 -> v6: Milestone 8 runtime verification history
+                // Migrate v5 -> v6: Milestone 8 runtime verification history (immutable historical migration)
                 tx.execute_batch(crate::intelligence::runtime::schema::MIGRATE_V5_TO_V6_SQL)?;
+            }
+            6 => {
+                // Migrate v6 -> v7: Milestone 8 runtime verification history hardening (exact-byte digest, physical execution flag)
+                tx.execute_batch(crate::intelligence::runtime::schema::MIGRATE_V6_TO_V7_SQL)?;
             }
             _ => {
                 return Err(MigrationError::Unsupported(version, target_version));

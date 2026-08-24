@@ -1,5 +1,5 @@
 use fdx::intelligence::db::{DatabaseOpenMode, EvidenceDatabase};
-use fdx::intelligence::runtime::ingest_verification_run;
+use fdx::intelligence::runtime::ingest_verification_artifact;
 use fdx::intelligence::testplan::planner::plan_verification;
 use fdx::intelligence::verify::model::{VerificationOutcome, VerificationRun};
 use fdx::protocol::AssuranceLevel;
@@ -67,7 +67,8 @@ fn test_runtime_history_never_alters_planner_selected_checks() {
             executed_at_ms: 1000 + i,
             duration_ms: 10,
         };
-        ingest_verification_run(&mut db.conn, &run, None).unwrap();
+        let bytes = serde_json::to_vec(&run).unwrap();
+        ingest_verification_artifact(&mut db.conn, &bytes).unwrap();
     }
 
     // Plan after history exists

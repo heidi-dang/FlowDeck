@@ -20,7 +20,7 @@ fn test_synthetic_migration() {
 
     // Open ReadWrite -> should migrate 0 to the current schema version (5)
     let db = EvidenceDatabase::open(repo_root, DatabaseOpenMode::ReadWrite).unwrap();
-    assert_eq!(db.get_schema_version().unwrap().version, 6);
+    assert_eq!(db.get_schema_version().unwrap().version, 7);
 
     // Legacy table should still exist
     let count: i32 = db
@@ -88,7 +88,7 @@ fn test_v1_to_v2_migration_preserves_data() {
     drop(conn);
 
     let db = EvidenceDatabase::open(repo_root, DatabaseOpenMode::ReadWrite).unwrap();
-    assert_eq!(db.get_schema_version().unwrap().version, 6);
+    assert_eq!(db.get_schema_version().unwrap().version, 7);
     let files: i64 = db
         .conn
         .query_row("SELECT count(*) FROM files", [], |r| r.get(0))
@@ -164,7 +164,7 @@ fn test_v3_to_v4_migration_adds_node_source_identity() {
     drop(conn);
 
     let db = EvidenceDatabase::open(repo_root, DatabaseOpenMode::ReadWrite).unwrap();
-    assert_eq!(db.get_schema_version().unwrap().version, 6);
+    assert_eq!(db.get_schema_version().unwrap().version, 7);
     let count: i64 = db
         .conn
         .query_row(
@@ -201,7 +201,7 @@ fn test_v4_to_v5_migration_adds_edge_provider_id() {
     drop(conn);
 
     let db = EvidenceDatabase::open(repo_root, DatabaseOpenMode::ReadWrite).unwrap();
-    assert_eq!(db.get_schema_version().unwrap().version, 6);
+    assert_eq!(db.get_schema_version().unwrap().version, 7);
     let count: i64 = db
         .conn
         .query_row(
@@ -234,7 +234,7 @@ fn test_v2_to_v3_migration_adds_attempt_columns() {
     drop(conn);
 
     let db = EvidenceDatabase::open(repo_root, DatabaseOpenMode::ReadWrite).unwrap();
-    assert_eq!(db.get_schema_version().unwrap().version, 6);
+    assert_eq!(db.get_schema_version().unwrap().version, 7);
     let count: i64 = db
         .conn
         .query_row(
@@ -299,7 +299,7 @@ fn test_v5_to_v6_migration_adds_runtime_tables() {
     drop(conn);
 
     let db = EvidenceDatabase::open(repo_root, DatabaseOpenMode::ReadWrite).unwrap();
-    assert_eq!(db.get_schema_version().unwrap().version, 6);
+    assert_eq!(db.get_schema_version().unwrap().version, 7);
     let count: i64 = db
         .conn
         .query_row(

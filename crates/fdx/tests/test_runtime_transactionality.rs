@@ -1,5 +1,5 @@
 use fdx::intelligence::db::{DatabaseOpenMode, EvidenceDatabase};
-use fdx::intelligence::runtime::ingest_verification_run;
+use fdx::intelligence::runtime::ingest_verification_artifact;
 use fdx::intelligence::testplan::model::{VerificationCheckKind, VerificationPlan};
 use fdx::intelligence::verify::model::{
     CheckExecutionResult, CheckExecutionStatus, VerificationOutcome, VerificationRun,
@@ -79,7 +79,8 @@ fn test_runtime_transaction_rollback_leaves_zero_rows_on_corrupt_check() {
         duration_ms: 20,
     };
 
-    let res = ingest_verification_run(&mut db.conn, &run, None).unwrap();
+    let bytes = serde_json::to_vec(&run).unwrap();
+    let res = ingest_verification_artifact(&mut db.conn, &bytes).unwrap();
     assert!(matches!(
         res,
         fdx::intelligence::runtime::model::RuntimeIngestResult::Failed { .. }
