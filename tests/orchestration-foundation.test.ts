@@ -13,7 +13,7 @@ import { getSessionMetricsDiagnostics, cleanupSessionState } from "../src/index"
 import { _resetRouteState, getRouteDecision } from "../src/services/heidi-route-state";
 import { createTaskState, getTaskState, _resetAllTaskState } from "../src/services/heidi-task-state";
 import { closeAllConnections } from "../src/orchestration/persistence/connection";
-import { RunStatus, isTerminalRunStatus } from "../src/orchestration/types/runs";
+import { isTerminalRunStatus } from "../src/orchestration/types/runs";
 import {
   buildCanonicalRoutingDecision,
   reconstructRouterDecision,
@@ -144,8 +144,9 @@ describe("FlowDeck Orchestration Foundation Integration Tests", () => {
     expect(sessionRow1).toBeDefined();
     const runId1 = sessionRow1!.runId;
 
-    // Mark Run 1 completed in SQLite (authoritative truth)
-    await ctx.runtime.services.runService.updateRun(runId1, { status: RunStatus.COMPLETED, stage: "completed" });
+    // Seed a historical terminal row directly for this session-routing fixture.
+    // Production completion is intentionally exclusive to CompletionPolicy.
+    ctx.runtime.db.query("UPDATE task_runs SET state = 'completed' WHERE run_id = ?").run(runId1);
 
     // Task 2: Sent in SAME session WITHOUT manual _resetRouteState()
     await adapter.onChatMessage(
@@ -881,11 +882,9 @@ describe("FlowDeck Orchestration Foundation Integration Tests", () => {
       correlationId: "corr-race-1",
     });
 
-    // Simulate run completing before cancellation proceeds
-    await ctx.runtime.services.runService.updateRun(run.id, {
-      status: RunStatus.COMPLETED,
-      stage: "completed",
-    });
+    // Simulate a historically completed run before cancellation proceeds.
+    // Do not use RunService.updateRun: production completion is policy-only.
+    ctx.runtime.db.query("UPDATE task_runs SET state = 'completed' WHERE run_id = ?").run(run.id);
 
     // Attempt to cancel already-completed run
     try {

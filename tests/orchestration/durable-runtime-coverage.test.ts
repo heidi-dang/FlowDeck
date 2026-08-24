@@ -257,10 +257,11 @@ describe("SqliteRunRepository", () => {
     expect(found!.status).toBe(RunStatus.RUNNING)
   })
 
-  it("COMPLETED round-trips correctly", async () => {
+  it("COMPLETED historical rows deserialize while direct writes are rejected", async () => {
     await repo.create(makeRun("run-completed"))
-    const updated = await repo.update("run-completed", { status: RunStatus.COMPLETED })
-    expect(updated!.status).toBe(RunStatus.COMPLETED)
+    await expect(repo.update("run-completed", { status: RunStatus.COMPLETED }))
+      .rejects.toMatchObject({ code: "COMPLETION_POLICY_REQUIRED" })
+    tdb.db.query("UPDATE task_runs SET state = 'completed' WHERE run_id = ?").run("run-completed")
     const found = await repo.findById("run-completed")
     expect(found!.status).toBe(RunStatus.COMPLETED)
   })
@@ -1020,7 +1021,8 @@ describe("RunService", () => {
       contractId: "contract-default",
       correlationId: "corr-term",
     })
-    await runService.updateRun(run.id, { status: RunStatus.COMPLETED })
+    // Seed an existing terminal row; direct service completion is intentionally policy-only.
+    tdb.db.query("UPDATE task_runs SET state = 'completed' WHERE run_id = ?").run(run.id)
 
     let thrown: Error | undefined
     try {
