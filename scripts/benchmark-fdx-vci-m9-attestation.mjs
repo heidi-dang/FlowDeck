@@ -241,17 +241,12 @@ async function runPreflights(bin) {
     const pkgDir = join(repo, "packages", "unresolved-pkg");
     mkdirSync(join(pkgDir, "src"), { recursive: true });
     mkdirSync(join(pkgDir, "tests"), { recursive: true });
-    writeFileSync(join(pkgDir, "package.json"), JSON.stringify({ name: "@my/unresolved-pkg" }));
+    writeFileSync(join(pkgDir, "package.json"), "{ invalid_json_syntax: ");
     writeFileSync(join(pkgDir, "src", "index.ts"), "export const x = 1;");
-    for (let i = 0; i < 5; i++) {
-      writeFileSync(join(pkgDir, "tests", `test_${i}.test.ts`), "test('x', () => {});");
-    }
     gitInitAndCommitAll(repo);
     writeFileSync(join(pkgDir, "src", "index.ts"), "export const x = 2;");
 
-    const vRes = invokeFdx(bin, repo, ["verify", "--format", "json"], {
-      FDX_LIMIT_MAX_DISCOVERED_TESTS: "2",
-    });
+    const vRes = invokeFdx(bin, repo, ["verify", "--format", "json"]);
     const runId = vRes.data.run_id;
     const aRes = invokeFdx(bin, repo, ["attest", "create", "--run", runId, "--format", "json"]);
     const unres = aRes.data.statement.predicate.result.unresolved_obligations;
