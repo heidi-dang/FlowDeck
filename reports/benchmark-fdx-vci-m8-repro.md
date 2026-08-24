@@ -1,10 +1,10 @@
-# Final Hardened M8 Runtime Evidence & Historical Verification Intelligence Qualification Report (R22)
+# Hardened M8 Runtime Evidence & Historical Verification Intelligence Qualification Report (R23)
 
 **Milestone:** M8  
-**Functional Commit (F20):** `9f705270537e67c89c3db6655630a896fac762e0`  
+**Functional Baseline (F20):** `9f705270537e67c89c3db6655630a896fac762e0`  
 **Binary SHA-256:** `4e2736be0a700668afc5ff373c9bd8250695a5b71c15ad4d297c2dd632b946f3`  
-**Benchmark Harness (H22):** `c94d87f94c6d8f18e3c5bafa1c3408e1fe12890e`  
-**Executed At:** 2026-08-24T08:32:15.436Z  
+**Benchmark Harness (H23):** `369c944fc0d1b1aaa396f691c6c91bac3dda50f2`  
+**Executed At:** 2026-08-24T08:47:20.235Z  
 **Platform:** linux (x64)  
 **Node Version:** v24.19.0  
 **Schema Version:** `7`  
@@ -57,10 +57,10 @@
 
 | Benchmark | Samples | Min (ms) | Median (ms) | P95 (ms) | Max (ms) | Mean (ms) |
 |---|---|---|---|---|---|---|
-| Single Run Verify + Ingest | 15 | 121.86 | 122.43 | 333.26 | 333.26 | 139.75 |
-| Query 50 Runs History | 20 | 3.08 | 3.19 | 3.88 | 3.88 | 3.34 |
-| Check Stats & Flake Signal | 20 | 3.11 | 3.36 | 3.95 | 3.95 | 3.38 |
-| Reconcile 50 Artifacts | 15 | 7.23 | 7.96 | 13.18 | 13.18 | 8.74 |
+| Single Run Verify + Ingest | 15 | 121.53 | 122.95 | 133.6 | 133.6 | 127.08 |
+| Query 50 Runs History | 20 | 3 | 3.18 | 3.8 | 3.8 | 3.22 |
+| Check Stats & Flake Signal | 20 | 2.94 | 3.05 | 3.24 | 3.24 | 3.07 |
+| Reconcile 50 Artifacts | 15 | 6.89 | 7.12 | 7.43 | 7.43 | 7.14 |
 
 ### Database Sizing
 
