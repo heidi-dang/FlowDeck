@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "bun:test"
-import { existsSync, readFileSync } from "fs"
+import { existsSync, readFileSync, mkdtempSync } from "fs"
+import { tmpdir } from "os"
 import { join } from "path"
 
 describe("removed delegation tools", () => {
@@ -20,7 +21,7 @@ describe("removed delegation tools", () => {
     }
 
     const result = await flowDeckPlugin.server({
-      directory: process.cwd(),
+      directory: mkdtempSync(join(tmpdir(), "removed-tools-")),
       client: mockClient,
       worktree: "",
       project: {},

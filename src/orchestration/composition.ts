@@ -172,6 +172,12 @@ export class SqliteRunRepository implements IRunRepository {
         `INSERT INTO task_runs (run_id, contract_id, strategy, state, aggregate_version, baseline_sha, repo_branch, created_at, created_ts)
          VALUES (?, ?, ?, ?, 1, ?, ?, datetime('now'), strftime('%s','now'))`,
       ).run(run.id, contractId, run.runType, mapRunStatusToTaskRunState(run.status), "0000000000000000000000000000000000000000", "main");
+      if (run.correlationId) {
+        this.db.query(
+          `INSERT OR REPLACE INTO execution_metadata (id, run_id, key, value, created_at)
+           VALUES (?, ?, ?, ?, datetime('now'))`
+        ).run("corr-" + run.correlationId, run.id, "run_correlation:" + run.correlationId, run.id);
+      }
       return run;
     });
   }
@@ -222,6 +228,23 @@ export class SqliteRunRepository implements IRunRepository {
       startedAt: (row.started_at as string) ?? undefined,
       completedAt: (row.completed_at as string) ?? undefined,
     };
+  }
+
+  async findByCorrelationId(correlationId: string): Promise<Run | null> {
+    const metaRow = this.db.query(
+      "SELECT run_id FROM execution_metadata WHERE key = ? LIMIT 1"
+    ).get("run_correlation:" + correlationId) as { run_id: string } | undefined;
+    if (metaRow?.run_id) {
+      return this.findById(metaRow.run_id);
+    }
+    const eventRow = this.db.query(
+      "SELECT aggregate_id FROM events WHERE correlation_id = ? ORDER BY global_sequence ASC LIMIT 1"
+    ).get(correlationId) as { aggregate_id: string } | undefined;
+    if (eventRow?.aggregate_id) {
+      return this.findById(eventRow.aggregate_id);
+    }
+    // Fallback: check if correlationId matches a run_id directly
+    return this.findById(correlationId);
   }
 
   async findMany(filter: RunFilter, pagination: PagePaginationRequest): Promise<PaginatedResult<Run>> {
@@ -738,6 +761,8 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
   // Reconcile restart-surviving pending continuation dispatches into outcome_unknown
   continuationDispatcher.reconcilePendingDispatches();
   const runService = new RunService(runRepo, eventBus, executionRegistry, unitOfWork, transactionalRunWriter, db, childExecutionLifecycleService);
+  // Reconcile restart-surviving deferred replacements
+  deferredReplacementRepo.reconcileAfterRestart();
   const contractService = new ContractService(contractRepo, eventBus);
   const assignmentBindingCoordinator = new AssignmentBindingCoordinator({ assignmentService, bindingRepo: assignmentBindingRepo });
   const verificationService = new VerificationService(verificationRepo, eventBus);

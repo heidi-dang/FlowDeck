@@ -45,6 +45,12 @@ function createMockRunRepo(): IRunRepository {
       return updated;
     }),
     findById: vi.fn(async (id: string) => runs.get(id) ?? null),
+    findByCorrelationId: vi.fn(async (correlationId: string) => {
+      for (const run of runs.values()) {
+        if (run.correlationId === correlationId) return run;
+      }
+      return null;
+    }),
     findMany: vi.fn(async (_filter: any, _pagination: PagePaginationRequest): Promise<PaginatedResult<Run>> => {
       const items = Array.from(runs.values());
       return { items, total: items.length, page: 1, limit: 20 };

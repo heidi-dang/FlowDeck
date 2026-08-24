@@ -32,10 +32,26 @@ export class RunService {
     this.childLifecycleService = service;
   }
 
+  async getRunByCorrelationId(correlationId: string): Promise<Run | null> {
+    return this.runRepo.findByCorrelationId(correlationId);
+  }
+
+  async createOrGetRunByCorrelationId(input: CreateRunInput, correlationId: string): Promise<Run> {
+    const existing = await this.runRepo.findByCorrelationId(correlationId);
+    if (existing) {
+      return existing;
+    }
+    return this.createRun(input, correlationId);
+  }
+
   async createRun(input: CreateRunInput, correlationId?: string): Promise<Run> {
+    const corrId = correlationId ?? input.correlationId ?? randomUUID();
+    const existing = await this.runRepo.findByCorrelationId(corrId);
+    if (existing) {
+      return existing;
+    }
     const now = new Date().toISOString();
     const runId = randomUUID();
-    const corrId = correlationId ?? input.correlationId ?? randomUUID();
 
     // Canonicalize QUEUED to PENDING at the API boundary.
     // QUEUED is a deprecated input alias only — the domain and repository layers

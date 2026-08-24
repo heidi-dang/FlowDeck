@@ -2198,4 +2198,529 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
 
     await releaseProjectRuntime(TEST_DIR);
   });
+
+  // 59. deferred-resuming-before-create-recovers-after-restart
+  it("59. deferred-resuming-before-create-recovers-after-restart", async () => {
+    const ctx1 = acquireProjectRuntime(TEST_DIR);
+    const sessionID = "sess-rec-before-create";
+
+    // Insert a record stuck in 'resuming' before replacement Run was created
+    ctx1.runtime.db.query(`
+      INSERT INTO deferred_replacements (
+        id, parent_session_id, old_run_id, source_intent, agent_id,
+        effective_goal, message_hash, message_id, correlation_id,
+        routing_decision, status, created_at, updated_at
+      ) VALUES ('def-crash-1', ?, 'old-run-1', 'REPLACE', 'heidi', 'Goal crash 1', 'h1', 'm1', 'corr-crash-1', '{"executionClass":"STANDARD"}', 'resuming', datetime('now'), datetime('now'))
+    `).run(sessionID);
+
+    await releaseProjectRuntime(TEST_DIR);
+
+    // Restart runtime: reconciliation should reset it to pending_termination since no Run exists with correlationId
+    const ctx2 = acquireProjectRuntime(TEST_DIR);
+    const def = ctx2.runtime.deferredReplacementRepo.findCurrentForSession(sessionID);
+    expect(def).not.toBeNull();
+    expect(def?.status).toBe("pending_termination");
+    expect(def?.id).toBe("def-crash-1");
+
+    await releaseProjectRuntime(TEST_DIR);
+  });
+
+  // 60. deferred-resuming-after-create-reuses-existing-run
+  it("60. deferred-resuming-after-create-reuses-existing-run", async () => {
+    const ctx1 = acquireProjectRuntime(TEST_DIR);
+    const sessionID = "sess-rec-after-create";
+    const correlationId = "corr-already-created";
+
+    // Create a real Run with correlationId
+    const existingRun = await ctx1.runtime.services.runService.createRun({
+      runType: "simple",
+      correlationId,
+      sessionId: sessionID,
+      agentId: "heidi",
+      metadata: { goal: "Existing replacement run" },
+    });
+
+    // Insert a deferred record stuck in 'resuming' after Run was created but before markResumed
+    ctx1.runtime.db.query(`
+      INSERT INTO deferred_replacements (
+        id, parent_session_id, old_run_id, source_intent, agent_id,
+        effective_goal, message_hash, message_id, correlation_id,
+        routing_decision, status, created_at, updated_at
+      ) VALUES ('def-crash-2', ?, 'old-run-2', 'REPLACE', 'heidi', 'Goal crash 2', 'h2', 'm2', ?, '{"executionClass":"STANDARD"}', 'resuming', datetime('now'), datetime('now'))
+    `).run(sessionID, correlationId);
+
+    await releaseProjectRuntime(TEST_DIR);
+
+    // Restart runtime: reconciliation should find existing Run by correlation ID and mark resumed with actual Run ID
+    const ctx2 = acquireProjectRuntime(TEST_DIR);
+    const def = ctx2.runtime.deferredReplacementRepo.findById("def-crash-2");
+    expect(def).not.toBeNull();
+    expect(def?.status).toBe("resumed");
+    expect(def?.replacementRunId).toBe(existingRun.id);
+
+    await releaseProjectRuntime(TEST_DIR);
+  });
+
+  // 61. deferred-replacement-persists-actual-run-id
+  it("61. deferred-replacement-persists-actual-run-id", async () => {
+    const abortMock = mock(() => Promise.reject(new Error("Native process stuck")));
+    const mockClient = { session: { abort: abortMock, promptAsync: mock(() => Promise.resolve(true)) } };
+    const ctx = acquireProjectRuntime(TEST_DIR, mockClient);
+    const sessionID = "sess-actual-run-id";
+
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "m-run-id-1" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m-run-id-1" }] }
+    );
+    const run1 = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
+
+    const del = await ctx.runtime.childExecutionLifecycleService.registerDelegation({
+      runId: run1.id,
+      parentSessionId: sessionID,
+      taskCallId: "call-del-run-id",
+      targetAgent: "coder",
+    });
+
+    ctx.runtime.childExecutionLifecycleService.bindChildSession({
+      parentSessionId: sessionID,
+      childSessionId: "child-run-id-sess",
+      agentId: "coder",
+      taskCallId: del.taskCallId,
+    });
+
+    await ctx.runtime.childExecutionLifecycleService.markStarted({ childSessionId: "child-run-id-sess" });
+
+    // User sends REPLACE intent -> deferred replacement created
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "m-run-id-2" },
+      { message: {} as any, parts: [{ type: "text", text: "Forget that, refactor full backend architecture", id: "2", sessionID, messageID: "m-run-id-2" }] }
+    );
+
+    const savedDef = ctx.runtime.deferredReplacementRepo.findCurrentForSession(sessionID);
+    expect(savedDef).not.toBeNull();
+    expect(savedDef?.status).toBe("pending_termination");
+
+    // Native termination event arrives
+    await ctx.adapter.onEvent({
+      type: "session.deleted",
+      properties: { sessionID: "child-run-id-sess" },
+    } as any);
+
+    const resumedDef = ctx.runtime.deferredReplacementRepo.findById(savedDef!.id);
+    expect(resumedDef?.status).toBe("resumed");
+    expect(resumedDef?.replacementRunId).toBeDefined();
+
+    // Verify replacement_run_id matches the actual task_runs row id (not a taskId)
+    const taskRunRow = ctx.runtime.taskRunsRepo.findById(resumedDef!.replacementRunId!);
+    expect(taskRunRow).toBeDefined();
+    expect(taskRunRow?.runId).toBe(resumedDef!.replacementRunId!);
+    expect(resumedDef!.replacementRunId).not.toContain("task-");
+
+    await releaseProjectRuntime(TEST_DIR);
+  });
+
+  // 62. deferred-replacement-create-is-idempotent-by-correlation
+  it("62. deferred-replacement-create-is-idempotent-by-correlation", async () => {
+    const ctx = acquireProjectRuntime(TEST_DIR);
+    const correlationId = "corr-idem-test";
+
+    const runA = await ctx.runtime.services.runService.createOrGetRunByCorrelationId({
+      runType: "simple",
+      correlationId,
+      sessionId: "sess-idem",
+      agentId: "heidi",
+      metadata: { key: "first" },
+    }, correlationId);
+
+    const runB = await ctx.runtime.services.runService.createOrGetRunByCorrelationId({
+      runType: "simple",
+      correlationId,
+      sessionId: "sess-idem",
+      agentId: "heidi",
+      metadata: { key: "second" },
+    }, correlationId);
+
+    expect(runA.id).toBe(runB.id);
+
+    await releaseProjectRuntime(TEST_DIR);
+  });
+
+  // 63. duplicate-session-delete-after-crash-does-not-create-second-run
+  it("63. duplicate-session-delete-after-crash-does-not-create-second-run", async () => {
+    const abortMock = mock(() => Promise.reject(new Error("Native process stuck")));
+    const mockClient = { session: { abort: abortMock, promptAsync: mock(() => Promise.resolve(true)) } };
+    const ctx1 = acquireProjectRuntime(TEST_DIR, mockClient);
+    const sessionID = "sess-dup-del-crash";
+
+    await ctx1.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "m-dup-1" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m-dup-1" }] }
+    );
+    const run1 = (await ctx1.adapter.resolveActiveRunForSession(sessionID))!;
+
+    const del = await ctx1.runtime.childExecutionLifecycleService.registerDelegation({
+      runId: run1.id,
+      parentSessionId: sessionID,
+      taskCallId: "call-del-dup-crash",
+      targetAgent: "coder",
+    });
+
+    ctx1.runtime.childExecutionLifecycleService.bindChildSession({
+      parentSessionId: sessionID,
+      childSessionId: "child-dup-crash-sess",
+      agentId: "coder",
+      taskCallId: del.taskCallId,
+    });
+
+    await ctx1.runtime.childExecutionLifecycleService.markStarted({ childSessionId: "child-dup-crash-sess" });
+
+    // User sends REPLACE
+    await ctx1.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "m-dup-2" },
+      { message: {} as any, parts: [{ type: "text", text: "Forget that, implement frontend components", id: "2", sessionID, messageID: "m-dup-2" }] }
+    );
+
+    // Simulate crash and restart
+    await releaseProjectRuntime(TEST_DIR);
+
+    const ctx2 = acquireProjectRuntime(TEST_DIR, mockClient);
+
+    // First session.deleted event
+    await ctx2.adapter.onEvent({
+      type: "session.deleted",
+      properties: { sessionID: "child-dup-crash-sess" },
+    } as any);
+
+    const activeRunFirst = await ctx2.adapter.resolveActiveRunForSession(sessionID);
+    expect(activeRunFirst).not.toBeNull();
+
+    // Duplicate session.deleted event
+    await ctx2.adapter.onEvent({
+      type: "session.deleted",
+      properties: { sessionID: "child-dup-crash-sess" },
+    } as any);
+
+    const activeRunSecond = await ctx2.adapter.resolveActiveRunForSession(sessionID);
+    expect(activeRunSecond?.id).toBe(activeRunFirst?.id);
+
+    await releaseProjectRuntime(TEST_DIR);
+  });
+
+  // 64. newer-user-message-while-deferred-does-not-bypass-barrier
+  it("64. newer-user-message-while-deferred-does-not-bypass-barrier", async () => {
+    const abortMock = mock(() => Promise.reject(new Error("Native process stuck")));
+    const mockClient = { session: { abort: abortMock, promptAsync: mock(() => Promise.resolve(true)) } };
+    const ctx = acquireProjectRuntime(TEST_DIR, mockClient);
+    const sessionID = "sess-barrier-bypass";
+
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "m-b-1" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m-b-1" }] }
+    );
+    const run1 = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
+
+    const del = await ctx.runtime.childExecutionLifecycleService.registerDelegation({
+      runId: run1.id,
+      parentSessionId: sessionID,
+      taskCallId: "call-b-1",
+      targetAgent: "coder",
+    });
+
+    ctx.runtime.childExecutionLifecycleService.bindChildSession({
+      parentSessionId: sessionID,
+      childSessionId: "child-b-sess",
+      agentId: "coder",
+      taskCallId: del.taskCallId,
+    });
+
+    await ctx.runtime.childExecutionLifecycleService.markStarted({ childSessionId: "child-b-sess" });
+
+    // User sends REPLACE R1 -> run1 gets cancelled, deferred record R1 created
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "m-b-2" },
+      { message: {} as any, parts: [{ type: "text", text: "Forget that, do replacement R1", id: "2", sessionID, messageID: "m-b-2" }] }
+    );
+
+    // Parent run1 is now terminal (cancelled), so resolveActiveRunForSession returns null
+    const activeRun = await ctx.adapter.resolveActiveRunForSession(sessionID);
+    expect(activeRun).toBeNull();
+
+    // Now user sends a brand new message R2 while child is still unconfirmed!
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "m-b-3" },
+      { message: {} as any, parts: [{ type: "text", text: "Forget that too, refactor database schema and build backend services", id: "3", sessionID, messageID: "m-b-3" }] }
+    );
+
+    // Barrier check: NO new Run should have been created yet because child is still running!
+    const activeRunStillBlocked = await ctx.adapter.resolveActiveRunForSession(sessionID);
+    expect(activeRunStillBlocked).toBeNull();
+
+    // Current deferred replacement should now be R2 (superseding R1)
+    const curDef = ctx.runtime.deferredReplacementRepo.findCurrentForSession(sessionID);
+    expect(curDef).not.toBeNull();
+    expect(curDef?.effectiveGoal).toContain("refactor database schema");
+    expect(curDef?.status).toBe("pending_termination");
+
+    // When child termination is finally confirmed
+    await ctx.adapter.onEvent({
+      type: "session.deleted",
+      properties: { sessionID: "child-b-sess" },
+    } as any);
+
+    // Exactly one active new Run resumes with R2's intent
+    const activeNewRun = await ctx.adapter.resolveActiveRunForSession(sessionID);
+    expect(activeNewRun).not.toBeNull();
+
+    await releaseProjectRuntime(TEST_DIR);
+  });
+
+  // 65. user-cancel-supersedes-or-cancels-deferred-intent
+  it("65. user-cancel-supersedes-or-cancels-deferred-intent", async () => {
+    const abortMock = mock(() => Promise.reject(new Error("Native process stuck")));
+    const mockClient = { session: { abort: abortMock, promptAsync: mock(() => Promise.resolve(true)) } };
+    const ctx = acquireProjectRuntime(TEST_DIR, mockClient);
+    const sessionID = "sess-cancel-deferred";
+
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "m-c-1" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m-c-1" }] }
+    );
+    const run1 = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
+
+    const del = await ctx.runtime.childExecutionLifecycleService.registerDelegation({
+      runId: run1.id,
+      parentSessionId: sessionID,
+      taskCallId: "call-c-1",
+      targetAgent: "coder",
+    });
+
+    ctx.runtime.childExecutionLifecycleService.bindChildSession({
+      parentSessionId: sessionID,
+      childSessionId: "child-c-sess",
+      agentId: "coder",
+      taskCallId: del.taskCallId,
+    });
+
+    await ctx.runtime.childExecutionLifecycleService.markStarted({ childSessionId: "child-c-sess" });
+
+    // User sends REPLACE
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "m-c-2" },
+      { message: {} as any, parts: [{ type: "text", text: "Forget that, do replace work", id: "2", sessionID, messageID: "m-c-2" }] }
+    );
+
+    const savedDef = ctx.runtime.deferredReplacementRepo.findCurrentForSession(sessionID);
+    expect(savedDef).not.toBeNull();
+
+    // User now sends CANCEL
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "m-c-3" },
+      { message: {} as any, parts: [{ type: "text", text: "cancel everything stop", id: "3", sessionID, messageID: "m-c-3" }] }
+    );
+
+    // Deferred replacement must be cancelled and not active
+    const activeDef = ctx.runtime.deferredReplacementRepo.findCurrentForSession(sessionID);
+    expect(activeDef).toBeNull();
+
+    // Child termination event arrives
+    await ctx.adapter.onEvent({
+      type: "session.deleted",
+      properties: { sessionID: "child-c-sess" },
+    } as any);
+
+    // No new run is resurrected
+    const activeRun = await ctx.adapter.resolveActiveRunForSession(sessionID);
+    expect(activeRun).toBeNull();
+
+    await releaseProjectRuntime(TEST_DIR);
+  });
+
+  // 66. deferred-fast-direct-survives-restart-and-resumes-at-most-once
+  it("66. deferred-fast-direct-survives-restart-and-resumes-at-most-once", async () => {
+    const abortMock = mock(() => Promise.reject(new Error("Native process stuck")));
+    const mockClient = { session: { abort: abortMock, promptAsync: mock(() => Promise.resolve(true)) } };
+    const ctx1 = acquireProjectRuntime(TEST_DIR, mockClient);
+    const sessionID = "sess-fast-direct-restart";
+
+    await ctx1.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "m-fd-1" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m-fd-1" }] }
+    );
+    const run1 = (await ctx1.adapter.resolveActiveRunForSession(sessionID))!;
+
+    const del = await ctx1.runtime.childExecutionLifecycleService.registerDelegation({
+      runId: run1.id,
+      parentSessionId: sessionID,
+      taskCallId: "call-fd-1",
+      targetAgent: "coder",
+    });
+
+    ctx1.runtime.childExecutionLifecycleService.bindChildSession({
+      parentSessionId: sessionID,
+      childSessionId: "child-fd-sess",
+      agentId: "coder",
+      taskCallId: del.taskCallId,
+    });
+
+    await ctx1.runtime.childExecutionLifecycleService.markStarted({ childSessionId: "child-fd-sess" });
+
+    // User sends replace message that routes to FAST_DIRECT as replacement
+    await ctx1.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "m-fd-2" },
+      { message: {} as any, parts: [{ type: "text", text: "Forget that, give me a quick summary of what is done", id: "2", sessionID, messageID: "m-fd-2" }] }
+    );
+
+    // Restart runtime before child termination
+    await releaseProjectRuntime(TEST_DIR);
+
+    const ctx2 = acquireProjectRuntime(TEST_DIR, mockClient);
+
+    const savedDef = ctx2.runtime.deferredReplacementRepo.findCurrentForSession(sessionID);
+    expect(savedDef).not.toBeNull();
+    expect(savedDef?.status).toBe("pending_termination");
+
+    // Child termination event arrives in new runtime instance
+    await ctx2.adapter.onEvent({
+      type: "session.deleted",
+      properties: { sessionID: "child-fd-sess" },
+    } as any);
+
+    // Deferred is marked resumed
+    const resumedDef = ctx2.runtime.deferredReplacementRepo.findById(savedDef!.id);
+    expect(resumedDef?.status).toBe("resumed");
+    expect(resumedDef?.replacementRunId).toBeUndefined(); // FAST_DIRECT has no replacementRunId
+
+    await releaseProjectRuntime(TEST_DIR);
+  });
+
+  // 67. strategy-exhausted-evaluate-returns-explicit-reason-and-stops-autonomous-idle
+  it("67. strategy-exhausted-evaluate-returns-explicit-reason-and-stops-autonomous-idle", async () => {
+    const promptAsyncMock = mock(() => Promise.resolve(true));
+    const mockClient = { session: { abort: mock(() => Promise.resolve(true)), promptAsync: promptAsyncMock } };
+    const ctx = acquireProjectRuntime(TEST_DIR, mockClient);
+    const sessionID = "sess-exhaust-test";
+
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "m-ex-1" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m-ex-1" }] }
+    );
+    const run = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
+    const initSnap = ctx.runtime.orchestrationSnapshotService.getSnapshot(run.id, sessionID)!;
+
+    ctx.runtime.transitionEngine.transitionPhase({
+      runId: run.id,
+      targetPhase: OP.EXECUTING,
+      expectedPhase: initSnap.phase,
+      expectedAggregateVersion: initSnap.aggregateVersion,
+    });
+
+    const targetItemId = "root:" + run.id;
+    const snap = ctx.runtime.orchestrationSnapshotService.getSnapshot(run.id, sessionID)!;
+    const stateFp = ctx.runtime.transitionEngine.computeStrategyStateFingerprint(run.id, targetItemId, snap);
+
+    // Save 20 unique prohibited strategies
+    for (let i = 1; i <= 20; i++) {
+      ctx.runtime.transitionEngine.saveStrategyConstraint({
+        runId: run.id,
+        assignmentId: targetItemId,
+        prohibitedActionFingerprint: `action-strat-${i}`,
+        stateFingerprint: stateFp,
+        reason: "REPEATED_ACTION_BLOCKED",
+      });
+    }
+
+    let constraintSet = ctx.runtime.transitionEngine.getActiveStrategyConstraints(run.id, targetItemId);
+    expect(constraintSet?.prohibitedActionFingerprints.length).toBe(20);
+    expect(constraintSet?.exhausted).toBe(false);
+
+    // 21st unique failure under same state -> marks exhausted
+    ctx.runtime.transitionEngine.saveStrategyConstraint({
+      runId: run.id,
+      assignmentId: targetItemId,
+      prohibitedActionFingerprint: "action-strat-21",
+      stateFingerprint: stateFp,
+      reason: "REPEATED_ACTION_BLOCKED",
+    });
+
+    constraintSet = ctx.runtime.transitionEngine.getActiveStrategyConstraints(run.id, targetItemId);
+    expect(constraintSet?.exhausted).toBe(true);
+
+    // evaluate() returns STRATEGY_SET_EXHAUSTED + BLOCK
+    const evalRes = ctx.runtime.transitionEngine.evaluate({
+      runId: run.id,
+      sessionId: sessionID,
+    });
+
+    expect(evalRes.strategyDecision).toBe("BLOCK");
+    expect(evalRes.reasonCode).toBe("STRATEGY_SET_EXHAUSTED");
+    expect(evalRes.requiresAction).toBe(false);
+    expect(evalRes.blockerReason).toBe("Strategy search exhausted under unchanged meaningful state");
+
+    // Continuation policy evaluates to STOP_BLOCKED
+    const contRes = ctx.runtime.continuationPolicy.evaluate({
+      snapshot: snap,
+      transition: evalRes,
+    });
+    expect(contRes.decision).toBe("STOP_BLOCKED");
+
+    // Trigger onSessionIdle -> promptAsync MUST NOT be called
+    promptAsyncMock.mockClear();
+    await ctx.adapter.onSessionIdle(sessionID);
+    expect(promptAsyncMock).toHaveBeenCalledTimes(0);
+
+    // RECOVERING phase alone under same meaningful state does not clear exhaustion
+    ctx.runtime.transitionEngine.transitionPhase({
+      runId: run.id,
+      targetPhase: OP.RECOVERING,
+      expectedPhase: OP.EXECUTING,
+      expectedAggregateVersion: ctx.runtime.taskRunsRepo.findById(run.id)!.aggregateVersion,
+    });
+
+    const evalRecovering = ctx.runtime.transitionEngine.evaluate({
+      runId: run.id,
+      sessionId: sessionID,
+    });
+    expect(evalRecovering.strategyDecision).toBe("BLOCK");
+    expect(evalRecovering.reasonCode).toBe("STRATEGY_SET_EXHAUSTED");
+
+    await ctx.adapter.onSessionIdle(sessionID);
+    expect(promptAsyncMock).toHaveBeenCalledTimes(0);
+
+    // Meaningful progress (mutating repository / state advancement) advances meaningfulStateVersion and clears exhaustion
+    ctx.runtime.progressObservationService.incrementMeaningfulStateVersion(run.id);
+
+    const evalAfterMut = ctx.runtime.transitionEngine.evaluate({
+      runId: run.id,
+      sessionId: sessionID,
+    });
+    expect(evalAfterMut.reasonCode).not.toBe("STRATEGY_SET_EXHAUSTED");
+
+    await releaseProjectRuntime(TEST_DIR);
+  });
+
+  // 68. v13-checksum-covers-schema-aware-migration-contract-and-rejects-changed-behavior
+  it("68. v13-checksum-covers-schema-aware-migration-contract-and-rejects-changed-behavior", () => {
+    const db = new Database(":memory:");
+    runMigrations(db);
+    expect(getCurrentVersion(db)).toBe(13);
+
+    // Tamper with migration 13 checksum in ledger
+    db.query("UPDATE schema_migrations SET checksum = 'tampered_v13_checksum' WHERE version = 13").run();
+
+    expect(() => {
+      runMigrations(db);
+    }).toThrow(MigrationChecksumError);
+
+    db.close();
+  });
+
+  // 69. historical-v12-byte-identity-remains-valid
+  it("69. historical-v12-byte-identity-remains-valid", () => {
+    const v12Migration = MIGRATIONS.find(m => m.version === 12);
+    expect(v12Migration).toBeDefined();
+    expect(v12Migration?.name).toBe("orchestration_runtime_integrity_v2.0.0-alpha");
+    expect(v12Migration?.sql).toBeDefined();
+    expect(v12Migration?.checksum.length).toBe(64);
+  });
+
 });

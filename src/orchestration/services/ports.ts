@@ -40,6 +40,7 @@ export interface IRunRepository {
   create(run: Run): Promise<Run>;
   update(id: string, input: UpdateRunInput): Promise<Run | null>;
   findById(id: string): Promise<Run | null>;
+  findByCorrelationId(correlationId: string): Promise<Run | null>;
   findMany(filter: RunFilter, pagination: PagePaginationRequest): Promise<PaginatedResult<Run>>;
   count(filter: RunFilter): Promise<number>;
 }

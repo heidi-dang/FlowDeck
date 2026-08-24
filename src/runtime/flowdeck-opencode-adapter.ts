@@ -10,7 +10,7 @@ import {
 } from "../services/heidi-route-state";
 import { classifyTask, type RouterDecision, stableHash } from "../services/heidi-fast-router";
 import type { Event, UserMessage, Part, TextPart } from "@opencode-ai/sdk";
-import { isTerminalRunStatus } from "../orchestration/types/runs";
+import { isTerminalRunStatus, type Run } from "../orchestration/types/runs";
 import { ErrorCodes } from "../orchestration/types/errors";
 import {
   buildCanonicalRoutingDecision,
@@ -49,7 +49,7 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
     private client?: any,
   ) {
     this.continuationDispatcher = new ContinuationDispatcher(this.runtime.db);
-    this.runtime.childExecutionLifecycleService.setControlPort(this);
+    this.runtime.childExecutionLifecycleService?.setControlPort(this);
   }
 
   getClient(): any {
@@ -102,11 +102,11 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
       if (!text.trim()) return;
 
       const msgHash = stableHash(text);
-      const _currentTurn = this.runtime.sessionTurnRepo.incrementTurnVersion({
+      const _currentTurn = this.runtime.sessionTurnRepo?.incrementTurnVersion({
         sessionId: input.sessionID,
         messageId: input.messageID,
         messageHash: msgHash,
-      });
+      }) ?? { turnVersion: ++this.turnVersionCounter, replay: false };
 
       const correlationId = input.messageID || randomUUID();
 
@@ -247,6 +247,7 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
                 console.error("[FlowDeckLifecycleAdapter] cancelRun error:", err);
               }
             }
+            this.runtime.deferredReplacementRepo.cancelCurrentForSession(input.sessionID);
             markRouteInactive(input.sessionID);
             return;
           }
@@ -278,16 +279,52 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
         }
       }
 
-      // 2. Check for exact duplicate of ephemeral/initial turn
+      // 2. Check if this session has a pending deferred replacement whose old run still has unconfirmed child termination
+      const existingDeferred = this.runtime.deferredReplacementRepo?.findCurrentForSession(input.sessionID);
+      if (existingDeferred) {
+        const diag = this.runtime.childExecutionLifecycleService.getDiagnosticsForRun(existingDeferred.oldRunId);
+        if (diag.currentTerminationPending) {
+          const userIntent = classifyUserTurnIntent({
+            currentGoal: existingDeferred.effectiveGoal,
+            newMessage: text,
+            activeRunStatus: "cancelled" as any,
+            messageHash: msgHash,
+            lastMessageHash: existingDeferred.messageHash,
+          });
+
+          if (userIntent.intent === "CANCEL") {
+            this.runtime.deferredReplacementRepo.cancelCurrentForSession(input.sessionID);
+            markRouteInactive(input.sessionID);
+            return;
+          }
+
+          // Newer genuine user intent wins and supersedes the older deferred replacement while remaining blocked on native termination
+          const decision = classifyTask(text, { hasExplicitDomainSignal: false });
+          this.runtime.deferredReplacementRepo.savePending({
+            parentSessionId: input.sessionID,
+            oldRunId: existingDeferred.oldRunId,
+            sourceIntent: "REPLACE",
+            agentId: input.agent ?? "heidi",
+            effectiveGoal: text,
+            messageHash: msgHash,
+            messageId: correlationId,
+            correlationId,
+            routingDecision: decision,
+          });
+          return;
+        }
+      }
+
+      // 3. Check for exact duplicate of ephemeral/initial turn
       if (isDuplicateMessage(input.sessionID, msgHash)) {
         noteInternalContinuation(input.sessionID);
         return;
       }
 
-      // 3. Clear any prior FAST_DIRECT pending turn marker atomically
+      // 4. Clear any prior FAST_DIRECT pending turn marker atomically
       this.pendingFastDirectTurns.delete(input.sessionID);
 
-      // 4. Genuine new or replacement user instruction -> classify independently
+      // 5. Genuine new or replacement user instruction -> classify independently
       const decision = classifyTask(text, { hasExplicitDomainSignal: false });
       const taskId = "task-" + randomUUID();
       this.turnVersionCounter += 1;
@@ -350,18 +387,26 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
     goal: string,
     msgHash: string,
     correlationId: string,
-  ): Promise<void> {
-    if (decision.executionClass === "FAST_DIRECT") return;
+  ): Promise<Run | null> {
+    if (decision.executionClass === "FAST_DIRECT") return null;
 
     try {
       const runStrategy = mapExecutionClassToRunStrategy(decision.executionClass);
-      const run = await this.runtime.services.runService.createRun({
-        runType: runStrategy,
-        correlationId,
-        sessionId: sessionID,
-        agentId,
-        metadata: { taskId, goal, lastUserMessageHash: msgHash },
-      });
+      const run = typeof this.runtime.services.runService.createOrGetRunByCorrelationId === "function"
+        ? await this.runtime.services.runService.createOrGetRunByCorrelationId({
+            runType: runStrategy,
+            correlationId,
+            sessionId: sessionID,
+            agentId,
+            metadata: { taskId, goal, lastUserMessageHash: msgHash },
+          }, correlationId)
+        : await this.runtime.services.runService.createRun({
+            runType: runStrategy,
+            correlationId,
+            sessionId: sessionID,
+            agentId,
+            metadata: { taskId, goal, lastUserMessageHash: msgHash },
+          });
 
       // Authoritative routing persistence using real repository assessment
       const canonicalRouting = buildCanonicalRoutingDecision({
@@ -380,8 +425,10 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
         agentId,
         status: "running",
       });
+      return run;
     } catch (err) {
       console.error("[FlowDeckLifecycleAdapter] syncOrchestrationRun failed:", err);
+      return null;
     }
   }
 
@@ -815,9 +862,9 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
                 messageID: deferred.correlationId,
                 turnVersion,
               });
-              this.runtime.deferredReplacementRepo.markResumed(deferred.id);
+              this.runtime.deferredReplacementRepo.markResumed(deferred.id, undefined);
             } else {
-              await this.syncOrchestrationRun(
+              const replacement = await this.syncOrchestrationRun(
                 taskId,
                 parentSessionId,
                 deferred.agentId,
@@ -826,7 +873,7 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
                 deferred.messageHash,
                 deferred.correlationId ?? ("deferred-" + taskId)
               );
-              this.runtime.deferredReplacementRepo.markResumed(deferred.id, taskId);
+              this.runtime.deferredReplacementRepo.markResumed(deferred.id, replacement?.id);
             }
           }
         }

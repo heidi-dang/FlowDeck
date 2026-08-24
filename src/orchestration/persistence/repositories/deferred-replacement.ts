@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite"
 import { randomUUID } from "crypto"
 import type { RouterDecision } from "../../../services/heidi-fast-router"
+import type { Run } from "../../types/runs"
 
 export type DeferredReplacementStatus =
   | "pending_termination"
@@ -8,6 +9,7 @@ export type DeferredReplacementStatus =
   | "resumed"
   | "superseded"
   | "blocked"
+  | "cancelled"
 
 export interface DeferredReplacementRecord {
   id: string
@@ -113,6 +115,16 @@ export class SqliteDeferredReplacementRepository {
     return this.mapRow(row)
   }
 
+  findById(id: string): DeferredReplacementRecord | null {
+    const row = this.db.query(`
+      SELECT * FROM deferred_replacements
+      WHERE id = ?
+    `).get(id) as any
+
+    if (!row) return null
+    return this.mapRow(row)
+  }
+
   claimForResume(id: string): boolean {
     const now = new Date().toISOString()
     const res = this.db.query(`
@@ -146,14 +158,130 @@ export class SqliteDeferredReplacementRepository {
     return res.changes > 0
   }
 
-  listPendingReadyForResume(): DeferredReplacementRecord[] {
-    const rows = this.db.query(`
-      SELECT * FROM deferred_replacements
-      WHERE status = 'pending_termination'
-      ORDER BY created_at ASC
-    `).all() as any[]
+  markCancelled(id: string): boolean {
+    const now = new Date().toISOString()
+    const res = this.db.query(`
+      UPDATE deferred_replacements
+      SET status = 'cancelled', updated_at = ?
+      WHERE id = ? AND status IN ('pending_termination', 'resuming')
+    `).run(now, id)
 
-    return rows.map(r => this.mapRow(r))
+    return res.changes > 0
+  }
+
+  cancelCurrentForSession(parentSessionId: string): boolean {
+    const now = new Date().toISOString()
+    const res = this.db.query(`
+      UPDATE deferred_replacements
+      SET status = 'cancelled', updated_at = ?
+      WHERE parent_session_id = ? AND status IN ('pending_termination', 'resuming')
+    `).run(now, parentSessionId)
+
+    return res.changes > 0
+  }
+
+  listPendingReadyForResume(): DeferredReplacementRecord[] {
+    try {
+      const rows = this.db.query(`
+        SELECT * FROM deferred_replacements
+        WHERE status = 'pending_termination'
+        ORDER BY created_at ASC
+      `).all() as any[]
+
+      return rows.map(r => this.mapRow(r))
+    } catch {
+      return []
+    }
+  }
+
+  listResuming(): DeferredReplacementRecord[] {
+    try {
+      const rows = this.db.query(`
+        SELECT * FROM deferred_replacements
+        WHERE status = 'resuming'
+        ORDER BY created_at ASC
+      `).all() as any[]
+
+      return rows.map(r => this.mapRow(r))
+    } catch {
+      return []
+    }
+  }
+
+  /**
+   * Reconciles crash-surviving records on startup:
+   * 1. For each record with status = 'resuming':
+   *    - Checks if a replacement Run was already created with its correlationId.
+   *    - If Run exists -> transitions resuming -> resumed with actual replacement_run_id.
+   *    - If no Run exists -> safely returns to pending_termination so resume can proceed.
+   */
+  reconcileAfterRestart(
+    runLookup?: (correlationId: string) => Run | null
+  ): { recoveredResumed: number; recoveredPending: number } {
+    const resumingRecords = this.listResuming()
+    let recoveredResumed = 0
+    let recoveredPending = 0
+    const now = new Date().toISOString()
+
+    for (const record of resumingRecords) {
+      if (record.routingDecision.executionClass === "FAST_DIRECT") {
+        // For FAST_DIRECT, no Run is created; return to pending_termination for safe replay
+        this.db.query(`
+          UPDATE deferred_replacements
+          SET status = 'pending_termination', updated_at = ?
+          WHERE id = ? AND status = 'resuming'
+        `).run(now, record.id)
+        recoveredPending++
+        continue
+      }
+
+      // Check SQLite execution_metadata and task_runs table synchronously
+      let existingRunId: string | null = null
+      if (runLookup) {
+        const found = runLookup(record.correlationId)
+        if (found) existingRunId = found.id
+      }
+      if (!existingRunId) {
+        const eventRow = this.db.query(
+          "SELECT aggregate_id FROM events WHERE correlation_id = ? AND aggregate_type = 'task_run' LIMIT 1"
+        ).get(record.correlationId) as { aggregate_id: string } | null
+        if (eventRow?.aggregate_id) {
+          existingRunId = eventRow.aggregate_id
+        } else {
+          const metaRow = this.db.query(
+            "SELECT run_id FROM execution_metadata WHERE key = ? LIMIT 1"
+          ).get("run_correlation:" + record.correlationId) as { run_id: string } | null
+          if (metaRow?.run_id) {
+            existingRunId = metaRow.run_id
+          } else {
+            const runRow = this.db.query(
+              "SELECT run_id FROM task_runs WHERE run_id = ? LIMIT 1"
+            ).get(record.correlationId) as { run_id: string } | null
+            if (runRow?.run_id) {
+              existingRunId = runRow.run_id
+            }
+          }
+        }
+      }
+
+      if (existingRunId) {
+        this.db.query(`
+          UPDATE deferred_replacements
+          SET status = 'resumed', replacement_run_id = ?, resumed_at = ?, updated_at = ?
+          WHERE id = ? AND status = 'resuming'
+        `).run(existingRunId, now, now, record.id)
+        recoveredResumed++
+      } else {
+        this.db.query(`
+          UPDATE deferred_replacements
+          SET status = 'pending_termination', updated_at = ?
+          WHERE id = ? AND status = 'resuming'
+        `).run(now, record.id)
+        recoveredPending++
+      }
+    }
+
+    return { recoveredResumed, recoveredPending }
   }
 
   private mapRow(row: any): DeferredReplacementRecord {
