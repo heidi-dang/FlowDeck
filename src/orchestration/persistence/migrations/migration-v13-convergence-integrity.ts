@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite"
 
-export const MIGRATION_V13_ALGORITHM_VERSION = "2.0.0-alpha.convergence-v13.2"
+export const MIGRATION_V13_ALGORITHM_VERSION = "2.0.0-alpha.convergence-v13.3"
 
 export const MIGRATION_V13_CONVERGENCE_INTEGRITY_SQL = `
 CREATE TABLE IF NOT EXISTS session_turn_messages (
@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS deferred_replacements (
   message_id TEXT NOT NULL,
   correlation_id TEXT NOT NULL,
   routing_decision TEXT NOT NULL,
-  status TEXT NOT NULL CHECK(status IN ('pending_termination', 'resuming', 'resumed', 'superseded', 'blocked', 'cancelled')),
+  status TEXT NOT NULL CHECK(status IN ('pending_termination', 'resuming', 'handoff_pending', 'handoff_outcome_unknown', 'resumed', 'superseded', 'blocked', 'cancelled')),
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   resumed_at TEXT,
@@ -86,7 +86,7 @@ export function applyV13Migration(db: Database): void {
       message_id TEXT NOT NULL,
       correlation_id TEXT NOT NULL,
       routing_decision TEXT NOT NULL,
-      status TEXT NOT NULL CHECK(status IN ('pending_termination', 'resuming', 'resumed', 'superseded', 'blocked', 'cancelled')),
+      status TEXT NOT NULL CHECK(status IN ('pending_termination', 'resuming', 'handoff_pending', 'handoff_outcome_unknown', 'resumed', 'superseded', 'blocked', 'cancelled')),
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       resumed_at TEXT,
