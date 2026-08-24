@@ -14,7 +14,11 @@ import { MIGRATION_V9_HEIDI_LEARNING_RUNTIME_SQL } from "./migration-v9-heidi-le
 import { MIGRATION_V10_HEIDI_RUNTIME_CLOSURE_SQL } from "./migration-v10-heidi-runtime-closure"
 import { MIGRATION_V11_HEIDI_PARALLEL_ENGINE_SQL } from "./migration-v11-heidi-parallel-engine"
 import { MIGRATION_V12_ORCHESTRATION_RUNTIME_INTEGRITY_SQL } from "./migration-v12-orchestration-runtime-integrity"
-import { MIGRATION_V13_CONVERGENCE_INTEGRITY_SQL, applyV13Migration } from "./migration-v13-convergence-integrity"
+import {
+  MIGRATION_V13_CONVERGENCE_INTEGRITY_SQL,
+  MIGRATION_V13_CONVERGENCE_INTEGRITY_CHECKSUM_SOURCE,
+  applyV13Migration,
+} from "./migration-v13-convergence-integrity"
 
 export interface MigrationEntry {
   version: number
@@ -77,5 +81,5 @@ export const MIGRATIONS: MigrationEntry[] = [
   { version: 10, name: "heidi_runtime_closure_v2.0.0-alpha", sql: MIGRATION_V10_HEIDI_RUNTIME_CLOSURE_SQL, checksum: computeChecksum(MIGRATION_V10_HEIDI_RUNTIME_CLOSURE_SQL) },
   { version: 11, name: "heidi_parallel_engine_v2.0.0-alpha", sql: MIGRATION_V11_HEIDI_PARALLEL_ENGINE_SQL, checksum: computeChecksum(MIGRATION_V11_HEIDI_PARALLEL_ENGINE_SQL) },
   { version: 12, name: "orchestration_runtime_integrity_v2.0.0-alpha", sql: MIGRATION_V12_ORCHESTRATION_RUNTIME_INTEGRITY_SQL, checksum: computeChecksum(MIGRATION_V12_ORCHESTRATION_RUNTIME_INTEGRITY_SQL) },
-  { version: 13, name: "convergence_integrity_v2.0.0-alpha", sql: MIGRATION_V13_CONVERGENCE_INTEGRITY_SQL, checksum: computeChecksum(MIGRATION_V13_CONVERGENCE_INTEGRITY_SQL), apply: applyV13Migration },
+  { version: 13, name: "convergence_integrity_v2.0.0-alpha", sql: MIGRATION_V13_CONVERGENCE_INTEGRITY_SQL, checksum: computeChecksum(MIGRATION_V13_CONVERGENCE_INTEGRITY_CHECKSUM_SOURCE), apply: applyV13Migration },
 ]

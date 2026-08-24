@@ -1,5 +1,7 @@
 import type { Database } from "bun:sqlite"
 
+export const MIGRATION_V13_ALGORITHM_VERSION = "2.0.0-alpha.convergence-v13.2"
+
 export const MIGRATION_V13_CONVERGENCE_INTEGRITY_SQL = `
 CREATE TABLE IF NOT EXISTS session_turn_messages (
   session_id TEXT NOT NULL,
@@ -22,7 +24,7 @@ CREATE TABLE IF NOT EXISTS deferred_replacements (
   message_id TEXT NOT NULL,
   correlation_id TEXT NOT NULL,
   routing_decision TEXT NOT NULL,
-  status TEXT NOT NULL CHECK(status IN ('pending_termination', 'resuming', 'resumed', 'superseded', 'blocked')),
+  status TEXT NOT NULL CHECK(status IN ('pending_termination', 'resuming', 'resumed', 'superseded', 'blocked', 'cancelled')),
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   resumed_at TEXT,
@@ -52,6 +54,14 @@ CREATE INDEX IF NOT EXISTS idx_continuation_dispatches_status ON continuation_di
 CREATE INDEX IF NOT EXISTS idx_continuation_dispatches_state_status ON continuation_dispatches(run_id, state_fingerprint, status);
 `;
 
+export const MIGRATION_V13_CONVERGENCE_INTEGRITY_CHECKSUM_SOURCE = `
+-- v13-convergence-integrity-contract
+-- algorithm-version: ${MIGRATION_V13_ALGORITHM_VERSION}
+-- schema: session_turn_messages, deferred_replacements (with cancelled status), continuation_dispatches upgrade
+${MIGRATION_V13_CONVERGENCE_INTEGRITY_SQL.trim()}
+-- transition: inspect continuation_dispatches table_info -> copy with attempt_count / last_attempt_at preservation -> drop and rename
+`;
+
 export function applyV13Migration(db: Database): void {
   // 1. Create session_turn_messages and deferred_replacements
   db.exec(`
@@ -76,7 +86,7 @@ export function applyV13Migration(db: Database): void {
       message_id TEXT NOT NULL,
       correlation_id TEXT NOT NULL,
       routing_decision TEXT NOT NULL,
-      status TEXT NOT NULL CHECK(status IN ('pending_termination', 'resuming', 'resumed', 'superseded', 'blocked')),
+      status TEXT NOT NULL CHECK(status IN ('pending_termination', 'resuming', 'resumed', 'superseded', 'blocked', 'cancelled')),
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       resumed_at TEXT,
