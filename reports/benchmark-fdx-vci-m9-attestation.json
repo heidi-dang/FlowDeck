@@ -1,12 +1,12 @@
 {
   "milestone": "M9",
   "title": "Verification Attestation & Cryptographic Evidence Binding",
-  "functional_source_sha": "a3bffac13ba5087c97766ebdcedf21da1e274ebe",
-  "binary_source_sha": "a3bffac13ba5087c97766ebdcedf21da1e274ebe",
-  "binary_sha256": "53b19a74d9e0c281818350100de1a497498350b04676bf47f932c81c0fc3cbb7",
-  "benchmark_harness_sha": "f37127a656979f0d775ec676d961a5eadc9992f5",
-  "qualification_head_sha": "f37127a656979f0d775ec676d961a5eadc9992f5",
-  "timestamp": "2026-08-24T10:30:26.325Z",
+  "functional_source_sha": "423cf0bbeebc3cfe1db994dca49d30b64794c246",
+  "binary_source_sha": "423cf0bbeebc3cfe1db994dca49d30b64794c246",
+  "binary_sha256": "e3792c6e3a38579e274813829177b87a6e54894d289682bf49ef51832e548ba9",
+  "benchmark_harness_sha": "482f8e44ee98884e689ca42d439c90e773998f95",
+  "qualification_head_sha": "482f8e44ee98884e689ca42d439c90e773998f95",
+  "timestamp": "2026-08-24T11:23:06.003Z",
   "platform": "linux",
   "arch": "x64",
   "node_version": "v24.19.0",
@@ -21,7 +21,10 @@
     "secrets_and_excerpts_excluded": true,
     "absolute_paths_excluded": true,
     "atomic_idempotent_persistence": true,
-    "offline_verification_supported": true
+    "offline_verification_supported": true,
+    "managed_path_containment_verified": true,
+    "symlink_escape_protection_verified": true,
+    "bounded_read_size_enforced": true
   },
   "preflights": [
     {
@@ -120,52 +123,57 @@
       "details": {}
     },
     {
-      "name": "external_file_without_expected_digest_rejected",
+      "name": "external_content_address_lookalike_requires_expected_sha",
       "status": "passed",
       "details": {}
     },
     {
-      "name": "external_file_correct_expected_digest_passes",
+      "name": "external_content_address_lookalike_correct_sha_passes",
       "status": "passed",
       "details": {}
     },
     {
-      "name": "external_file_wrong_expected_digest_rejected",
+      "name": "fdx_parent_symlink_escape_rejected",
       "status": "passed",
       "details": {}
     },
     {
-      "name": "tampered_M7_artifact_detected",
+      "name": "attestations_dir_symlink_escape_rejected",
       "status": "passed",
       "details": {}
     },
     {
-      "name": "atomic_no_clobber_same_content",
+      "name": "managed_attestation_file_symlink_rejected",
       "status": "passed",
       "details": {}
     },
     {
-      "name": "atomic_no_clobber_conflict",
+      "name": "oversized_attestation_rejected",
       "status": "passed",
       "details": {}
     },
     {
-      "name": "attestation_directory_symlink_escape_rejected",
+      "name": "non_regular_attestation_rejected",
       "status": "passed",
       "details": {}
     },
     {
-      "name": "path_traversal_rejected",
+      "name": "atomic_publication_conflict_no_overwrite",
       "status": "passed",
       "details": {}
     },
     {
-      "name": "global_history_incomplete_recorded_as_generation_snapshot",
+      "name": "predicate_runtime_contract_v1_rejected",
       "status": "passed",
       "details": {}
     },
     {
-      "name": "offline_verify_roundtrip",
+      "name": "predicate_run_qualified_false_rejected",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "generator_name_tamper_rejected",
       "status": "passed",
       "details": {}
     }
@@ -173,23 +181,23 @@
   "metrics": {
     "attest_create_single_run_ms": {
       "count": 15,
-      "min": 4.42,
-      "max": 5.42,
-      "mean": 4.61,
-      "median": 4.54,
-      "p95": 5.42
+      "min": 5.38,
+      "max": 6.15,
+      "mean": 5.68,
+      "median": 5.63,
+      "p95": 6.15
     },
     "attest_verify_single_run_ms": {
       "count": 15,
-      "min": 3.98,
-      "max": 4.49,
-      "mean": 4.15,
-      "median": 4.12,
-      "p95": 4.49
+      "min": 4.55,
+      "max": 5.76,
+      "mean": 5.1,
+      "median": 5.06,
+      "p95": 5.76
     },
-    "attest_create_100_runs_total_ms": 454.03,
-    "attest_create_avg_per_run_ms": 4.54,
-    "attest_verify_100_runs_total_ms": 805.13,
-    "attest_verify_avg_per_run_ms": 8.05
+    "attest_create_100_runs_total_ms": 547.38,
+    "attest_create_avg_per_run_ms": 5.47,
+    "attest_verify_100_runs_total_ms": 524.57,
+    "attest_verify_avg_per_run_ms": 5.25
   }
 }

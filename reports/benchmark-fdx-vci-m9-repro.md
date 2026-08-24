@@ -1,10 +1,10 @@
-# Milestone 9: Verification Attestation Qualification Report (R25)
+# Milestone 9: Verification Attestation Qualification Report (R26)
 
 **Milestone:** M9  
-**Functional Baseline (F22):** `a3bffac13ba5087c97766ebdcedf21da1e274ebe`  
-**Binary SHA-256:** `53b19a74d9e0c281818350100de1a497498350b04676bf47f932c81c0fc3cbb7`  
-**Benchmark Harness (H25):** `f37127a656979f0d775ec676d961a5eadc9992f5`  
-**Executed At:** 2026-08-24T10:30:26.325Z  
+**Functional Baseline (F23):** `423cf0bbeebc3cfe1db994dca49d30b64794c246`  
+**Binary SHA-256:** `e3792c6e3a38579e274813829177b87a6e54894d289682bf49ef51832e548ba9`  
+**Benchmark Harness (H26):** `482f8e44ee98884e689ca42d439c90e773998f95`  
+**Executed At:** 2026-08-24T11:23:06.003Z  
 **Platform:** linux (x64)  
 **Node Version:** v24.19.0  
 **Predicate Schema Version:** `1`  
@@ -15,7 +15,9 @@
 - **Exact Artifact Binding:** Subject binds `sha256` of exact raw persisted M7 `.fdx/runs/<run_id>.json` bytes.
 - **Qualified M8 History Required:** Only exact-byte v7/v2 ingested history rows can be attested.
 - **RFC 8785 (JCS) Canonicalization:** Canonical byte representation is strictly deterministic across platforms.
-- **Fail-Closed Verification:** Any alteration of artifact, subject, predicate, checks, or executions causes verification failure.
+- **Fail-Closed Verification:** Any alteration of artifact, subject, predicate, checks, executions, or generator metadata causes verification failure.
+- **Managed Path & Symlink Safety:** Strict directory jail verification for `.fdx` and `.fdx/attestations`. Managed filenames valid only inside canonical managed parent.
+- **Atomic No-Clobber Publication:** Full bytes flushed to temp and promoted atomically; never writes partially to final content-addressed paths.
 - **Secret and Excerpt Exclusion:** Free-text execution excerpts and secrets are excluded from attestation statements.
 - **Unsigned Local Evidence:** Attestation provides cryptographic content binding locally without false signer claims.
 
@@ -40,28 +42,29 @@
 - [x] `unknown_predicate_field_rejected`: Passed
 - [x] `noncanonical_attestation_bytes_rejected`: Passed
 - [x] `managed_filename_digest_mismatch_rejected`: Passed
-- [x] `external_file_without_expected_digest_rejected`: Passed
-- [x] `external_file_correct_expected_digest_passes`: Passed
-- [x] `external_file_wrong_expected_digest_rejected`: Passed
-- [x] `tampered_M7_artifact_detected`: Passed
-- [x] `atomic_no_clobber_same_content`: Passed
-- [x] `atomic_no_clobber_conflict`: Passed
-- [x] `attestation_directory_symlink_escape_rejected`: Passed
-- [x] `path_traversal_rejected`: Passed
-- [x] `global_history_incomplete_recorded_as_generation_snapshot`: Passed
-- [x] `offline_verify_roundtrip`: Passed
+- [x] `external_content_address_lookalike_requires_expected_sha`: Passed
+- [x] `external_content_address_lookalike_correct_sha_passes`: Passed
+- [x] `fdx_parent_symlink_escape_rejected`: Passed
+- [x] `attestations_dir_symlink_escape_rejected`: Passed
+- [x] `managed_attestation_file_symlink_rejected`: Passed
+- [x] `oversized_attestation_rejected`: Passed
+- [x] `non_regular_attestation_rejected`: Passed
+- [x] `atomic_publication_conflict_no_overwrite`: Passed
+- [x] `predicate_runtime_contract_v1_rejected`: Passed
+- [x] `predicate_run_qualified_false_rejected`: Passed
+- [x] `generator_name_tamper_rejected`: Passed
 
 ## Performance Metrics
 
 | Benchmark Scenario | Samples | Min (ms) | Median (ms) | P95 (ms) | Max (ms) | Mean (ms) |
 |---|---|---|---|---|---|---|
-| Single Run Attest Create | 15 | 4.42 | 4.54 | 5.42 | 5.42 | 4.61 |
-| Single Run Attest Verify | 15 | 3.98 | 4.12 | 4.49 | 4.49 | 4.15 |
+| Single Run Attest Create | 15 | 5.38 | 5.63 | 6.15 | 6.15 | 5.68 |
+| Single Run Attest Verify | 15 | 4.55 | 5.06 | 5.76 | 5.76 | 5.1 |
 
 ### Scaling Benchmarks (100 Runs)
 
-- **Attest Create 100 Runs Total:** 454.03 ms (avg 4.54 ms / run)
-- **Attest Verify 100 Runs Total:** 805.13 ms (avg 8.05 ms / run)
+- **Attest Create 100 Runs Total:** 547.38 ms (avg 5.47 ms / run)
+- **Attest Verify 100 Runs Total:** 524.57 ms (avg 5.25 ms / run)
 
 ---
 *Qualification completed under FlowDeck Verifiable Change Intelligence protocol.*
