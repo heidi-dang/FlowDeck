@@ -53,6 +53,10 @@ pub fn migrate_schema(
                 // Migrate v4 -> v5: edge provider_id ownership
                 tx.execute_batch(crate::intelligence::schema::MIGRATE_V4_TO_V5_SQL)?;
             }
+            5 => {
+                // Migrate v5 -> v6: Milestone 8 runtime verification history
+                tx.execute_batch(crate::intelligence::runtime::schema::MIGRATE_V5_TO_V6_SQL)?;
+            }
             _ => {
                 return Err(MigrationError::Unsupported(version, target_version));
             }

@@ -20,6 +20,49 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+pub enum HistoryAction {
+    /// List historical verification runs
+    Runs {
+        /// Maximum number of runs to return (default: 50)
+        #[arg(long, default_value = "50")]
+        limit: usize,
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+    /// Show details for a specific historical verification run
+    Show {
+        /// Run identifier
+        run_id: String,
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+    /// Show historical statistics and flake signal for a check ID
+    Stats {
+        /// Check identifier
+        check_id: String,
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+    /// Show changed entities that co-occurred with a check ID
+    Cooccurrences {
+        /// Check identifier
+        check_id: String,
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+    /// Reconcile .fdx/runs/*.json artifacts into SQLite history
+    Reconcile {
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum BuildAction {
     /// Show build provider status / freshness / topology stats
     Status,
@@ -511,6 +554,14 @@ enum Commands {
         /// Output format: text or json
         #[arg(long, default_value = "text")]
         format: String,
+    },
+
+    /// Historical verification run observations and statistics (Milestone 8)
+    ///
+    /// Example: fdx history runs --limit 20
+    History {
+        #[command(subcommand)]
+        action: HistoryAction,
     },
 }
 
@@ -1627,6 +1678,18 @@ fn main() {
                             print!("{}", text);
                         }
                     }
+                    // Optional M8 history ingestion: failure never alters M7 verification truth
+                    if let Ok(mut db) = fdx::intelligence::db::EvidenceDatabase::open(
+                        &repo_root,
+                        fdx::intelligence::db::DatabaseOpenMode::ReadWrite,
+                    ) {
+                        let _ = fdx::intelligence::runtime::ingest_verification_run(
+                            &mut db.conn,
+                            &run,
+                            None,
+                        );
+                    }
+
                     if run.outcome != fdx::intelligence::verify::VerificationOutcome::Passed {
                         process::exit(1);
                     }
@@ -1634,6 +1697,241 @@ fn main() {
                 Err(e) => {
                     eprintln!("Error executing verification plan: {}", e);
                     process::exit(1);
+                }
+            }
+        }
+
+        Commands::History { action } => {
+            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let repo_root = fdx::paths::find_repository_root(&cwd).unwrap_or(cwd);
+
+            match action {
+                HistoryAction::Runs { limit, format } => {
+                    let format = parse_format(&format);
+                    let db = match fdx::intelligence::db::EvidenceDatabase::open(
+                        &repo_root,
+                        fdx::intelligence::db::DatabaseOpenMode::ReadOnly,
+                    ) {
+                        Ok(d) => d,
+                        Err(e) => {
+                            eprintln!("Error opening history database: {}", e);
+                            process::exit(1);
+                        }
+                    };
+                    match fdx::intelligence::runtime::list_historical_runs(&db.conn, limit) {
+                        Ok(runs) => match format {
+                            OutputFormat::Json => {
+                                if let Ok(s) = serde_json::to_string_pretty(&runs) {
+                                    println!("{}", s);
+                                }
+                            }
+                            OutputFormat::Text => {
+                                println!("Historical Verification Runs (showing up to {}):", limit);
+                                for r in &runs {
+                                    println!("- Run: {} | Outcome: {:?} | Assurance: {:?} | Executed: {} | Duration: {}ms",
+                                        r.run_id, r.outcome, r.assurance, r.executed_at_ms, r.duration_ms);
+                                }
+                            }
+                        },
+                        Err(e) => {
+                            eprintln!("Error querying historical runs: {}", e);
+                            process::exit(1);
+                        }
+                    }
+                }
+                HistoryAction::Show { run_id, format } => {
+                    let format = parse_format(&format);
+                    let db = match fdx::intelligence::db::EvidenceDatabase::open(
+                        &repo_root,
+                        fdx::intelligence::db::DatabaseOpenMode::ReadOnly,
+                    ) {
+                        Ok(d) => d,
+                        Err(e) => {
+                            eprintln!("Error opening history database: {}", e);
+                            process::exit(1);
+                        }
+                    };
+                    match fdx::intelligence::runtime::get_historical_run(&db.conn, &run_id) {
+                        Ok(Some((run, executions, checks))) => match format {
+                            OutputFormat::Json => {
+                                let obj = serde_json::json!({
+                                    "run": run,
+                                    "executions": executions,
+                                    "checks": checks,
+                                });
+                                if let Ok(s) = serde_json::to_string_pretty(&obj) {
+                                    println!("{}", s);
+                                }
+                            }
+                            OutputFormat::Text => {
+                                println!("Run ID: {}", run.run_id);
+                                println!("Outcome: {:?}", run.outcome);
+                                println!("Assurance: {:?}", run.assurance);
+                                println!("Duration: {}ms", run.duration_ms);
+                                println!("Executions ({} total):", executions.len());
+                                for e in &executions {
+                                    println!(
+                                        "  - {} (status: {:?}, exit: {:?}, dur: {}ms)",
+                                        e.execution_id, e.status, e.exit_code, e.duration_ms
+                                    );
+                                }
+                                println!("Checks ({} total):", checks.len());
+                                for c in &checks {
+                                    println!(
+                                        "  - {} -> exec: {} (status: {:?}, reused: {})",
+                                        c.check_id, c.execution_id, c.status, c.reused_execution
+                                    );
+                                }
+                            }
+                        },
+                        Ok(None) => {
+                            eprintln!("Run '{}' not found in history database.", run_id);
+                            process::exit(1);
+                        }
+                        Err(e) => {
+                            eprintln!("Error querying run details: {}", e);
+                            process::exit(1);
+                        }
+                    }
+                }
+                HistoryAction::Stats { check_id, format } => {
+                    let format = parse_format(&format);
+                    let db = match fdx::intelligence::db::EvidenceDatabase::open(
+                        &repo_root,
+                        fdx::intelligence::db::DatabaseOpenMode::ReadOnly,
+                    ) {
+                        Ok(d) => d,
+                        Err(e) => {
+                            eprintln!("Error opening history database: {}", e);
+                            process::exit(1);
+                        }
+                    };
+                    match fdx::intelligence::runtime::query_check_statistics(&db.conn, &check_id) {
+                        Ok(Some(stats)) => match format {
+                            OutputFormat::Json => {
+                                if let Ok(s) = serde_json::to_string_pretty(&stats) {
+                                    println!("{}", s);
+                                }
+                            }
+                            OutputFormat::Text => {
+                                println!("Historical Statistics for Check: {}", stats.check_id);
+                                println!("Total Observations: {}", stats.total_observations);
+                                println!("Unique Executions: {}", stats.unique_executions);
+                                println!("Pass Count: {}", stats.pass_count);
+                                println!("Failure Count: {}", stats.real_failure_count);
+                                println!("Incomplete Count: {}", stats.incomplete_count);
+                                if let Some(m) = stats.median_duration_ms {
+                                    println!("Median Duration: {:.2}ms", m);
+                                }
+                                if let Some(p) = stats.p95_duration_ms {
+                                    println!("P95 Duration: {:.2}ms", p);
+                                }
+                                println!(
+                                    "Flake Signal Present: {}",
+                                    stats.flake_signal.is_flake_signal_present
+                                );
+                            }
+                        },
+                        Ok(None) => {
+                            eprintln!("No historical observations found for check '{}'.", check_id);
+                            process::exit(1);
+                        }
+                        Err(e) => {
+                            eprintln!("Error querying check statistics: {}", e);
+                            process::exit(1);
+                        }
+                    }
+                }
+                HistoryAction::Cooccurrences { check_id, format } => {
+                    let format = parse_format(&format);
+                    let db = match fdx::intelligence::db::EvidenceDatabase::open(
+                        &repo_root,
+                        fdx::intelligence::db::DatabaseOpenMode::ReadOnly,
+                    ) {
+                        Ok(d) => d,
+                        Err(e) => {
+                            eprintln!("Error opening history database: {}", e);
+                            process::exit(1);
+                        }
+                    };
+                    match fdx::intelligence::runtime::query_check_cooccurrences(&db.conn, &check_id)
+                    {
+                        Ok(obs) => match format {
+                            OutputFormat::Json => {
+                                if let Ok(s) = serde_json::to_string_pretty(&obs) {
+                                    println!("{}", s);
+                                }
+                            }
+                            OutputFormat::Text => {
+                                println!(
+                                    "Co-occurring Changed Entities with Check '{}':",
+                                    check_id
+                                );
+                                for o in &obs {
+                                    println!(
+                                        "- Entity: {} ({}) | Runs: {} | Last Seen: {}",
+                                        o.entity_id,
+                                        o.entity_kind,
+                                        o.run_count,
+                                        o.last_observed_at_ms
+                                    );
+                                }
+                            }
+                        },
+                        Err(e) => {
+                            eprintln!("Error querying co-occurrences: {}", e);
+                            process::exit(1);
+                        }
+                    }
+                }
+                HistoryAction::Reconcile { format } => {
+                    let format = parse_format(&format);
+                    let mut db = match fdx::intelligence::db::EvidenceDatabase::open(
+                        &repo_root,
+                        fdx::intelligence::db::DatabaseOpenMode::ReadWrite,
+                    ) {
+                        Ok(d) => d,
+                        Err(e) => {
+                            eprintln!("Error opening history database for write: {}", e);
+                            process::exit(1);
+                        }
+                    };
+                    match fdx::intelligence::runtime::reconcile_runs_directory(
+                        &mut db.conn,
+                        &repo_root,
+                    ) {
+                        Ok(report) => {
+                            match format {
+                                OutputFormat::Json => {
+                                    if let Ok(s) = serde_json::to_string_pretty(&report) {
+                                        println!("{}", s);
+                                    }
+                                }
+                                OutputFormat::Text => {
+                                    println!("History Reconciliation Report:");
+                                    println!("Discovered: {}", report.artifacts_discovered);
+                                    println!("Imported: {}", report.artifacts_imported);
+                                    println!(
+                                        "Already Present: {}",
+                                        report.artifacts_already_present
+                                    );
+                                    println!("Conflicted: {}", report.artifacts_conflicted);
+                                    println!("Failed: {}", report.artifacts_failed);
+                                    println!("Complete: {}", report.is_complete);
+                                    for err in &report.errors {
+                                        eprintln!("  Error: {}", err);
+                                    }
+                                }
+                            }
+                            if !report.is_complete {
+                                process::exit(1);
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Error during reconciliation: {}", e);
+                            process::exit(1);
+                        }
+                    }
                 }
             }
         }
