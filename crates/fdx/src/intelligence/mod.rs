@@ -7,6 +7,7 @@ pub mod index;
 pub mod invalidation;
 pub mod migration;
 pub mod model;
+pub mod runtime;
 pub mod schema;
 pub mod semantic;
 pub mod snapshot;

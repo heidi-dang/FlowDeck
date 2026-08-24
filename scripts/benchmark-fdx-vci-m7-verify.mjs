@@ -468,7 +468,7 @@ async function runPreflights(bin) {
     gitInitAndCommitAll(repo);
     writeFileSync(join(repo, "symlinked_pkg", "file.js"), "1;");
 
-    const res = invokeFdxVerify(bin, repo, ["--no-persist"]);
+    const _res = invokeFdxVerify(bin, repo, ["--no-persist"]);
     if (existsSync(join(outside, "outside_side_effect.txt"))) {
       throw new Error("Preflight [symlink_escape_exactly_rejected] failed: symlinked directory outside repository was executed");
     }
