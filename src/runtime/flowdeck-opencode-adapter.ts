@@ -11,6 +11,7 @@ import {
 import { classifyTask, type RouterDecision, stableHash } from "../services/heidi-fast-router";
 import type { Event, UserMessage, Part, TextPart } from "@opencode-ai/sdk";
 import { isTerminalRunStatus, type Run } from "../orchestration/types/runs";
+import type { DeferredReplacementRecord } from "../orchestration/persistence/repositories/deferred-replacement";
 import { ErrorCodes } from "../orchestration/types/errors";
 import {
   buildCanonicalRoutingDecision,
@@ -59,6 +60,10 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
   setClient(client: any): void {
     if (client) {
       this.client = client;
+      // Trigger drain of any safe deferred replacements waiting on native prompt dispatch
+      this.drainSafeDeferredReplacements().catch(err => {
+        console.warn("[FlowDeckLifecycleAdapter] drainSafeDeferredReplacements on setClient threw:", err);
+      });
     }
   }
 
@@ -298,7 +303,35 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
             return;
           }
 
-          // Newer genuine user intent wins and supersedes the older deferred replacement while remaining blocked on native termination
+          if (userIntent.intent === "REPLAY") {
+            // Replay of existing message; ignore idempotently
+            return;
+          }
+
+          if (userIntent.intent === "CONTINUE" || userIntent.intent === "QUERY" || userIntent.intent === "ACKNOWLEDGE") {
+            // Conversational, query, or acknowledgement; preserve current deferred goal unchanged
+            return;
+          }
+
+          if (userIntent.intent === "MODIFY") {
+            // Requirement refinement: intentionally update/reclassify current deferred goal
+            const modifiedGoal = `${existingDeferred.effectiveGoal}\n\n[User Modification]: ${text}`;
+            const decision = classifyTask(modifiedGoal, { hasExplicitDomainSignal: false });
+            this.runtime.deferredReplacementRepo.savePending({
+              parentSessionId: input.sessionID,
+              oldRunId: existingDeferred.oldRunId,
+              sourceIntent: "MODIFY_RECLASSIFICATION",
+              agentId: input.agent ?? "heidi",
+              effectiveGoal: modifiedGoal,
+              messageHash: msgHash,
+              messageId: correlationId,
+              correlationId,
+              routingDecision: decision,
+            });
+            return;
+          }
+
+          // Default / REPLACE: Newer genuine user intent wins and supersedes older deferred replacement while remaining blocked on native termination
           const decision = classifyTask(text, { hasExplicitDomainSignal: false });
           this.runtime.deferredReplacementRepo.savePending({
             parentSessionId: input.sessionID,
@@ -456,6 +489,17 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
       runId = childRec.runId;
       assignmentId = childRec.assignmentId;
     } else {
+      // 2. Parent-session execution boundary: block tool execution while prior child termination is pending
+      const deferred = this.runtime.deferredReplacementRepo?.findCurrentForSession(input.sessionID);
+      if (deferred && (deferred.status === "pending_termination" || deferred.status === "resuming")) {
+        const diag = this.runtime.childExecutionLifecycleService?.getDiagnosticsForRun(deferred.oldRunId);
+        if (diag?.currentTerminationPending) {
+          throw new Error(
+            `[ExecutionBoundary] DEFERRED_REPLACEMENT_BARRIER: Parent session '${input.sessionID}' is waiting for prior child execution termination before deferred replacement can proceed. Tool '${input.tool}' rejected.`
+          );
+        }
+      }
+
       const activeRun = await this.resolveActiveRunForSession(input.sessionID);
       if (activeRun) {
         runId = activeRun.id;
@@ -827,57 +871,103 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
     return "SAFE_TO_REPLACE";
   }
 
+  /**
+   * Drains and actively resumes all deferred replacements that are safe to resume:
+   * (i.e. status is pending_termination and the prior run has no pending native child terminations).
+   * Called during startup recovery and after session termination events.
+   */
+  async drainSafeDeferredReplacements(): Promise<number> {
+    if (!this.runtime.deferredReplacementRepo) return 0;
+    const pendingList = this.runtime.deferredReplacementRepo.listPendingReadyForResume();
+    let resumedCount = 0;
+
+    for (const deferred of pendingList) {
+      const diag = this.runtime.childExecutionLifecycleService?.getDiagnosticsForRun(deferred.oldRunId);
+      if (!diag?.currentTerminationPending) {
+        const claimed = this.runtime.deferredReplacementRepo.claimForResume(deferred.id);
+        if (claimed) {
+          await this.resumeDeferredReplacement(deferred);
+          resumedCount++;
+        }
+      }
+    }
+
+    return resumedCount;
+  }
+
+  /**
+   * Resumes a single claimed deferred replacement:
+   * - Sets route decision in memory
+   * - FAST_DIRECT: performs durable handoff (resuming -> handoff_pending -> resumed)
+   * - Orchestrated: syncOrchestrationRun -> markResumed -> native promptAsync injection with dedicated prompt contract
+   */
+  async resumeDeferredReplacement(deferred: DeferredReplacementRecord): Promise<void> {
+    const parentSessionId = deferred.parentSessionId;
+    markRouteInactive(parentSessionId);
+    const taskId = "task-" + randomUUID();
+    this.turnVersionCounter += 1;
+    const turnVersion = this.turnVersionCounter;
+    setRouteDecision(parentSessionId, taskId, deferred.routingDecision, deferred.effectiveGoal, deferred.messageHash);
+
+    if (deferred.routingDecision.executionClass === "FAST_DIRECT") {
+      this.runtime.deferredReplacementRepo.markHandoffPending(deferred.id);
+      this.pendingFastDirectTurns.set(parentSessionId, {
+        sessionID: parentSessionId,
+        taskId,
+        messageHash: deferred.messageHash,
+        messageID: deferred.correlationId,
+        turnVersion,
+      });
+      this.runtime.deferredReplacementRepo.markResumed(deferred.id, undefined);
+    } else {
+      const replacement = await this.syncOrchestrationRun(
+        taskId,
+        parentSessionId,
+        deferred.agentId,
+        deferred.routingDecision,
+        deferred.effectiveGoal,
+        deferred.messageHash,
+        deferred.correlationId ?? ("deferred-" + taskId)
+      );
+      this.runtime.deferredReplacementRepo.markResumed(deferred.id, replacement?.id);
+
+      // Inject native promptAsync so OpenCode continues execution with the deferred goal
+      if (this.client?.session?.promptAsync && replacement) {
+        const promptText = `[Continuation] Resume the deferred user goal now that prior native child termination has been confirmed: "${deferred.effectiveGoal}". Use the already persisted FlowDeck routing/run state. Do not repeat the previous cancelled work.`;
+        noteInternalContinuation(parentSessionId);
+        try {
+          await this.continuationDispatcher.dispatch({
+            runId: replacement.id,
+            sessionId: parentSessionId,
+            userTurnVersion: turnVersion,
+            runAggregateVersion: 1,
+            transitionReason: "PROGRESS_CONFIRMED",
+            currentWorkItemId: "root:" + replacement.id,
+            stateFingerprint: "deferred_resume:" + deferred.id,
+          }, {
+            client: this.client,
+            promptText,
+          });
+        } catch (err) {
+          console.warn("[FlowDeckLifecycleAdapter] deferred promptAsync dispatch threw:", err);
+        }
+      }
+    }
+  }
+
   async onSessionDeleted(sessionID: string) {
     this.pendingFastDirectTurns.delete(sessionID);
     clearRouteDecision(sessionID);
 
     // If deleted session belongs to a child execution where cancellation was requested / pending
-    const childRec = this.runtime.childExecutionLifecycleService.getChildExecution({ childSessionId: sessionID });
+    const childRec = this.runtime.childExecutionLifecycleService?.getChildExecution({ childSessionId: sessionID });
     if (childRec) {
       if ((childRec.cancelRequested || childRec.status === "cancelled") && !childRec.nativeTerminationConfirmed) {
         await this.runtime.childExecutionLifecycleService.confirmNativeTermination({ childSessionId: sessionID });
       }
 
-      // Check if this parent run has a pending deferred replacement ready to resume
-      const parentSessionId = childRec.parentSessionId;
-      const deferred = this.runtime.deferredReplacementRepo.findCurrentForSession(parentSessionId);
-      if (deferred && deferred.oldRunId === childRec.runId) {
-        const diag = this.runtime.childExecutionLifecycleService.getDiagnosticsForRun(childRec.runId);
-        const hasUnconfirmedRemaining = diag.currentTerminationPending;
-        if (!hasUnconfirmedRemaining) {
-          // Atomic CAS claim: only one resume operation can succeed
-          const claimed = this.runtime.deferredReplacementRepo.claimForResume(deferred.id);
-          if (claimed) {
-            markRouteInactive(parentSessionId);
-            const taskId = "task-" + randomUUID();
-            this.turnVersionCounter += 1;
-            const turnVersion = this.turnVersionCounter;
-            setRouteDecision(parentSessionId, taskId, deferred.routingDecision, deferred.effectiveGoal, deferred.messageHash);
-
-            if (deferred.routingDecision.executionClass === "FAST_DIRECT") {
-              this.pendingFastDirectTurns.set(parentSessionId, {
-                sessionID: parentSessionId,
-                taskId,
-                messageHash: deferred.messageHash,
-                messageID: deferred.correlationId,
-                turnVersion,
-              });
-              this.runtime.deferredReplacementRepo.markResumed(deferred.id, undefined);
-            } else {
-              const replacement = await this.syncOrchestrationRun(
-                taskId,
-                parentSessionId,
-                deferred.agentId,
-                deferred.routingDecision,
-                deferred.effectiveGoal,
-                deferred.messageHash,
-                deferred.correlationId ?? ("deferred-" + taskId)
-              );
-              this.runtime.deferredReplacementRepo.markResumed(deferred.id, replacement?.id);
-            }
-          }
-        }
-      }
+      // Check and drain any pending deferred replacements ready to resume
+      await this.drainSafeDeferredReplacements();
     }
   }
 
