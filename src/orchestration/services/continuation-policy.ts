@@ -33,6 +33,7 @@ export interface ContinuationToken {
   transitionReason: TransitionReasonCode;
   currentWorkItemId?: string;
   stateFingerprint: string;
+  identityKey?: string;
 }
 
 export const CONTINUATION_ALLOWLIST: ReadonlySet<TransitionReasonCode> = new Set([
@@ -151,7 +152,8 @@ export type ContinuationDispatchResult = {
     | "stale_user_turn_version"
     | "stale_run_aggregate_version"
     | "stale_state_fingerprint"
-    | "run_not_found";
+    | "run_not_found"
+    | "authority_revoked";
 };
 
 export class ContinuationDispatcher {
@@ -160,6 +162,9 @@ export class ContinuationDispatcher {
   constructor(private readonly db?: Database) {}
 
   computeTokenIdentity(token: ContinuationToken): string {
+    if (token.identityKey) {
+      return createHash("sha256").update(token.identityKey).digest("hex");
+    }
     const raw = `${token.runId}:${token.sessionId}:${token.userTurnVersion}:${token.runAggregateVersion}:${token.transitionReason}:${token.currentWorkItemId ?? ""}:${token.stateFingerprint}`;
     return createHash("sha256").update(raw).digest("hex");
   }
@@ -175,12 +180,22 @@ export class ContinuationDispatcher {
       currentAggregateVersion?: number;
       client?: any;
       promptText?: string;
+      validateAuthority?: () => boolean | { valid: boolean; reason?: string };
     }
   ): Promise<ContinuationDispatchResult> {
     const identity = this.computeTokenIdentity(token);
 
-    // 1. Authoritative Revalidation against live state port
-    if (opts.statePort) {
+    // 0. Explicit Authority Validation (e.g. for deferred replacements)
+    if (opts.validateAuthority) {
+      const authRes = opts.validateAuthority();
+      const isValid = typeof authRes === "boolean" ? authRes : authRes.valid;
+      if (!isValid) {
+        return { dispatched: false, identity, reason: "authority_revoked" };
+      }
+    }
+
+    // 1. Authoritative Revalidation against live state port (when validateAuthority is NOT used)
+    if (opts.statePort && !opts.validateAuthority) {
       const currentTurn = opts.statePort.getUserTurnVersion(token.sessionId);
       if (currentTurn !== token.userTurnVersion) {
         return { dispatched: false, identity, reason: "stale_user_turn_version" };
@@ -200,8 +215,8 @@ export class ContinuationDispatcher {
           return { dispatched: false, identity, reason: "stale_state_fingerprint" };
         }
       }
-    } else {
-      // Fallback version check if statePort omitted
+    } else if (!opts.validateAuthority) {
+      // Fallback version check if statePort omitted and no validateAuthority
       if (opts.currentTurnVersion !== undefined && token.userTurnVersion !== opts.currentTurnVersion) {
         return { dispatched: false, identity, reason: "stale_user_turn_version" };
       }
@@ -311,6 +326,22 @@ export class ContinuationDispatcher {
       }
     }
 
+    // 2.5 Re-verify authority before invoking native client
+    if (opts.validateAuthority) {
+      const authRes = opts.validateAuthority();
+      const isValid = typeof authRes === "boolean" ? authRes : authRes.valid;
+      if (!isValid) {
+        if (this.db) {
+          this.db.query(`
+            UPDATE continuation_dispatches
+            SET status = 'failed', error = 'authority_revoked'
+            WHERE identity = ? AND status = 'pending'
+          `).run(identity);
+        }
+        return { dispatched: false, identity, reason: "authority_revoked" };
+      }
+    }
+
     // 3. Check native promptAsync availability
     if (!opts.client?.session?.promptAsync) {
       if (this.db) {
@@ -358,14 +389,23 @@ export class ContinuationDispatcher {
     } catch (err: any) {
       console.warn("[ContinuationDispatcher] native session.promptAsync call threw:", err);
       if (this.db) {
+        const curRow = this.db.query(
+          "SELECT attempt_count FROM continuation_dispatches WHERE identity = ?"
+        ).get(identity) as { attempt_count: number } | null;
+
+        const isExhausted = (curRow?.attempt_count ?? 1) >= maxAttempts;
+        const newStatus = isExhausted ? "blocked" : "failed";
+
         this.db.query(`
           UPDATE continuation_dispatches
-          SET status = 'failed', error = ?
+          SET status = ?, error = ?
           WHERE identity = ?
-        `).run(err?.message ?? String(err), identity);
+        `).run(newStatus, err?.message ?? String(err), identity);
       } else {
         const mem = this.memoryDispatches.get(identity);
-        if (mem) mem.status = "failed";
+        if (mem) {
+          mem.status = mem.attemptCount >= maxAttempts ? "blocked" : "failed";
+        }
       }
       return { dispatched: false, identity, reason: "native_dispatch_failed" };
     }
