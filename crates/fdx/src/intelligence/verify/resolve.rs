@@ -4,10 +4,10 @@
 //! 1. Deterministic package manager detection (aggregates all evidence, fails closed on ambiguity, missing != npm).
 //! 2. Strict CWD repository containment (rejects directory escapes and symlink escapes).
 //! 3. Static verification action validation (never executes arbitrary display strings).
-//! 4. Typed runner capability model for individual test targeting with safe rollup.
+//! 4. Typed runner capability model with strict script grammar for individual test targeting with safe rollup.
 
 use crate::intelligence::testplan::model::PlannedCheck;
-use crate::intelligence::verify::action::{ExecutionAction, KnownJsTestRunner};
+use crate::intelligence::verify::action::{ExecutionAction, IndividualTestCapability};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -92,8 +92,8 @@ pub fn detect_package_manager(repo_root: &Path) -> PackageManagerResolution {
     detect_package_manager_for_pkg(repo_root, Path::new("."))
 }
 
-/// Statically prove if a package's `scripts.test` directly executes a known JS test runner.
-pub fn detect_individual_target_capability(abs_pkg_dir: &Path) -> Option<KnownJsTestRunner> {
+/// Statically prove if a package's `scripts.test` satisfies exact accepted runner grammar.
+pub fn detect_individual_target_capability(abs_pkg_dir: &Path) -> Option<IndividualTestCapability> {
     let pkg_json_path = abs_pkg_dir.join("package.json");
     if !pkg_json_path.exists() {
         return None;
@@ -111,7 +111,7 @@ pub fn detect_individual_target_capability(abs_pkg_dir: &Path) -> Option<KnownJs
         return None;
     }
 
-    // Must not contain shell control operators or chaining
+    // Must not contain shell control operators, chaining, or redirection
     if trimmed.contains("&&")
         || trimmed.contains("||")
         || trimmed.contains(';')
@@ -131,17 +131,38 @@ pub fn detect_individual_target_capability(abs_pkg_dir: &Path) -> Option<KnownJs
         return None;
     }
 
+    // Strict exact executable token matching — no paths allowed
     let exe = tokens[0];
-    let exe_name = Path::new(exe)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or(exe);
-
-    if exe == "vitest" || exe_name == "vitest" {
-        return Some(KnownJsTestRunner::Vitest);
+    if exe.contains('/') || exe.contains('\\') || exe.starts_with('.') {
+        return None;
     }
-    if exe == "jest" || exe_name == "jest" {
-        return Some(KnownJsTestRunner::Jest);
+
+    let args: Vec<String> = tokens[1..].iter().map(|s| s.to_string()).collect();
+
+    if exe == "vitest" {
+        // Accepted Vitest grammar: "vitest" or "vitest run"
+        if args.is_empty() {
+            return Some(IndividualTestCapability::Vitest { fixed_args: vec![] });
+        }
+        if args.len() == 1 && args[0] == "run" {
+            return Some(IndividualTestCapability::Vitest {
+                fixed_args: vec!["run".to_string()],
+            });
+        }
+        return None;
+    }
+
+    if exe == "jest" {
+        // Accepted Jest grammar: "jest" or "jest --runInBand"
+        if args.is_empty() {
+            return Some(IndividualTestCapability::Jest { fixed_args: vec![] });
+        }
+        if args.len() == 1 && args[0] == "--runInBand" {
+            return Some(IndividualTestCapability::Jest {
+                fixed_args: vec!["--runInBand".to_string()],
+            });
+        }
+        return None;
     }
 
     None
@@ -369,15 +390,15 @@ pub fn resolve_check_action(repo_root: &Path, check: &PlannedCheck) -> Execution
 
         match detect_package_manager_for_pkg(repo_root, &pkg_dir) {
             PackageManagerResolution::Resolved(pm) => {
-                if let Some(runner) = detect_individual_target_capability(&abs_pkg_dir) {
+                if let Some(capability) = detect_individual_target_capability(&abs_pkg_dir) {
                     ExecutionAction::NpmRunTestFile {
                         pkg_dir,
                         test_file_rel: rel_path.to_string(),
                         package_manager: pm,
-                        runner,
+                        capability,
                     }
                 } else if has_package_test_script(&abs_pkg_dir) {
-                    // Statically simple runner not proven: safely roll up to package test suite
+                    // Runner grammar not proven: safely roll up to package test suite
                     ExecutionAction::NpmRunScript {
                         pkg_dir,
                         script_name: "test".to_string(),

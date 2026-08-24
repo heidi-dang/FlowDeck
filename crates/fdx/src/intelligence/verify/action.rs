@@ -6,12 +6,20 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-/// Known JS/TS test runner with statically verified command-line file targeting semantics.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum KnownJsTestRunner {
-    Vitest,
-    Jest,
+/// Validated individual JS/TS test capability with exact runner and fixed argument semantics.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum IndividualTestCapability {
+    Vitest { fixed_args: Vec<String> },
+    Jest { fixed_args: Vec<String> },
+}
+
+impl IndividualTestCapability {
+    pub fn runner_name(&self) -> &str {
+        match self {
+            Self::Vitest { .. } => "vitest",
+            Self::Jest { .. } => "jest",
+        }
+    }
 }
 
 /// Strongly-typed verification action.
@@ -23,12 +31,12 @@ pub enum ExecutionAction {
         script_name: String,
         package_manager: String,
     },
-    /// Execute a specific test file via a positively known runner.
+    /// Execute a specific test file via a positively validated runner capability.
     NpmRunTestFile {
         pkg_dir: PathBuf,
         test_file_rel: String,
         package_manager: String,
-        runner: KnownJsTestRunner,
+        capability: IndividualTestCapability,
     },
     /// Execute Cargo package tests.
     CargoTestPackage {
@@ -96,7 +104,7 @@ impl ExecutionAction {
                 pkg_dir,
                 test_file_rel,
                 package_manager,
-                runner,
+                capability: _capability,
             } => {
                 let cwd = if pkg_dir.as_os_str().is_empty() || pkg_dir == Path::new(".") {
                     repo_root.to_path_buf()
@@ -106,9 +114,21 @@ impl ExecutionAction {
                     repo_root.join(pkg_dir)
                 };
 
-                // Manager-specific argument forwarding for known runners
-                let argv = match (package_manager.as_str(), runner) {
-                    ("yarn", _) => vec![
+                // Manager-specific argument forwarding for proven test script
+                let argv = match package_manager.as_str() {
+                    "yarn" => vec![
+                        "run".to_string(),
+                        "test".to_string(),
+                        "--".to_string(),
+                        test_file_rel.clone(),
+                    ],
+                    "pnpm" => vec![
+                        "run".to_string(),
+                        "test".to_string(),
+                        "--".to_string(),
+                        test_file_rel.clone(),
+                    ],
+                    "bun" => vec![
                         "run".to_string(),
                         "test".to_string(),
                         "--".to_string(),
