@@ -15,7 +15,7 @@ const ROOT = resolve(import.meta.dirname, "..");
 const REPORT_JSON_PATH = join(ROOT, "reports", "benchmark-fdx-vci-m10-shadow-calibration.json");
 const REPORT_MD_PATH = join(ROOT, "reports", "benchmark-fdx-vci-m10-repro.md");
 
-const EXPECTED_FUNCTIONAL_SHA = "dbee5bb4e558126fb6292cfec043e7bb9fec96df";
+const EXPECTED_FUNCTIONAL_SHA = "5f0f5f8733e87a6aeb31fd241b3e40f7cfc9875c";
 
 function computeSha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
@@ -101,13 +101,13 @@ async function runPreflights(bin) {
   // 1. schema_v8_tables_and_columns_exist
   {
     execFileSync("cargo", ["test", "-p", "fdx", "--test", "test_calibration_schema", "test_calibration_schema_tables_and_columns_exist"], { cwd: ROOT, stdio: "ignore" });
-    pass("schema_v8_tables_and_columns_exist");
+    pass("schema_v9_qualified_tables_and_columns_exist");
   }
 
   // 2. v7_to_v8_migration_preserves_runtime_runs
   {
-    execFileSync("cargo", ["test", "-p", "fdx", "--test", "test_calibration_schema", "test_v7_to_v8_migration_preserves_data"], { cwd: ROOT, stdio: "ignore" });
-    pass("v7_to_v8_migration_preserves_runtime_runs");
+    execFileSync("cargo", ["test", "-p", "fdx", "--test", "test_calibration_schema", "test_v7_to_v9_migration_preserves_data"], { cwd: ROOT, stdio: "ignore" });
+    pass("v7_to_v9_migration_preserves_runtime_runs");
   }
 
   // 3. deterministic_calibration_id_binding
@@ -212,6 +212,14 @@ async function runPreflights(bin) {
     pass("cli_subcommands_end_to_end");
   }
 
+  for (const [name, test] of [
+    ["candidate_unsupported_spawn_failed_zero_physical_execution", "test_calibration_physical_execution_truth"],
+    ["strict_total_duration_budget", "test_calibration_total_budget"],
+    ["v8_rows_legacy_unqualified_and_aggregate_eligibility", "test_calibration_v8_to_v9_upgrade"],
+  ]) {
+    execFileSync("cargo", ["test", "-p", "fdx", "--test", test], { cwd: ROOT, stdio: "ignore" });
+    pass(name);
+  }
   console.log("-> All " + preflights.length + " hardened M10 non-vacuous preflights passed successfully!");
   return preflights;
 }
