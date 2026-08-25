@@ -6,8 +6,8 @@
   "binary_sha256": "5881aa11c5d7448cf2780bf3e6e80b6db51dd38ac449a593c67f61f8cb105d0b",
   "binary_profile": "release",
   "binary_size_bytes": 17798824,
-  "benchmark_harness_sha": "b2a59e9e4c15886c3639cbd104cabebb18636452",
-  "qualification_head_sha": "b2a59e9e4c15886c3639cbd104cabebb18636452",
+  "benchmark_harness_sha": "a1bd16ef930eb0f9b0d7fdc1caede6534b4b9bd0",
+  "qualification_head_sha": "a1bd16ef930eb0f9b0d7fdc1caede6534b4b9bd0",
   "schema_version": 10,
   "cargo_version": "cargo 1.98.0 (797e8a9bc 2026-08-05)",
   "rustc_version": "rustc 1.98.0 (88d9e12ae 2026-08-18)",
@@ -26,11 +26,11 @@
   },
   "qualification_checkout": {
     "clean_before_execution": true,
-    "f31_ancestor_of_h34": true,
+    "f31_ancestor_of_h35": true,
     "production_diff_from_f31": [],
     "binary_path_recording": "sanitized; release profile and SHA are recorded without an absolute developer path"
   },
-  "preflight_count": 73,
+  "preflight_count": 74,
   "preflights": [
     {
       "name": "external_binary_release_profile",
@@ -42,597 +42,752 @@
       "name": "external_binary_sha_matches",
       "passed": true,
       "command": "sha256 supplied external binary",
-      "duration_ms": 21.07
+      "duration_ms": 25.87
     },
     {
       "name": "binary_source_exact_f31",
       "passed": true,
       "command": "FDX_BENCHMARK_FUNCTIONAL_SHA",
-      "duration_ms": 0.05
+      "duration_ms": 0.07
     },
     {
       "name": "release_binary_executes",
       "passed": true,
       "command": "fdx --help",
-      "duration_ms": 5.65
+      "duration_ms": 4.23
     },
     {
       "name": "debug_binary_rejected",
       "passed": true,
       "command": "in-process provenance rejection",
-      "duration_ms": 0.36
+      "duration_ms": 0.46
     },
     {
       "name": "wrong_binary_sha_rejected",
       "passed": true,
       "command": "in-process provenance rejection",
-      "duration_ms": 21.71
+      "duration_ms": 25.67
     },
     {
       "name": "wrong_functional_sha_rejected",
       "passed": true,
       "command": "in-process provenance rejection",
-      "duration_ms": 0.21
+      "duration_ms": 0.26
     },
     {
-      "name": "qualification_head_owns_h34",
+      "name": "qualification_head_owns_h35",
       "passed": true,
       "command": "git log harness owner",
-      "duration_ms": 0.02
+      "duration_ms": 0.03
     },
     {
-      "name": "f31_is_h34_ancestor",
+      "name": "f31_is_h35_ancestor",
       "passed": true,
       "command": "git merge-base --is-ancestor",
-      "duration_ms": 4.39
+      "duration_ms": 5.6
     },
     {
       "name": "no_production_diff_after_f31",
       "passed": true,
-      "command": "git diff F31..H34 production paths",
-      "duration_ms": 4.76
+      "command": "git diff F31..H35 production paths",
+      "duration_ms": 4.59
     },
     {
       "name": "qualification_checkout_clean",
       "passed": true,
       "command": "git status and diff --check",
-      "duration_ms": 12.89
+      "duration_ms": 17.1
+    },
+    {
+      "name": "setup_timer_excludes_fixture_delay",
+      "passed": true,
+      "command": "in-process prepared-fixture timing assertion",
+      "duration_ms": 45.8
     },
     {
       "name": "rust_toolchain_resolver",
       "passed": true,
       "command": "scripts/rust-toolchain.mjs",
-      "duration_ms": 0.04
+      "duration_ms": 0.02
     },
     {
       "name": "policy_cli_help_external_binary",
       "passed": true,
       "command": "external policy --help",
-      "duration_ms": 2.61
+      "duration_ms": 4.11
     },
     {
       "name": "plan_overlay_help_external_binary",
       "passed": true,
       "command": "external plan --help",
-      "duration_ms": 3.63
+      "duration_ms": 3.9
     },
     {
       "name": "verify_overlay_help_external_binary",
       "passed": true,
       "command": "external verify --help",
-      "duration_ms": 2.91
+      "duration_ms": 4.06
     },
     {
       "name": "schema_v10_current",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_policy_schema test_policy_schema_v10_current_contains_additive_policy_tables -- --exact",
-      "duration_ms": 128.79
+      "duration_ms": 179.54
     },
     {
       "name": "v9_to_v10_upgrade",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_policy_schema test_v9_to_v10_migration_is_additive_and_preserves_calibration_schema -- --exact",
-      "duration_ms": 84.47
+      "duration_ms": 98.45
     },
     {
       "name": "qualified_m10_only",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_policy_candidate test_generate_candidates_uses_only_qualified_current_contract_m10_evidence -- --exact",
-      "duration_ms": 91.74
+      "duration_ms": 101.53
     },
     {
       "name": "candidate_run_bounded_lookback",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_policy_candidate test_generate_candidates_lookback_limit_counts_calibration_runs_not_rows -- --exact",
-      "duration_ms": 86.93
+      "duration_ms": 97.63
     },
     {
       "name": "policy_selected_evidence_excluded",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_policy_candidate test_generate_candidates_uses_only_qualified_current_contract_m10_evidence -- --exact",
-      "duration_ms": 116.78
+      "duration_ms": 111.84
     },
     {
       "name": "self_reinforcement_excluded",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_policy_candidate test_policy_selected_future_observation_cannot_self_reinforce_promoted_support -- --exact",
-      "duration_ms": 101.58
+      "duration_ms": 112.05
     },
     {
       "name": "candidate_deterministic_fail_closed_read",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_policy_candidate test_candidate_read_apis_are_stable_and_fail_closed_on_unknown_state -- --exact",
-      "duration_ms": 92.53
+      "duration_ms": 99.3
     },
     {
       "name": "promotion_revalidation_and_idempotency",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_policy_candidate test_explicit_promotion_revalidates_evidence_and_revocation_is_idempotent -- --exact",
-      "duration_ms": 85.5
+      "duration_ms": 127.86
     },
     {
       "name": "promotion_stale_evidence_rejected",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_policy_candidate test_promotion_fails_when_qualified_evidence_is_changed_after_candidate_generation -- --exact",
-      "duration_ms": 90.47
+      "duration_ms": 109.2
     },
     {
       "name": "twenty_connection_promotion",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_policy_candidate test_concurrent_template_bound_promotions_commit_one_policy_and_one_event -- --exact",
-      "duration_ms": 1356.78
+      "duration_ms": 1244.15
     },
     {
       "name": "per_trigger_cap_conflict",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_policy_candidate test_promotion_enforces_per_trigger_additive_cap_without_mutating_second_candidate -- --exact",
-      "duration_ms": 94.33
+      "duration_ms": 100
     },
     {
       "name": "template_exact_persistence_and_tamper",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_policy_candidate test_promotion_persists_exact_template_and_active_overlay_loading_fails_closed_on_tamper -- --exact",
-      "duration_ms": 93.12
+      "duration_ms": 110.18
     },
     {
       "name": "policy_store_corruption_fail_closed",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_policy_candidate test_active_policy_snapshot_fails_closed_for_null_template_unknown_action_and_bad_provenance -- --exact",
-      "duration_ms": 93.05
+      "duration_ms": 100.91
     },
     {
       "name": "base_plan_unchanged_affected_scope_addition",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_policy_overlay test_overlay_is_monotonic_and_uses_impacted_scope_even_without_a_base_check -- --exact",
-      "duration_ms": 87.83
+      "duration_ms": 87.99
     },
     {
       "name": "unaffected_scope_noop_and_corrupt_template_rejected",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_policy_overlay test_overlay_is_noop_for_unaffected_scope_and_fails_closed_for_missing_template_or_invalid_state -- --exact",
-      "duration_ms": 74.89
+      "duration_ms": 78.75
     },
     {
       "name": "policy_application_digest_determinism",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_policy_overlay test_overlay_noop_application_is_deterministic_and_additive -- --exact",
-      "duration_ms": 84.45
+      "duration_ms": 80.88
     },
     {
       "name": "duplicate_policy_additions_deduped_snapshot_immutable",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_policy_overlay test_duplicate_policy_additions_are_deduped_and_captured_snapshot_stays_immutable -- --exact",
-      "duration_ms": 74.82
+      "duration_ms": 82.87
     },
     {
       "name": "cli_promotion_overlay_application_revocation",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_policy_cli test_policy_cli_promotes_exact_template_preserves_default_plan_and_persists_verify_application -- --exact",
-      "duration_ms": 1254.8
+      "duration_ms": 1432.64
     },
     {
       "name": "m6_direct_path_package_plan",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_verification_planner test_plan_package_source_change_selects_tests_and_typecheck -- --exact",
-      "duration_ms": 114.83
+      "duration_ms": 129.24
     },
     {
       "name": "m6_no_manufactured_tests",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_verification_planner test_plan_no_tests_found_does_not_manufacture_tests -- --exact",
-      "duration_ms": 103.86
+      "duration_ms": 110.33
     },
     {
       "name": "m6_disconnected_isolation",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_verification_planner test_plan_disconnected_package_isolation -- --exact",
-      "duration_ms": 114.35
+      "duration_ms": 133.69
     },
     {
       "name": "m6_root_config_widening",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_verification_planner test_plan_root_tsconfig_change_widens_to_all_ts_projects -- --exact",
-      "duration_ms": 102.21
+      "duration_ms": 121.41
     },
     {
       "name": "m6_cargo_workspace",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_verification_planner test_plan_cargo_workspace_crate_change -- --exact",
-      "duration_ms": 109.79
+      "duration_ms": 126.23
     },
     {
       "name": "m7_empty_plan_contract",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_verify_contract test_verification_contract_empty_plan_passes -- --exact",
-      "duration_ms": 74.7
+      "duration_ms": 96.19
     },
     {
       "name": "m7_lifecycle_contract",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_verify_contract test_verification_contract_lifecycle_and_model -- --exact",
-      "duration_ms": 189.59
+      "duration_ms": 222.17
     },
     {
       "name": "m7_duplicate_check_safety",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_verify_duplicate_checks test_duplicate_identical_checks_are_deduped -- --exact",
-      "duration_ms": 72.36
+      "duration_ms": 88.13
     },
     {
       "name": "m7_output_bound",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_verify_output_bounds test_output_limit_marks_incomplete -- --exact",
-      "duration_ms": 69.64
+      "duration_ms": 87.62
     },
     {
       "name": "m7_path_parent_escape",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_verify_path_safety test_verification_path_safety_rejects_parent_escape -- --exact",
-      "duration_ms": 82.1
+      "duration_ms": 98.72
     },
     {
       "name": "m7_path_symlink_escape",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_verify_path_safety test_verification_path_safety_rejects_symlink_escape -- --exact",
-      "duration_ms": 76.72
+      "duration_ms": 89.06
     },
     {
       "name": "m7_redaction",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_verify_redaction test_verification_redaction_before_persistence -- --exact",
-      "duration_ms": 213.65
+      "duration_ms": 269.39
     },
     {
       "name": "m7_unresolved_obligations",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_verify_unresolved_obligations test_unresolved_obligations_with_zero_checks_is_incomplete -- --exact",
-      "duration_ms": 70.82
+      "duration_ms": 93.58
     },
     {
       "name": "m8_runtime_planner_isolation",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_runtime_planner_isolation test_runtime_history_never_alters_planner_selected_checks -- --exact",
-      "duration_ms": 162.82
+      "duration_ms": 199.39
     },
     {
       "name": "m8_runtime_idempotency",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_runtime_idempotency test_ingest_same_artifact_is_idempotent -- --exact",
-      "duration_ms": 79.53
+      "duration_ms": 91.78
     },
     {
       "name": "m8_runtime_transactionality",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_runtime_transactionality test_runtime_ingest_is_atomic -- --exact",
-      "duration_ms": 88.06
+      "duration_ms": 98.67
     },
     {
       "name": "m8_runtime_execution_truth",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_runtime_physical_execution_truth test_runtime_history_preserves_physical_execution_truth -- --exact",
-      "duration_ms": 81.46
+      "duration_ms": 104.75
     },
     {
       "name": "m8_runtime_artifact_digest",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_runtime_exact_artifact_digest test_artifact_digest_is_exact_and_idempotent -- --exact",
-      "duration_ms": 90.13
+      "duration_ms": 101.23
     },
     {
       "name": "m9_predicate_v1",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_attestation_predicate test_predicate_version_and_uri_constants -- --exact",
-      "duration_ms": 79.61
+      "duration_ms": 89.21
     },
     {
       "name": "m9_context_omission",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_attestation_predicate test_source_context_workspace_clean_omitted_when_none -- --exact",
-      "duration_ms": 72.3
+      "duration_ms": 80.52
     },
     {
       "name": "m9_plan_binding",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_attestation_plan_binding test_attestation_plan_digest_binding -- --exact",
-      "duration_ms": 79.79
+      "duration_ms": 94.24
     },
     {
       "name": "m9_unresolved_binding",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_attestation_unresolved_binding test_attestation_unresolved_obligations_binding -- --exact",
-      "duration_ms": 77.03
+      "duration_ms": 99.27
     },
     {
       "name": "m9_statement_determinism",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_attestation_determinism test_attestation_is_deterministic -- --exact",
-      "duration_ms": 79.82
+      "duration_ms": 94.49
     },
     {
       "name": "m9_privacy",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_attestation_privacy test_attestation_redacts_private_paths_and_secrets -- --exact",
-      "duration_ms": 79.16
+      "duration_ms": 92.56
     },
     {
       "name": "m9_tamper_rejection",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_attestation_tamper test_tampered_attestation_is_rejected -- --exact",
-      "duration_ms": 77.43
+      "duration_ms": 85.71
     },
     {
       "name": "m10_candidate_plan_isolation",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_calibration_candidate_isolation test_candidate_plan_is_preserved_exact_and_unchanged -- --exact",
-      "duration_ms": 89.98
+      "duration_ms": 106.79
     },
     {
       "name": "m10_planner_isolation",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_calibration_planner_isolation test_calibration_history_never_influences_planner_decisions_or_assurance -- --exact",
-      "duration_ms": 142.94
+      "duration_ms": 167.89
     },
     {
       "name": "m10_runtime_isolation",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_calibration_runtime_isolation test_calibration_executions_do_not_pollute_runtime_history -- --exact",
-      "duration_ms": 112.02
+      "duration_ms": 129.44
     },
     {
       "name": "m10_attestation_isolation",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_calibration_attestation_isolation test_calibration_does_not_change_attestation_bytes -- --exact",
-      "duration_ms": 85.02
+      "duration_ms": 91.87
     },
     {
       "name": "m10_observed_shadow_miss",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_calibration_observed_miss test_observed_shadow_miss_is_recorded -- --exact",
-      "duration_ms": 81.83
+      "duration_ms": 90.28
     },
     {
       "name": "m10_physical_execution_truth",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_calibration_physical_execution_truth test_non_physical_statuses_are_never_observed_misses -- --exact",
-      "duration_ms": 90.6
+      "duration_ms": 91.91
     },
     {
       "name": "m10_reference_superset",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_calibration_shadow_execution test_shadow_reference_is_superset_of_candidate_plan -- --exact",
-      "duration_ms": 88.94
+      "duration_ms": 111.58
     },
     {
       "name": "m10_bounded_duration",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_calibration_total_budget blocking_shadow_process_receives_only_remaining_total_budget -- --exact",
-      "duration_ms": 96.96
+      "duration_ms": 111
     },
     {
       "name": "m10_atomic_transaction",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_calibration_transactionality test_transaction_rollback_leaves_zero_orphaned_rows_on_error -- --exact",
-      "duration_ms": 116.05
+      "duration_ms": 128.89
     },
     {
       "name": "m10_privacy",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_calibration_privacy test_secrets_in_unsupported_reasons_or_environment_are_redacted -- --exact",
-      "duration_ms": 113.1
+      "duration_ms": 124.42
     },
     {
       "name": "m10_reopen_determinism",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_calibration_reopen_determinism test_database_close_and_reopen_preserves_exact_metrics -- --exact",
-      "duration_ms": 115.17
+      "duration_ms": 129.9
     },
     {
       "name": "protocol_schema_v10",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_protocol test_version_constants -- --exact",
-      "duration_ms": 80.15
+      "duration_ms": 87.06
     },
     {
       "name": "protocol_graph_compatibility",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_protocol test_graph_compatibility_defaults -- --exact",
-      "duration_ms": 71.27
+      "duration_ms": 83.35
     },
     {
       "name": "protocol_path_canonicalization",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_protocol test_path_canonicalization -- --exact",
-      "duration_ms": 69.45
+      "duration_ms": 79.54
     },
     {
       "name": "protocol_path_jail",
       "passed": true,
       "command": "resolved cargo test -p fdx --test test_protocol test_path_jail_escaping -- --exact",
-      "duration_ms": 69.94
+      "duration_ms": 77.35
     }
   ],
   "benchmarks": {
-    "candidate_generation": {
-      "10_qualified_runs_ms": {
-        "samples": 5,
-        "min_ms": 55.73,
-        "median_ms": 56.08,
-        "p95_ms": 70.46,
-        "max_ms": 70.46,
-        "mean_ms": 59.25
+    "candidate_generation_cli_e2e": {
+      "10_qualified_runs": {
+        "fixture": {
+          "qualified_calibration_run_count": 10,
+          "generated_candidate_count": 1
+        },
+        "setup_ms": {
+          "samples": 15,
+          "min_ms": 56.85,
+          "median_ms": 59.27,
+          "p95_ms": 66,
+          "max_ms": 66,
+          "mean_ms": 59.5
+        },
+        "operation_ms": {
+          "samples": 15,
+          "min_ms": 8.19,
+          "median_ms": 9.13,
+          "p95_ms": 9.82,
+          "max_ms": 9.82,
+          "mean_ms": 9.05
+        }
       },
-      "100_qualified_runs_ms": {
-        "samples": 5,
-        "min_ms": 131.47,
-        "median_ms": 138.04,
-        "p95_ms": 144.37,
-        "max_ms": 144.37,
-        "mean_ms": 137.83
+      "100_qualified_runs": {
+        "fixture": {
+          "qualified_calibration_run_count": 100,
+          "generated_candidate_count": 1
+        },
+        "setup_ms": {
+          "samples": 15,
+          "min_ms": 126.17,
+          "median_ms": 136.76,
+          "p95_ms": 150.83,
+          "max_ms": 150.83,
+          "mean_ms": 136.45
+        },
+        "operation_ms": {
+          "samples": 15,
+          "min_ms": 13.99,
+          "median_ms": 15.41,
+          "p95_ms": 16.08,
+          "max_ms": 16.08,
+          "mean_ms": 15.26
+        }
       },
-      "1000_qualified_runs_ms": {
-        "samples": 5,
-        "min_ms": 1039.6,
-        "median_ms": 1063.13,
-        "p95_ms": 1086.03,
-        "max_ms": 1086.03,
-        "mean_ms": 1065.82
+      "1000_qualified_runs": {
+        "fixture": {
+          "qualified_calibration_run_count": 1000,
+          "generated_candidate_count": 1
+        },
+        "setup_ms": {
+          "samples": 7,
+          "min_ms": 501.27,
+          "median_ms": 524.91,
+          "p95_ms": 546.8,
+          "max_ms": 546.8,
+          "mean_ms": 522.08
+        },
+        "operation_ms": {
+          "samples": 7,
+          "min_ms": 673.69,
+          "median_ms": 711.97,
+          "p95_ms": 751.63,
+          "max_ms": 751.63,
+          "mean_ms": 712.91
+        }
       }
     },
-    "active_policy_snapshot": {
-      "0_active_policies_ms": {
-        "samples": 5,
-        "min_ms": 46.14,
-        "median_ms": 47.52,
-        "p95_ms": 50.37,
-        "max_ms": 50.37,
-        "mean_ms": 47.67
+    "active_policy_list_cli_e2e": {
+      "0_active_policies": {
+        "fixture": {
+          "active_policy_count": 0
+        },
+        "setup_ms": {
+          "samples": 15,
+          "min_ms": 44.6,
+          "median_ms": 49.71,
+          "p95_ms": 56.7,
+          "max_ms": 56.7,
+          "mean_ms": 49.64
+        },
+        "operation_ms": {
+          "samples": 15,
+          "min_ms": 5.85,
+          "median_ms": 6.42,
+          "p95_ms": 7.59,
+          "max_ms": 7.59,
+          "mean_ms": 6.53
+        }
       },
-      "10_active_policies_ms": {
-        "samples": 5,
-        "min_ms": 57.73,
-        "median_ms": 61.91,
-        "p95_ms": 72.36,
-        "max_ms": 72.36,
-        "mean_ms": 63.42
+      "10_active_policies": {
+        "fixture": {
+          "active_policy_count": 10
+        },
+        "setup_ms": {
+          "samples": 15,
+          "min_ms": 91.76,
+          "median_ms": 96.35,
+          "p95_ms": 102.34,
+          "max_ms": 102.34,
+          "mean_ms": 96.32
+        },
+        "operation_ms": {
+          "samples": 15,
+          "min_ms": 6.5,
+          "median_ms": 7.08,
+          "p95_ms": 7.54,
+          "max_ms": 7.54,
+          "mean_ms": 7.03
+        }
       },
-      "100_active_policies_ms": {
-        "samples": 5,
-        "min_ms": 135.41,
-        "median_ms": 141.35,
-        "p95_ms": 153.16,
-        "max_ms": 153.16,
-        "mean_ms": 142.78
+      "100_active_policies": {
+        "fixture": {
+          "active_policy_count": 100
+        },
+        "setup_ms": {
+          "samples": 15,
+          "min_ms": 529.17,
+          "median_ms": 560.18,
+          "p95_ms": 591.43,
+          "max_ms": 591.43,
+          "mean_ms": 564.46
+        },
+        "operation_ms": {
+          "samples": 15,
+          "min_ms": 8.48,
+          "median_ms": 9.12,
+          "p95_ms": 11.33,
+          "max_ms": 11.33,
+          "mean_ms": 9.27
+        }
       }
     },
-    "overlay_planning": {
-      "base_m6_10_base_checks_equivalent_ms": {
-        "samples": 5,
-        "min_ms": 61.1,
-        "median_ms": 62.97,
-        "p95_ms": 63.87,
-        "max_ms": 63.87,
-        "mean_ms": 62.7
+    "overlay_planning_cli_e2e": {
+      "base_10_checks": {
+        "fixture": {
+          "base_selected_check_count": 10,
+          "active_policy_count": 0,
+          "distinct_policy_check_count": 0,
+          "effective_selected_check_count": 10,
+          "added_check_count": 0
+        },
+        "setup_ms": {
+          "samples": 15,
+          "min_ms": 45.03,
+          "median_ms": 48.05,
+          "p95_ms": 54.66,
+          "max_ms": 54.66,
+          "mean_ms": 48.24
+        },
+        "operation_ms": {
+          "samples": 15,
+          "min_ms": 38.36,
+          "median_ms": 41.11,
+          "p95_ms": 44.94,
+          "max_ms": 44.94,
+          "mean_ms": 40.97
+        }
       },
-      "empty_overlay_0_active_policies_ms": {
-        "samples": 5,
-        "min_ms": 61.35,
-        "median_ms": 65.82,
-        "p95_ms": 67.96,
-        "max_ms": 67.96,
-        "mean_ms": 64.63
+      "overlay_10_base_plus_10_policy_checks": {
+        "fixture": {
+          "base_selected_check_count": 10,
+          "active_policy_count": 10,
+          "distinct_policy_check_count": 10,
+          "effective_selected_check_count": 20,
+          "added_check_count": 10
+        },
+        "setup_ms": {
+          "samples": 15,
+          "min_ms": 94.98,
+          "median_ms": 101.46,
+          "p95_ms": 108.76,
+          "max_ms": 108.76,
+          "mean_ms": 101.1
+        },
+        "operation_ms": {
+          "samples": 15,
+          "min_ms": 41.76,
+          "median_ms": 43.93,
+          "p95_ms": 47.59,
+          "max_ms": 47.59,
+          "mean_ms": 43.97
+        }
       },
-      "overlay_10_base_checks_10_active_policies_ms": {
-        "samples": 5,
-        "min_ms": 76.31,
-        "median_ms": 77.39,
-        "p95_ms": 79.7,
-        "max_ms": 79.7,
-        "mean_ms": 77.74
+      "base_100_checks": {
+        "fixture": {
+          "base_selected_check_count": 100,
+          "active_policy_count": 0,
+          "distinct_policy_check_count": 0,
+          "effective_selected_check_count": 100,
+          "added_check_count": 0
+        },
+        "setup_ms": {
+          "samples": 15,
+          "min_ms": 49.09,
+          "median_ms": 52.19,
+          "p95_ms": 55.16,
+          "max_ms": 55.16,
+          "mean_ms": 52.28
+        },
+        "operation_ms": {
+          "samples": 15,
+          "min_ms": 190.24,
+          "median_ms": 199.59,
+          "p95_ms": 207.31,
+          "max_ms": 207.31,
+          "mean_ms": 199.32
+        }
       },
-      "overlay_100_base_checks_100_active_policies_ms": {
-        "samples": 5,
-        "min_ms": 154.95,
-        "median_ms": 163.64,
-        "p95_ms": 172.91,
-        "max_ms": 172.91,
-        "mean_ms": 163.7
-      },
-      "empty_overlay_overhead": {
-        "absolute_median_ms": 2.85,
-        "percentage_median": 4.53
-      },
-      "active_10_overlay_overhead": {
-        "absolute_median_ms": 14.42,
-        "percentage_median": 22.9
-      },
-      "active_100_overlay_overhead": {
-        "absolute_median_ms": 100.67,
-        "percentage_median": 159.87
+      "overlay_100_base_plus_100_policy_checks": {
+        "fixture": {
+          "base_selected_check_count": 100,
+          "active_policy_count": 100,
+          "distinct_policy_check_count": 100,
+          "effective_selected_check_count": 200,
+          "added_check_count": 100
+        },
+        "setup_ms": {
+          "samples": 15,
+          "min_ms": 523.42,
+          "median_ms": 568.48,
+          "p95_ms": 593.6,
+          "max_ms": 593.6,
+          "mean_ms": 566.54
+        },
+        "operation_ms": {
+          "samples": 15,
+          "min_ms": 198.9,
+          "median_ms": 212.09,
+          "p95_ms": 219.47,
+          "max_ms": 219.47,
+          "mean_ms": 209.95
+        }
       }
     },
-    "promotion_with_provenance_revalidation_ms": {
-      "samples": 5,
-      "min_ms": 58.64,
-      "median_ms": 59.14,
-      "p95_ms": 60.22,
-      "max_ms": 60.22,
-      "mean_ms": 59.33
-    },
-    "policy_application_persistence_ms": {
-      "samples": 5,
-      "min_ms": 509.4,
-      "median_ms": 517.28,
-      "p95_ms": 536.51,
-      "max_ms": 536.51,
-      "mean_ms": 521.04
-    },
-    "query_operations": {
-      "candidate_list_ms": {
-        "samples": 5,
-        "min_ms": 4.6,
-        "median_ms": 4.79,
-        "p95_ms": 4.86,
-        "max_ms": 4.86,
-        "mean_ms": 4.76
+    "promotion_cli_e2e_with_provenance_revalidation": {
+      "fixture": {
+        "template_bound": true
       },
-      "candidate_show_ms": {
-        "samples": 5,
-        "min_ms": 4.41,
-        "median_ms": 4.65,
-        "p95_ms": 4.89,
-        "max_ms": 4.89,
-        "mean_ms": 4.66
+      "setup_ms": {
+        "samples": 15,
+        "min_ms": 56.21,
+        "median_ms": 58.9,
+        "p95_ms": 61.71,
+        "max_ms": 61.71,
+        "mean_ms": 58.9
       },
-      "active_policy_list_ms": {
-        "samples": 5,
-        "min_ms": 4.48,
-        "median_ms": 4.82,
-        "p95_ms": 4.87,
-        "max_ms": 4.87,
-        "mean_ms": 4.71
+      "operation_ms": {
+        "samples": 15,
+        "min_ms": 9.22,
+        "median_ms": 9.79,
+        "p95_ms": 10.66,
+        "max_ms": 10.66,
+        "mean_ms": 9.93
       }
     },
-    "explicit_revocation_ms": {
-      "samples": 5,
-      "min_ms": 63.48,
-      "median_ms": 64.47,
-      "p95_ms": 68.87,
-      "max_ms": 68.87,
-      "mean_ms": 65.32
+    "verify_overlay_e2e_with_application_persistence": {
+      "fixture": {
+        "policy_application_count": 1,
+        "includes_verification_execution": true
+      },
+      "setup_ms": {
+        "samples": 15,
+        "min_ms": 66.59,
+        "median_ms": 70.37,
+        "p95_ms": 78.75,
+        "max_ms": 78.75,
+        "mean_ms": 71.03
+      },
+      "operation_ms": {
+        "samples": 15,
+        "min_ms": 276.22,
+        "median_ms": 279.08,
+        "p95_ms": 338.29,
+        "max_ms": 338.29,
+        "mean_ms": 288.86
+      }
     },
-    "reopen_active_snapshot_ms": {
-      "samples": 5,
-      "min_ms": 56.44,
-      "median_ms": 57.96,
-      "p95_ms": 59.68,
-      "max_ms": 59.68,
-      "mean_ms": 58.09
+    "connection_reopen_plus_active_policy_list_cli_e2e": {
+      "fixture": {
+        "active_policy_count": 10
+      },
+      "setup_ms": {
+        "samples": 15,
+        "min_ms": 94.91,
+        "median_ms": 99.39,
+        "p95_ms": 101.82,
+        "max_ms": 101.82,
+        "mean_ms": 98.67
+      },
+      "operation_ms": {
+        "samples": 15,
+        "min_ms": 7.04,
+        "median_ms": 7.3,
+        "p95_ms": 8.46,
+        "max_ms": 8.46,
+        "mean_ms": 7.48
+      }
+    },
+    "timing_methodology": {
+      "setup_is_measured_separately": true,
+      "operation_timer_starts_after_fixture_seed": true,
+      "low_latency_samples": 15,
+      "expensive_samples": 7
     },
     "comparison_note": "M10 timings are reported separately in benchmark-fdx-vci-m10-shadow-calibration.json; scenarios differ and no direct improvement claim is made."
   },
   "historical_qualification": {
-    "h33_r32_final_acceptance": false,
-    "correction": "H33 auto-built and qualified a debug artifact, embedded generated evidence in the harness commit, used a developer-specific path, and did not execute this M11 performance suite."
+    "r33_semantic_and_provenance_evidence_valid": true,
+    "correction": "R33 accurately qualified M11 semantics and external-release provenance, but some performance labels overstated fixture cardinality or operation boundaries. H35/R34 replace only M11 benchmark acceptance evidence."
   },
   "invariants": [
     "M11 v1 is explicit ADD_CHECK only",
@@ -642,5 +797,5 @@
     "templates and qualified M10 source provenance fail closed on corruption",
     "M6 through M10 remain isolated and M12 production has not started"
   ],
-  "executed_at": "2026-08-24T21:55:45.984Z"
+  "executed_at": "2026-08-25T01:00:00.540Z"
 }
