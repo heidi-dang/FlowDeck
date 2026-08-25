@@ -69,7 +69,11 @@ export function runMigrations(db: Database): void {
         continue
       }
 
-      db.exec(migration.sql)
+      if (migration.apply) {
+        migration.apply(db)
+      } else {
+        db.exec(migration.sql)
+      }
       db.query(
         `INSERT INTO schema_migrations (version, name, applied_at, checksum, duration_ms)
          VALUES (?, ?, datetime('now'), ?, ?)`

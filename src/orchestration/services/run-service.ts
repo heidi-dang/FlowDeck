@@ -11,7 +11,11 @@ import type { ExecutionRegistry } from "./execution-registry";
 import type { UnitOfWork } from "../persistence/unit-of-work";
 import type { TransactionalRunWriter } from "../persistence/transactional-run-writer";
 
+import type { ChildExecutionLifecycleService } from "./child-execution-lifecycle-service";
+
 export class RunService {
+  private childLifecycleService?: ChildExecutionLifecycleService;
+
   constructor(
     private readonly runRepo: IRunRepository,
     private readonly eventBus: IEventBus,
@@ -19,12 +23,35 @@ export class RunService {
     private readonly unitOfWork: UnitOfWork,
     private readonly writer: TransactionalRunWriter,
     private readonly db: Database,
-  ) {}
+    childLifecycleService?: ChildExecutionLifecycleService,
+  ) {
+    this.childLifecycleService = childLifecycleService;
+  }
+
+  setChildLifecycleService(service: ChildExecutionLifecycleService): void {
+    this.childLifecycleService = service;
+  }
+
+  async getRunByCorrelationId(correlationId: string): Promise<Run | null> {
+    return this.runRepo.findByCorrelationId(correlationId);
+  }
+
+  async createOrGetRunByCorrelationId(input: CreateRunInput, correlationId: string): Promise<Run> {
+    const existing = await this.runRepo.findByCorrelationId(correlationId);
+    if (existing) {
+      return existing;
+    }
+    return this.createRun(input, correlationId);
+  }
 
   async createRun(input: CreateRunInput, correlationId?: string): Promise<Run> {
+    const corrId = correlationId ?? input.correlationId ?? randomUUID();
+    const existing = await this.runRepo.findByCorrelationId(corrId);
+    if (existing) {
+      return existing;
+    }
     const now = new Date().toISOString();
     const runId = randomUUID();
-    const corrId = correlationId ?? input.correlationId ?? randomUUID();
 
     // Canonicalize QUEUED to PENDING at the API boundary.
     // QUEUED is a deprecated input alias only — the domain and repository layers
@@ -78,12 +105,21 @@ export class RunService {
       createdAt: now,
     };
 
-    // Atomic: persist run, event, and outbox inside UnitOfWork transaction
-    const saved = await this.unitOfWork.execute((ctx) => {
-      return this.writer.createRunWithEventAndOutbox(ctx.tx, this.db, run, event, outboxEntry);
-    });
-
-    return saved;
+    // Atomic: persist run, event, outbox, and correlation claim inside UnitOfWork transaction
+    try {
+      const saved = await this.unitOfWork.execute((ctx) => {
+        return this.writer.createRunWithEventAndOutbox(ctx.tx, this.db, run, event, outboxEntry);
+      });
+      return saved;
+    } catch (err: any) {
+      // If a concurrent transaction already inserted this correlation ID, conflict occurs.
+      // Re-read the authoritative winning Run.
+      const winner = await this.runRepo.findByCorrelationId(corrId);
+      if (winner) {
+        return winner;
+      }
+      throw err;
+    }
   }
 
   async updateRun(id: string, input: UpdateRunInput): Promise<Run> {
@@ -142,7 +178,7 @@ export class RunService {
         return this.writer.updateRunState(ctx.tx, this.db, id, input, event, outboxEntry);
       }
       // No status change — just do a trivial update via the writer
-      return this.writer.updateRunState(ctx.tx, this.db, id, input, createEvent(
+      const progressEvent = createEvent(
         OrchestrationEventType.RUN_PROGRESS,
         {
           correlationId: existing.correlationId,
@@ -153,9 +189,10 @@ export class RunService {
           runId: id,
           data: { stage: input.stage, progress: input.progress },
         },
-      ), {
+      );
+      return this.writer.updateRunState(ctx.tx, this.db, id, input, progressEvent, {
         id: randomUUID(),
-        eventId: randomUUID(),
+        eventId: progressEvent.id,
         eventType: OrchestrationEventType.RUN_PROGRESS,
         status: "pending" as const,
         correlationId: existing.correlationId,
@@ -206,6 +243,9 @@ export class RunService {
 
     // 1. Signal cancellation to active child execution & execute registered cleanup callbacks within bounded timeout
     await this.executionRegistry.cancelRunExecution(id, reason);
+    if (this.childLifecycleService) {
+      await this.childLifecycleService.cancelChildrenForRun(id, reason);
+    }
 
     // 2. Re-check status for completion-versus-cancellation races
     const latest = await this.runRepo.findById(id);
@@ -213,12 +253,26 @@ export class RunService {
       return latest;
     }
 
-    // 3. Update status to CANCELLED atomically — this goes through updateRun which uses the writer
+    // 3. Evaluate truthful native child cancellation convergence
+    const diag = this.childLifecycleService ? this.childLifecycleService.getDiagnosticsForRun(id) : null;
+    const unconfirmedChildExecutionIds = diag?.childExecutions
+      ?.filter(c => !c.nativeTerminationConfirmed && (c.status === "running" || c.status === "queued"))
+      .map(c => c.executionId) ?? [];
+    const terminationPending = unconfirmedChildExecutionIds.length > 0;
+    const cancellationMode = terminationPending ? "detached_pending_native_termination" : "converged";
+
+    // 4. Update status to CANCELLED atomically — this goes through updateRun which uses the writer
     const cancelledRun = await this.updateRun(id, {
       status: RunStatus.CANCELLED,
       stage: "cancelled",
       errorMessage: reason,
-      metadata: { cancelledAt: new Date().toISOString(), reason },
+      metadata: {
+        cancelledAt: new Date().toISOString(),
+        reason,
+        terminationPending,
+        unconfirmedChildExecutionIds,
+        cancellationMode,
+      },
     });
 
     this.executionRegistry.unregisterRun(id);

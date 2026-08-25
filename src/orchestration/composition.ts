@@ -42,6 +42,9 @@ import {
   SqliteSessionRepository,
   SqliteContextItemRepository,
   SqliteConsumerOffsetRepository,
+  SessionTurnRepository,
+  TaskRunsRepository,
+  SqliteDeferredReplacementRepository,
 } from "./persistence/repositories";
 import type {
   IRunRepository,
@@ -75,11 +78,20 @@ import { SqlitePerformanceRepository } from "./performance";
 import { PerformanceProjection } from "./services/performance-projection";
 import { RuntimeSnapshotService } from "./services/runtime-snapshot";
 import { AuthoritativeRoutingService } from "./routing/authoritative";
+import { RoutingRevisionService } from "./routing/routing-revision-service";
+import { ChildExecutionLifecycleService } from "./services/child-execution-lifecycle-service";
+import { SqliteNativeChildExecutionRepository } from "./persistence/repositories/native-child-execution";
+import { ProgressObservationService } from "./services/progress-observation-service";
+import { OrchestrationSnapshotService } from "./services/orchestration-snapshot-service";
+import { RunTransitionEngine } from "./services/transition-engine";
+import { CompletionPolicy } from "./services/completion-policy";
+import { ContinuationPolicy, ContinuationDispatcher } from "./services/continuation-policy";
 import { TokenBudgetRuntime } from "../services/token-budget-runtime";
 import type { IsolatedWorkstreamExecutor } from "./execution/worktree-executor";
 import type { CommandRegistry } from "./commands/domain/command-registry";
 import type { DurableCommandExecutor, CommandFaultHook } from "./commands/services/durable-command-executor";
 import { createCoreCommandRuntime } from "./commands/services/command-runtime";
+import { RepoMaster } from "./repository/repo-master";
 
 export interface ProductionOrchestrationRuntime {
   db: Database;
@@ -91,6 +103,9 @@ export interface ProductionOrchestrationRuntime {
   sessionRepo: SqliteSessionRepository;
   contextItemRepo: SqliteContextItemRepository;
   consumerOffsetRepo: SqliteConsumerOffsetRepository;
+  sessionTurnRepo: SessionTurnRepository;
+  taskRunsRepo: TaskRunsRepository;
+  deferredReplacementRepo: SqliteDeferredReplacementRepository;
   services: {
     runService: RunService;
     contractService: ContractService;
@@ -101,9 +116,26 @@ export interface ProductionOrchestrationRuntime {
     eventService: EventService;
     healthService: HealthService;
     runRepo: IRunRepository;
+    childExecutionLifecycleService: ChildExecutionLifecycleService;
+    progressObservationService: ProgressObservationService;
+    orchestrationSnapshotService: OrchestrationSnapshotService;
+    transitionEngine: RunTransitionEngine;
+    completionPolicy: CompletionPolicy;
+    continuationPolicy: ContinuationPolicy;
+    continuationDispatcher: ContinuationDispatcher;
   };
   router: ReturnType<typeof createRouterWithControllers>;
+  childExecutionLifecycleService: ChildExecutionLifecycleService;
+  progressObservationService: ProgressObservationService;
+  orchestrationSnapshotService: OrchestrationSnapshotService;
+  transitionEngine: RunTransitionEngine;
+  completionPolicy: CompletionPolicy;
+  continuationPolicy: ContinuationPolicy;
+  continuationDispatcher: ContinuationDispatcher;
   routingDecisionRepository: SqliteRoutingDecisionRepository;
+  routingRevisionService: RoutingRevisionService;
+  /** Advisory repository intelligence; it has no execution, verification, or completion authority. */
+  repoMaster?: RepoMaster;
   metrics: OrchestrationMetrics;
   executionRepository: SqliteExecutionRepository;
   executionScheduler: ExecutionScheduler;
@@ -146,6 +178,12 @@ export class SqliteRunRepository implements IRunRepository {
         `INSERT INTO task_runs (run_id, contract_id, strategy, state, aggregate_version, baseline_sha, repo_branch, created_at, created_ts)
          VALUES (?, ?, ?, ?, 1, ?, ?, datetime('now'), strftime('%s','now'))`,
       ).run(run.id, contractId, run.runType, mapRunStatusToTaskRunState(run.status), "0000000000000000000000000000000000000000", "main");
+      if (run.correlationId) {
+        this.db.query(
+          `INSERT INTO execution_metadata (id, run_id, key, value, created_at)
+           VALUES (?, ?, ?, ?, datetime('now'))`
+        ).run("run_correlation:" + run.correlationId, run.id, "run_correlation:" + run.correlationId, run.id);
+      }
       return run;
     });
   }
@@ -156,6 +194,11 @@ export class SqliteRunRepository implements IRunRepository {
     return this.tx.write(() => {
       if (input.status !== undefined) {
         const persistedState = mapRunStatusToTaskRunState(input.status);
+        if (persistedState === "completed") {
+          throw OrchestrationError.fromCode(ErrorCodes.COMPLETION_POLICY_REQUIRED, {
+            message: "Only CompletionPolicy may transition a Run to completed.",
+          });
+        }
         this.db.query(
           "UPDATE task_runs SET state = ?, aggregate_version = aggregate_version + 1 WHERE run_id = ?",
         ).run(persistedState, id);
@@ -184,11 +227,15 @@ export class SqliteRunRepository implements IRunRepository {
     if (!isValidPersistedPhase(row.state as string)) {
       throw new Error(`INVALID_PERSISTED_PHASE: "${row.state}" is not a valid persisted orchestration phase.`);
     }
+    const metaRow = this.db.query(
+      "SELECT key FROM execution_metadata WHERE run_id = ? AND key LIKE 'run_correlation:%' LIMIT 1"
+    ).get(id) as { key: string } | undefined;
+    const correlationId = metaRow ? metaRow.key.slice("run_correlation:".length) : (row.run_id as string);
     return {
       id: row.run_id as string,
       status: mapTaskRunStateToRunStatus(row.state as string),
       runType: (row.strategy as string) ?? "simple",
-      correlationId: row.run_id as string,
+      correlationId,
       contractId: row.contract_id as string,
       aggregateId: row.run_id as string,
       createdAt: (row.created_at as string) ?? new Date().toISOString(),
@@ -196,6 +243,23 @@ export class SqliteRunRepository implements IRunRepository {
       startedAt: (row.started_at as string) ?? undefined,
       completedAt: (row.completed_at as string) ?? undefined,
     };
+  }
+
+  async findByCorrelationId(correlationId: string): Promise<Run | null> {
+    const metaRow = this.db.query(
+      "SELECT run_id FROM execution_metadata WHERE key = ? LIMIT 1"
+    ).get("run_correlation:" + correlationId) as { run_id: string } | undefined;
+    if (metaRow?.run_id) {
+      return this.findById(metaRow.run_id);
+    }
+    const eventRow = this.db.query(
+      "SELECT aggregate_id FROM events WHERE correlation_id = ? ORDER BY global_sequence ASC LIMIT 1"
+    ).get(correlationId) as { aggregate_id: string } | undefined;
+    if (eventRow?.aggregate_id) {
+      return this.findById(eventRow.aggregate_id);
+    }
+    // Fallback: check if correlationId matches a run_id directly
+    return this.findById(correlationId);
   }
 
   async findMany(filter: RunFilter, pagination: PagePaginationRequest): Promise<PaginatedResult<Run>> {
@@ -480,12 +544,105 @@ class SqliteVerificationRepo implements IVerificationRepository {
     private readonly tx: TransactionManager,
   ) {}
 
+  private toVerification(row: Record<string, unknown>): VerificationResult {
+    const isLiveAuthority = row.state_version !== null && row.state_version !== undefined
+      || row.verification_type === "live_orchestration";
+    const parseJsonArray = (value: unknown, field: string): string[] => {
+      if (typeof value !== "string" || value.length === 0) {
+        if (isLiveAuthority) throw new Error(`CORRUPT_LIVE_VERIFICATION_ROW:${field}`);
+        return [];
+      }
+      try {
+        const parsed: unknown = JSON.parse(value);
+        if (!Array.isArray(parsed) || parsed.some(item => typeof item !== "string" || item.length === 0)) {
+          if (isLiveAuthority) throw new Error(`CORRUPT_LIVE_VERIFICATION_ROW:${field}`);
+          return [];
+        }
+        return [...new Set(parsed)].sort();
+      } catch (error) {
+        if (isLiveAuthority) {
+          if (error instanceof Error && error.message.startsWith("CORRUPT_LIVE_VERIFICATION_ROW:")) throw error;
+          throw new Error(`CORRUPT_LIVE_VERIFICATION_ROW:${field}`);
+        }
+        return [];
+      }
+    };
+
+    const status = row.status;
+    const stateVersion = row.state_version;
+    const stateFingerprint = row.state_fingerprint;
+    const targetSha = row.target_sha;
+    if (isLiveAuthority) {
+      if (typeof status !== "string" || !["pending", "in_progress", "passed", "failed", "skipped", "error"].includes(status)) {
+        throw new Error("CORRUPT_LIVE_VERIFICATION_ROW:status");
+      }
+      if (!Number.isSafeInteger(stateVersion) || (stateVersion as number) < 1) {
+        throw new Error("CORRUPT_LIVE_VERIFICATION_ROW:state_version");
+      }
+      if (typeof stateFingerprint !== "string" || !/^[a-f0-9]{32}$/i.test(stateFingerprint)) {
+        throw new Error("CORRUPT_LIVE_VERIFICATION_ROW:state_fingerprint");
+      }
+      if (typeof targetSha !== "string" || !/^[a-f0-9]{40}$/i.test(targetSha)) {
+        throw new Error("CORRUPT_LIVE_VERIFICATION_ROW:target_sha");
+      }
+      if (row.is_stale !== 0 && row.is_stale !== 1) {
+        throw new Error("CORRUPT_LIVE_VERIFICATION_ROW:is_stale");
+      }
+    }
+
+    return {
+      id: row.id as string,
+      runId: row.run_id as string,
+      assignmentId: (row.assignment_id as string | null) ?? undefined,
+      checkType: row.verification_type as string,
+      status: status as VerificationResult["status"],
+      correlationId: (row.correlation_id as string | null) ?? row.run_id as string,
+      causationId: (row.causation_id as string | null) ?? undefined,
+      result: (row.output_summary as string | null) ?? undefined,
+      error: (row.error_output as string | null) ?? undefined,
+      evidenceIds: parseJsonArray(row.evidence_json, "evidence_json"),
+      failureReasons: parseJsonArray(row.failure_reasons, "failure_reasons"),
+      stateVersion: (stateVersion as number | null) ?? undefined,
+      stateFingerprint: (stateFingerprint as string | null) ?? undefined,
+      targetSha: targetSha as string,
+      isStale: row.is_stale === 1,
+      createdAt: row.started_at as string,
+      updatedAt: (row.updated_at as string | null) ?? (row.completed_at as string | null) ?? row.started_at as string,
+    };
+  }
+
   async create(v: VerificationResult): Promise<VerificationResult> {
     return this.tx.write(() => {
       this.db.query(
-        "INSERT INTO verification_results (id, run_id, verification_type, status, target_sha, started_at) VALUES (?, ?, ?, ?, ?, datetime('now'))",
-      ).run(v.id, v.runId, v.checkType ?? "unknown", v.status ?? "pending", (v as any).targetSha ?? "0000000000000000000000000000000000000000");
-      return v;
+        `INSERT OR IGNORE INTO verification_results (
+          id, run_id, verification_type, status, target_sha, output_summary, error_output,
+          is_stale, started_at, state_version, state_fingerprint, evidence_json,
+          failure_reasons, correlation_id, causation_id, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, ?, datetime('now'))`,
+      ).run(
+        v.id,
+        v.runId,
+        v.checkType ?? "unknown",
+        v.status ?? "pending",
+        v.targetSha ?? "0000000000000000000000000000000000000000",
+        v.result ?? null,
+        v.error ?? null,
+        v.isStale ? 1 : 0,
+        v.stateVersion ?? null,
+        v.stateFingerprint ?? null,
+        JSON.stringify(v.evidenceIds ?? []),
+        JSON.stringify(v.failureReasons ?? []),
+        v.correlationId,
+        v.causationId ?? null,
+      );
+
+      const row = v.stateVersion !== undefined
+        ? this.db.query(
+          "SELECT * FROM verification_results WHERE run_id = ? AND state_version = ? AND state_fingerprint = ? AND verification_type = ?",
+        ).get(v.runId, v.stateVersion, v.stateFingerprint ?? "", v.checkType) as Record<string, unknown> | undefined
+        : this.db.query("SELECT * FROM verification_results WHERE id = ?").get(v.id) as Record<string, unknown> | undefined;
+      if (!row) throw new Error(`Verification persistence failed for ${v.id}`);
+      return this.toVerification(row);
     });
   }
 
@@ -494,8 +651,7 @@ class SqliteVerificationRepo implements IVerificationRepository {
     if (!existing) return null;
     return this.tx.write(() => {
       const sets: string[] = [];
-      const values: (string | number)[] = [];
-      // Map input fields to verification_results columns
+      const values: (string | number | null)[] = [];
       if (input.status !== undefined) {
         sets.push("status = ?");
         values.push(input.status);
@@ -508,49 +664,52 @@ class SqliteVerificationRepo implements IVerificationRepository {
         sets.push("error_output = ?");
         values.push(input.error);
       }
-      // completed_at and duration_ms would be set when status moves to terminal
-      if (sets.length === 0) {
-        // No fields to update, return existing as-is
-        return existing;
+      if (input.evidenceIds !== undefined) {
+        sets.push("evidence_json = ?");
+        values.push(JSON.stringify(input.evidenceIds));
       }
-      // Add completed_at when moving to terminal status
-      if (input.status === 'passed' || input.status === 'failed' || input.status === 'skipped') {
+      if (input.failureReasons !== undefined) {
+        sets.push("failure_reasons = ?");
+        values.push(JSON.stringify(input.failureReasons));
+      }
+      if (input.isStale !== undefined) {
+        sets.push("is_stale = ?");
+        values.push(input.isStale ? 1 : 0);
+      }
+      if (input.stateFingerprint !== undefined) {
+        sets.push("state_fingerprint = ?");
+        values.push(input.stateFingerprint);
+      }
+      if (input.targetSha !== undefined) {
+        sets.push("target_sha = ?");
+        values.push(input.targetSha);
+      }
+      if (sets.length === 0) return existing;
+      if (input.status === "passed" || input.status === "failed" || input.status === "skipped") {
         sets.push("completed_at = datetime('now')");
       }
+      sets.push("updated_at = datetime('now')");
       values.push(id);
-      const sql = `UPDATE verification_results SET ${sets.join(", ")} WHERE id = ?`;
-      const result = this.db.query(sql).run(...values);
-      if (result.changes === 0) {
-        // Verification result no longer exists after update attempt
-        return null;
-      }
-      // Re-read the durable row
+      const result = this.db.query(`UPDATE verification_results SET ${sets.join(", ")} WHERE id = ?`).run(...values);
+      if (result.changes === 0) return null;
       const row = this.db.query("SELECT * FROM verification_results WHERE id = ?").get(id) as Record<string, unknown> | undefined;
-      if (!row) return null;
-      return {
-        id: row.id as string,
-        runId: row.run_id as string,
-        status: row.status as VerificationResult["status"],
-        checkType: row.verification_type as string,
-        correlationId: row.run_id as string,
-        createdAt: row.started_at as string,
-        updatedAt: row.completed_at as string ?? row.started_at as string,
-      };
+      return row ? this.toVerification(row) : null;
     });
   }
 
   async findById(id: string): Promise<VerificationResult | null> {
     const row = this.db.query("SELECT * FROM verification_results WHERE id = ?").get(id) as Record<string, unknown> | undefined;
-    if (!row) return null;
-    return { id: row.id as string, runId: row.run_id as string, status: row.status as VerificationResult["status"], checkType: row.verification_type as string, correlationId: row.run_id as string, createdAt: row.started_at as string, updatedAt: row.started_at as string };
+    return row ? this.toVerification(row) : null;
   }
 
-  async findMany(_filter: Partial<VerificationResult>, pagination: PagePaginationRequest): Promise<PaginatedResult<VerificationResult>> {
+  async findMany(filter: Partial<VerificationResult>, pagination: PagePaginationRequest): Promise<PaginatedResult<VerificationResult>> {
     const limit = pagination.limit ?? 20;
     const offset = ((pagination.page ?? 1) - 1) * limit;
-    const countRow = this.db.query("SELECT COUNT(*) AS c FROM verification_results").get() as { c: number };
-    const rows = this.db.query("SELECT * FROM verification_results ORDER BY started_at DESC LIMIT ? OFFSET ?").all(limit, offset) as Record<string, unknown>[];
-    return { items: rows.map(r => ({ id: r.id, runId: r.run_id, status: r.status as VerificationResult["status"], checkType: r.verification_type, correlationId: r.run_id, createdAt: r.started_at }) as unknown as VerificationResult), total: countRow.c, page: pagination.page ?? 1, limit };
+    const where = filter.runId ? " WHERE run_id = ?" : "";
+    const args = filter.runId ? [filter.runId] : [];
+    const countRow = this.db.query(`SELECT COUNT(*) AS c FROM verification_results${where}`).get(...args) as { c: number };
+    const rows = this.db.query(`SELECT * FROM verification_results${where} ORDER BY started_at DESC LIMIT ? OFFSET ?`).all(...args, limit, offset) as Record<string, unknown>[];
+    return { items: rows.map(row => this.toVerification(row)), total: countRow.c, page: pagination.page ?? 1, limit };
   }
 
   async count(): Promise<number> {
@@ -560,7 +719,14 @@ class SqliteVerificationRepo implements IVerificationRepository {
 
   async findByRunId(runId: string): Promise<VerificationResult[]> {
     const rows = this.db.query("SELECT * FROM verification_results WHERE run_id = ? ORDER BY started_at DESC").all(runId) as Record<string, unknown>[];
-    return rows.map(r => ({ id: r.id, runId: r.run_id, status: r.status as VerificationResult["status"], checkType: r.verification_type, correlationId: r.run_id, createdAt: r.started_at }) as unknown as VerificationResult);
+    return rows.map(row => this.toVerification(row));
+  }
+
+  async findByLiveIdentity(runId: string, stateVersion: number, stateFingerprint: string, checkType: string): Promise<VerificationResult | null> {
+    const row = this.db.query(
+      "SELECT * FROM verification_results WHERE run_id = ? AND state_version = ? AND state_fingerprint = ? AND verification_type = ?",
+    ).get(runId, stateVersion, stateFingerprint, checkType) as Record<string, unknown> | undefined;
+    return row ? this.toVerification(row) : null;
   }
 }
 
@@ -625,7 +791,7 @@ function safeParseJSON(raw: string): Record<string, unknown> {
 
 // ── Production composition factory ─────────────────────────────────────
 
-export function createProductionOrchestrationRuntime(db: Database, options: { repositoryPath?: string; worktreeRoot?: string; routingMode?: () => string; budgetState?: () => Record<string, unknown>; fdxHealth?: () => Record<string, unknown>; agentExecutor?: IsolatedWorkstreamExecutor; faultHook?: CommandFaultHook } = {}): ProductionOrchestrationRuntime {
+export function createProductionOrchestrationRuntime(db: Database, options: { repositoryPath?: string; worktreeRoot?: string; routingMode?: () => string; budgetState?: () => Record<string, unknown>; fdxHealth?: () => Record<string, unknown>; agentExecutor?: IsolatedWorkstreamExecutor; faultHook?: CommandFaultHook; repoMaster?: RepoMaster } = {}): ProductionOrchestrationRuntime {
   const executionRegistry = new ExecutionRegistry();
   const unitOfWork = new SqliteUnitOfWork(db);
   const txManager = createTransactionManager(db);
@@ -651,7 +817,10 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
   const sessionRepo = new SqliteSessionRepository(db, txManager);
   const contextItemRepo = new SqliteContextItemRepository(db, txManager);
   const consumerOffsetRepo = new SqliteConsumerOffsetRepository(db, txManager);
+  const sessionTurnRepo = new SessionTurnRepository(db, txManager);
   const routingDecisionRepository = new SqliteRoutingDecisionRepository(db, txManager);
+  const routingRevisionService = new RoutingRevisionService(routingDecisionRepository);
+  const repoMaster = options.repoMaster ?? new RepoMaster(options.repositoryPath ?? process.cwd());
   const metrics = new OrchestrationMetrics();
   const executionRepository = new SqliteExecutionRepository(db, txManager, metrics);
   executionRepository.reconcileIntegratedAttempts();
@@ -681,9 +850,41 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
 
   const transactionalRunWriter = new SqliteTransactionalRunWriter();
 
-  const runService = new RunService(runRepo, eventBus, executionRegistry, unitOfWork, transactionalRunWriter, db);
-  const contractService = new ContractService(contractRepo, eventBus);
   const assignmentService = new AssignmentService(assignmentRepo, eventBus);
+  const nativeChildRepo = new SqliteNativeChildExecutionRepository(db, txManager);
+  const childExecutionLifecycleService = new ChildExecutionLifecycleService(db, assignmentService, sessionRepo, executionRegistry, eventBus, nativeChildRepo, txManager);
+  const progressObservationService = new ProgressObservationService(db);
+  const taskRunsRepo = new TaskRunsRepository(db, txManager);
+  const deferredReplacementRepo = new SqliteDeferredReplacementRepository(db);
+  const orchestrationSnapshotService = new OrchestrationSnapshotService(
+    db,
+    taskRunsRepo,
+    routingDecisionRepository,
+    assignmentRepo,
+    nativeChildRepo,
+    progressObservationService,
+    sessionRepo,
+    repoMaster
+  );
+  const transitionEngine = new RunTransitionEngine(
+    db,
+    taskRunsRepo,
+    assignmentRepo,
+    nativeChildRepo,
+    progressObservationService,
+    orchestrationSnapshotService,
+    txManager
+  );
+  const completionPolicy = new CompletionPolicy(db, txManager, orchestrationSnapshotService, transitionEngine);
+  transitionEngine.bindCompletionPolicy(completionPolicy);
+  const continuationPolicy = new ContinuationPolicy();
+  const continuationDispatcher = new ContinuationDispatcher(db);
+  // Reconcile restart-surviving pending continuation dispatches into outcome_unknown
+  continuationDispatcher.reconcilePendingDispatches();
+  const runService = new RunService(runRepo, eventBus, executionRegistry, unitOfWork, transactionalRunWriter, db, childExecutionLifecycleService);
+  // Reconcile restart-surviving deferred replacements
+  deferredReplacementRepo.reconcileAfterRestart();
+  const contractService = new ContractService(contractRepo, eventBus);
   const assignmentBindingCoordinator = new AssignmentBindingCoordinator({ assignmentService, bindingRepo: assignmentBindingRepo });
   const verificationService = new VerificationService(verificationRepo, eventBus);
   const completionService = new CompletionService(completionRepo, eventBus);
@@ -707,13 +908,20 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
     performanceProjection: new PerformanceProjection(performanceRepository),
     snapshotService,
     runRepo,
+    childExecutionLifecycleService,
+    progressObservationService,
+    orchestrationSnapshotService,
+    transitionEngine,
+    completionPolicy,
+    continuationPolicy,
+    continuationDispatcher,
   };
 
   const router = createRouterWithControllers(services);
   const commands = createCoreCommandRuntime(db, txManager, {
     db, executionRegistry, unitOfWork, eventBus, deliverySink, outboxWorker,
-    sessionRepo, contextItemRepo, consumerOffsetRepo, services, router,
-    routingDecisionRepository, metrics, executionRepository, executionScheduler,
+    sessionRepo, contextItemRepo, consumerOffsetRepo, sessionTurnRepo, taskRunsRepo, deferredReplacementRepo, services, router,
+    routingDecisionRepository, routingRevisionService, childExecutionLifecycleService, progressObservationService, orchestrationSnapshotService, transitionEngine, completionPolicy, continuationPolicy, continuationDispatcher, metrics, executionRepository, executionScheduler,
     worktreeExecutionService, performanceRepository, authoritativeRouting,
     worktreeManager, integrationService, agentExecutor: options.agentExecutor,
     assignmentBindingCoordinator, faultHook: options.faultHook,
@@ -729,9 +937,21 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
     sessionRepo,
     contextItemRepo,
     consumerOffsetRepo,
+    sessionTurnRepo,
+    taskRunsRepo,
+    deferredReplacementRepo,
     services,
     router,
     routingDecisionRepository,
+    routingRevisionService,
+    repoMaster,
+    childExecutionLifecycleService,
+    progressObservationService,
+    orchestrationSnapshotService,
+    transitionEngine,
+    completionPolicy,
+    continuationPolicy,
+    continuationDispatcher,
     metrics,
     executionRepository,
     executionScheduler,

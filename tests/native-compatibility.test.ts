@@ -1,4 +1,7 @@
 import { expect, describe, it } from "bun:test"
+import { mkdtempSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import plugin from "../src/index"
 
 describe("OpenCode Native Compatibility", () => {
@@ -9,7 +12,7 @@ describe("OpenCode Native Compatibility", () => {
 
   it("does not register duplicate tool loops or custom shells", async () => {
     const hooks = await plugin.server({
-      directory: "/tmp",
+      directory: mkdtempSync(join(tmpdir(), "native-compat-")),
       project: {} as any,
       worktree: "test" as any,
       serverUrl: {} as any,
@@ -26,7 +29,7 @@ describe("OpenCode Native Compatibility", () => {
 
   it("delegates approval dynamically via permission hook and respects globalAlwaysApprove", async () => {
     const hooks = await plugin.server({
-      directory: "/tmp",
+      directory: mkdtempSync(join(tmpdir(), "native-compat-")),
       project: {} as any,
       worktree: "test" as any,
       serverUrl: {} as any,

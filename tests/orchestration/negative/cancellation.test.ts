@@ -15,6 +15,12 @@ class InMemoryRunRepo implements IRunRepository {
   async create(run: Run): Promise<Run> { this.runs.set(run.id, { ...run, updatedAt: new Date().toISOString() }); return run; }
 
   async findById(id: string): Promise<Run | null> { return this.runs.get(id) ?? null; }
+  async findByCorrelationId(correlationId: string): Promise<Run | null> {
+    for (const run of this.runs.values()) {
+      if (run.correlationId === correlationId) return run;
+    }
+    return null;
+  }
 
   async update(id: string, input: UpdateRunInput): Promise<Run | null> {
     const existing = this.runs.get(id);

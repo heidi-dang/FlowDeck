@@ -1,14 +1,11 @@
 /**
- * HeidiRouteState — per-session, per-user-turn route decision registry.
+ * HeidiRouteState — per-session, per-user-turn route decision projection / cache.
  *
- * Keyed by sessionID. Stores the latest route decision produced by
- * HeidiFastRouter for a genuine manual user turn. Internal continuation /
- * recovery prompts NEVER reclassify — they must not reset the route. Resuming
- * an unresolved task preserves the existing decision and task state.
+ * Keyed by sessionID. Serves as an ephemeral in-memory cache over the authoritative
+ * SQLite orchestration state.
  */
 
 import type { RouterDecision } from "./heidi-fast-router"
-import { getTaskState, type HeidiTaskStateData } from "./heidi-task-state"
 
 export interface SessionRouteState {
   sessionID: string
@@ -21,6 +18,7 @@ export interface SessionRouteState {
   /** Number of internal continuation prompts observed since the last manual user turn. */
   continuationCount: number
   resumed: boolean
+  active: boolean
 }
 
 const _registry = new Map<string, SessionRouteState>()
@@ -44,6 +42,7 @@ export function setRouteDecision(
     lastActivityAt: now,
     continuationCount: 0,
     resumed: false,
+    active: true,
   }
   _registry.set(sessionID, entry)
   return entry
@@ -66,28 +65,43 @@ export function noteInternalContinuation(sessionID: string): void {
 }
 
 /**
- * Decide whether a manual user message is a continuation of the existing
- * unresolved task (preserve state) or a genuinely new task (reclassify).
- *
- * Preserves when: an active task state exists for the same session, its phase
- * is not complete, and the new message hash differs from the most recent one
- * (i.e. a real follow-up rather than a duplicate replay).
+ * Decide whether a manual user message is an exact duplicate or replay.
  */
-export function shouldPreserveRoute(
-  sessionID: string,
-  messageHash: string,
-): { preserve: boolean; taskId?: string; state?: HeidiTaskStateData } {
+export function isDuplicateMessage(sessionID: string, messageHash: string): boolean {
   const entry = _registry.get(sessionID)
-  if (!entry) return { preserve: false }
-  if (entry.lastUserMessageHash === messageHash) {
-    // Duplicate of the exact message we already classified — never reclassify.
-    return { preserve: true, taskId: entry.taskId }
+  if (!entry) return false
+  return entry.lastUserMessageHash === messageHash
+}
+
+/**
+ * Ephemeral cache query helper:
+ * Returns true if in-memory cache has an active route for the session.
+ */
+export function shouldPreserveRoute(sessionID: string, messageHash: string): {
+  preserve: boolean
+  reason?: string
+} {
+  const entry = _registry.get(sessionID)
+  if (!entry || !entry.active) {
+    return { preserve: false, reason: "NO_ACTIVE_ROUTE" }
   }
-  const state = getTaskState(entry.taskId)
-  if (!state) return { preserve: false }
-  const snap = state.snapshot()
-  if (snap.currentPhase === "complete") return { preserve: false }
-  return { preserve: true, taskId: entry.taskId, state: snap }
+
+  // FAST_DIRECT is turn-scoped and never preserved for different messages
+  if (entry.decision.executionClass === "FAST_DIRECT" && entry.lastUserMessageHash !== messageHash) {
+    return { preserve: false, reason: "FAST_DIRECT_TURN_COMPLETE" }
+  }
+
+  if (entry.lastUserMessageHash === messageHash) {
+    return { preserve: true, reason: "EXACT_MESSAGE_REPLAY" }
+  }
+
+  return { preserve: true, reason: "ACTIVE_ROUTE_IN_MEMORY" }
+}
+
+/** Mark a session route as inactive / completed. */
+export function markRouteInactive(sessionID: string): void {
+  const entry = _registry.get(sessionID)
+  if (entry) entry.active = false
 }
 
 /** Touch activity timestamp (keeps long sessions from being treated as stale). */

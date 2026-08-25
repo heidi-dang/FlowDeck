@@ -62,18 +62,20 @@ export class AssignmentService {
 
     if (input.status && input.status !== existing.status) {
       const eventType = this.getStatusEvent(input.status);
-      await this.eventBus.publish(createEvent(
-        eventType,
-        {
-          correlationId: existing.correlationId,
-          causationId: existing.correlationId,
-          aggregateId: id,
-          runId: existing.runId,
-          assignmentId: id,
-          agentId: existing.agentId,
-          data: { previousStatus: existing.status, newStatus: input.status },
-        },
-      ));
+      if (eventType) {
+        await this.eventBus.publish(createEvent(
+          eventType,
+          {
+            correlationId: existing.correlationId,
+            causationId: existing.correlationId,
+            aggregateId: id,
+            runId: existing.runId,
+            assignmentId: id,
+            agentId: existing.agentId,
+            data: { previousStatus: existing.status, newStatus: input.status },
+          },
+        ));
+      }
     }
 
     return updated;
@@ -110,7 +112,7 @@ export class AssignmentService {
   }
 
   /** Exhaustive status → event mapping. Adding a new AssignmentStatus triggers a compile error. */
-  private getStatusEvent(status: string): string {
+  private getStatusEvent(status: string): string | null {
     switch (status) {
       case AssignmentStatus.ASSIGNED: return OrchestrationEventType.ASSIGNMENT_ASSIGNED;
       case AssignmentStatus.IN_PROGRESS: return OrchestrationEventType.ASSIGNMENT_STARTED;
@@ -119,6 +121,7 @@ export class AssignmentService {
       case AssignmentStatus.CANCELLED: return OrchestrationEventType.ASSIGNMENT_CANCELLED;
       case AssignmentStatus.PENDING:
       case AssignmentStatus.SKIPPED:
+        return null;
       default:
         return assertNever(status as unknown as never, `Unhandled assignment status event mapping: ${status}`);
     }

@@ -118,5 +118,5 @@ if (secondFixResult.appliedFixes.length > 2) throw new Error("second appliedFixe
         rmSync(customStateDir, { recursive: true, force: true })
       } catch {}
     }
-  })
+  }, 15000)
 })

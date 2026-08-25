@@ -672,6 +672,34 @@ export async function runDoctorChecks(directory) {
     checks.push({ id: "fs.readable", name: "Workspace Readable", status: "fail", message: `Not readable: ${directory}`, remediation: "Check permissions" })
   }
 
+  // ── 26. Live orchestration completion authority ─────────────────────────
+  // This verifies the source-level authority chain that is subsequently
+  // exercised by the qualification suite: policy implementation, bound engine
+  // capability, V15 review persistence, runtime invocation, and operator docs.
+  const completionPolicySource = tryRead(join(directory, "src", "orchestration", "services", "completion-policy.ts"))
+  const transitionSource = tryRead(join(directory, "src", "orchestration", "services", "transition-engine.ts"))
+  const compositionSource = tryRead(join(directory, "src", "orchestration", "composition.ts"))
+  const runtimeSource = tryRead(join(directory, "src", "runtime", "flowdeck-opencode-adapter.ts"))
+  const migrationRegistrySource = tryRead(join(directory, "src", "orchestration", "persistence", "migrations", "migration-registry.ts"))
+  const operationsGuide = join(directory, "docs", "v2", "live-orchestration-runtime.md")
+  const completionAuthorityOk = Boolean(
+    completionPolicySource?.includes("evaluateAndComplete")
+    && transitionSource?.includes("completionPolicy !== this.completionPolicyAuthority")
+    && compositionSource?.includes("transitionEngine.bindCompletionPolicy(completionPolicy)")
+    && runtimeSource?.includes("completionPolicy.evaluateAndComplete")
+    && migrationRegistrySource?.includes("version: 15")
+    && existsSync(operationsGuide)
+  )
+  checks.push({
+    id: "runtime.completion.authority",
+    name: "Live Completion Authority",
+    status: completionAuthorityOk ? "pass" : "fail",
+    message: completionAuthorityOk
+      ? "CompletionPolicy, bound transition capability, V15 review ledger, runtime invocation, and operations guide are present"
+      : "Live completion authority wiring is incomplete",
+    remediation: completionAuthorityOk ? undefined : "Restore CompletionPolicy wiring, V15 migration registration, and docs/v2/live-orchestration-runtime.md",
+  })
+
   // ── Tally ──────────────────────────────────────────────────────────────
   const passed = checks.filter(c => c.status === "pass").length
   const warned = checks.filter(c => c.status === "warn").length

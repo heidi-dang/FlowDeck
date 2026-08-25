@@ -84,14 +84,19 @@ describe("HeidiFastRouter — Milestone B", () => {
   })
 
   // DEEP classification
-  it("classifies architecture migration as DEEP", () => {
-    const d = classifyTask("full architecture migration from Express to Fastify")
+  it("classifies architecture migration as DEEP with bounded multi-specialist execution", () => {
+    const d = classifyTask("Migrate the entire application architecture from REST to GraphQL")
     expect(d.executionClass).toBe("DEEP")
+    expect(d.executionMode).toBe("MULTI_SPECIALIST")
+    expect(d.specialists).toEqual(["ARCHITECTURE", "REVIEW"])
+    expect(d.reasonCode).toBe("MULTI_DEEP_MIGRATION")
   })
 
   it("classifies breaking API redesign as DEEP", () => {
     const d = classifyTask("breaking API redesign for the v3 major release")
     expect(d.executionClass).toBe("DEEP")
+    expect(d.executionMode).toBe("MULTI_SPECIALIST")
+    expect(d.specialists).toEqual(["ARCHITECTURE", "REVIEW"])
   })
 
   // STANDARD classification
@@ -144,5 +149,44 @@ describe("HeidiFastRouter — Milestone B", () => {
       expect(typeof d.reason).toBe("string")
       expect(d.reason.length).toBeGreaterThan(0)
     }
+  })
+
+  it("keeps a long but bounded version question DIRECT", () => {
+    const d = classifyTask("Please carefully read package.json and tell me what PostgreSQL version is configured. The surrounding release context is informational only and does not request changes, delegation, or investigation.")
+    expect(d.executionClass).toBe("FAST_DIRECT")
+    expect(d.executionMode).toBe("DIRECT")
+    expect(d.reasonCode).toBe("DIRECT_SCOPED_QUERY")
+  })
+
+  it("escalates a short cross-domain authentication race to MULTI_SPECIALIST", () => {
+    const d = classifyTask("Fix auth race across API DB UI.")
+    expect(d.executionClass).toBe("PARALLEL_SPECIALISTS")
+    expect(d.executionMode).toBe("MULTI_SPECIALIST")
+    expect(d.specialists).toContain("DEBUG")
+    expect(d.specialists).toContain("UI")
+    expect(d.specialists).toContain("BACKEND")
+  })
+
+  it("respects an explicit direct-execution request", () => {
+    const d = classifyTask("Do this yourself: investigate the failing test.")
+    expect(d.executionClass).toBe("FAST_DIRECT")
+    expect(d.executionMode).toBe("DIRECT")
+    expect(d.reasonCode).toBe("USER_REQUESTED_DIRECT")
+    expect(d.forcedByExplicitSignal).toBe(true)
+  })
+
+  it("respects an explicit single-specialist request", () => {
+    const d = classifyTask("Delegate this security audit to a specialist.")
+    expect(d.executionClass).toBe("SPECIALIST")
+    expect(d.executionMode).toBe("SINGLE_SPECIALIST")
+    expect(d.specialists).toEqual(["SECURITY"])
+    expect(d.reasonCode).toBe("USER_REQUESTED_SPECIALIST")
+  })
+
+  it("respects an explicit bounded multi-specialist request", () => {
+    const d = classifyTask("Use multiple agents for the frontend and backend changes.")
+    expect(d.executionClass).toBe("PARALLEL_SPECIALISTS")
+    expect(d.executionMode).toBe("MULTI_SPECIALIST")
+    expect(d.reasonCode).toBe("USER_REQUESTED_MULTI_SPECIALIST")
   })
 })

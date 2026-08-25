@@ -1,0 +1,34 @@
+{
+  "stage": "HEIDI_ORCHESTRATOR_MATURITY_AND_DYNAMIC_SPECIALIST_RUNTIME",
+  "functionalSha": "767c71b8c7e0563b076a76858a09369ab82b5140",
+  "qualifiedAt": "2026-08-25T00:38:16Z",
+  "sourceCleanBeforeAndAfter": true,
+  "qualification": {
+    "direct": "PASS — production fast-direct path creates zero specialist specs and zero native child registrations",
+    "singleSpecialist": "PASS — persisted plan dispatches exactly one native Task and records its durable specialist identity",
+    "multiSpecialist": "PASS — independent ready specs batch into one bounded native parent-session instruction",
+    "fanoutAndDeduplication": "PASS — deterministic planner deduplicates candidates and enforces configurable bound",
+    "dependencyOrder": "PASS — deep architecture migration persists architecture -> review dependency and production dispatch waits for completion",
+    "restart": "PASS — persisted plan rehydrates with no second native team dispatch",
+    "cancelReplaceModify": "PASS — existing production lifecycle suite preserves cancellation, deferred replacement, and reclassification barriers",
+    "globalModelInheritance": "PASS — all specs use modelPolicy=inherit and forged model/tool changes fail closed",
+    "strategyExhaustionVerificationCompletion": "PASS — existing production wiring and completion/verification suites remain green; no specialist receives terminal authority",
+    "fdxForcedColour": "PASS — native FDX test_diff passes with inherited color.ui=always",
+    "migrationIntegrity": "PASS — frozen V1–V14 manifest unchanged and no migration source changed"
+  },
+  "gates": {
+    "adaptiveProduction": "PASS",
+    "completionAuthority": "PASS",
+    "forcedColourFdx": "PASS",
+    "migrationManifest": "PASS"
+  },
+  "performance": {  "version": 1,  "candidateSha": "767c71b8c7e0563b076a76858a09369ab82b5140",  "generatedAt": "2026-08-25T00:38:16.515Z",  "iterations": 500,  "warmupIterations": 50,  "methodology": "In-process deterministic classifier and SpecialistSpec planner microbenchmark after warm-up; excludes OpenCode network/model latency and measures only FlowDeck orchestration overhead.",  "budgets": {    "directRoutingP95Ms": 5,    "singleSpecialistSetupP95Ms": 10,    "multiSpecialistSetupP95Ms": 10  },  "results": {    "directRouting": {      "count": 500,      "averageMs": 0.003590768000000033,      "p50Ms": 0.0023829999999982476,      "p95Ms": 0.00888800000000245,      "maxMs": 0.05327800000000238    },    "singleSpecialistSetup": {      "count": 500,      "averageMs": 0.016130246000000042,      "p50Ms": 0.0147270000000006,      "p95Ms": 0.027418999999994753,      "maxMs": 0.04936399999999708    },    "multiSpecialistSetup": {      "count": 500,      "averageMs": 0.02955732399999988,      "p50Ms": 0.022444999999997606,      "p95Ms": 0.03938399999999831,      "maxMs": 1.3656099999999967    }  },  "pass": true},
+  "fullRepositoryGates": {
+    "npmTest": "PASS — 2896 pass, 2 declared daemon-injection skips, 0 fail",
+    "coverage": "PASS — 84.56% >= 80%",
+    "doctorE2E": "PASS — 3 pass",
+    "schema": "PASS",
+    "normalFullPrePush": "PASS",
+    "forcedColourFullPrePush": "PASS"
+  }
+}

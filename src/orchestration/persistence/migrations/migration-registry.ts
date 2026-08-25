@@ -1,5 +1,6 @@
 /** Central migration registry. Every migration is registered here with its SQL and checksum. */
 
+import type { Database } from "bun:sqlite"
 import { computeChecksum } from "./migration-checksum"
 import { SCHEMA_V_0_2_6 } from "./schema-embed"
 import { MIGRATION_V2_REPLAY_SQL } from "./migration-v2-replay"
@@ -12,12 +13,29 @@ import { MIGRATION_V8_HEIDI_PERSISTENT_AGENT_SQL } from "./migration-v8-heidi-pe
 import { MIGRATION_V9_HEIDI_LEARNING_RUNTIME_SQL } from "./migration-v9-heidi-learning-runtime"
 import { MIGRATION_V10_HEIDI_RUNTIME_CLOSURE_SQL } from "./migration-v10-heidi-runtime-closure"
 import { MIGRATION_V11_HEIDI_PARALLEL_ENGINE_SQL } from "./migration-v11-heidi-parallel-engine"
+import { MIGRATION_V12_ORCHESTRATION_RUNTIME_INTEGRITY_SQL } from "./migration-v12-orchestration-runtime-integrity"
+import {
+  MIGRATION_V13_CONVERGENCE_INTEGRITY_SQL,
+  MIGRATION_V13_CONVERGENCE_INTEGRITY_CHECKSUM_SOURCE,
+  applyV13Migration,
+} from "./migration-v13-convergence-integrity"
+import {
+  MIGRATION_V14_LIVE_VERIFICATION_AUTHORITY_SQL,
+  MIGRATION_V14_LIVE_VERIFICATION_AUTHORITY_CHECKSUM_SOURCE,
+  applyV14Migration,
+} from "./migration-v14-live-verification-authority"
+import {
+  MIGRATION_V15_COMPLETION_POLICY_AUTHORITY_SQL,
+  MIGRATION_V15_COMPLETION_POLICY_AUTHORITY_CHECKSUM_SOURCE,
+  applyV15Migration,
+} from "./migration-v15-completion-policy-authority"
 
 export interface MigrationEntry {
   version: number
   name: string
   sql: string
   checksum: string
+  apply?: (db: Database) => void
 }
 
 export const MIGRATIONS: MigrationEntry[] = [
@@ -72,4 +90,8 @@ export const MIGRATIONS: MigrationEntry[] = [
   { version: 9, name: "heidi_learning_runtime_v2.0.0-alpha", sql: MIGRATION_V9_HEIDI_LEARNING_RUNTIME_SQL, checksum: computeChecksum(MIGRATION_V9_HEIDI_LEARNING_RUNTIME_SQL) },
   { version: 10, name: "heidi_runtime_closure_v2.0.0-alpha", sql: MIGRATION_V10_HEIDI_RUNTIME_CLOSURE_SQL, checksum: computeChecksum(MIGRATION_V10_HEIDI_RUNTIME_CLOSURE_SQL) },
   { version: 11, name: "heidi_parallel_engine_v2.0.0-alpha", sql: MIGRATION_V11_HEIDI_PARALLEL_ENGINE_SQL, checksum: computeChecksum(MIGRATION_V11_HEIDI_PARALLEL_ENGINE_SQL) },
+  { version: 12, name: "orchestration_runtime_integrity_v2.0.0-alpha", sql: MIGRATION_V12_ORCHESTRATION_RUNTIME_INTEGRITY_SQL, checksum: computeChecksum(MIGRATION_V12_ORCHESTRATION_RUNTIME_INTEGRITY_SQL) },
+  { version: 13, name: "convergence_integrity_v2.0.0-alpha", sql: MIGRATION_V13_CONVERGENCE_INTEGRITY_SQL, checksum: computeChecksum(MIGRATION_V13_CONVERGENCE_INTEGRITY_CHECKSUM_SOURCE), apply: applyV13Migration },
+  { version: 14, name: "live_verification_authority_v2.0.0-alpha", sql: MIGRATION_V14_LIVE_VERIFICATION_AUTHORITY_SQL, checksum: computeChecksum(MIGRATION_V14_LIVE_VERIFICATION_AUTHORITY_CHECKSUM_SOURCE), apply: applyV14Migration },
+  { version: 15, name: "completion_policy_authority_v2.0.0-alpha", sql: MIGRATION_V15_COMPLETION_POLICY_AUTHORITY_SQL, checksum: computeChecksum(MIGRATION_V15_COMPLETION_POLICY_AUTHORITY_CHECKSUM_SOURCE), apply: applyV15Migration },
 ]

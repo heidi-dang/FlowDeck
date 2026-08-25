@@ -41,6 +41,12 @@ export interface VerificationResult {
   evidence?: Evidence[];
   error?: string;
   metadata?: Record<string, unknown>;
+  /** Durable live-verification identity for the authoritative Run state. */
+  stateVersion?: number;
+  stateFingerprint?: string;
+  targetSha?: string;
+  isStale?: boolean;
+  failureReasons?: string[];
   createdAt: string;
   updatedAt: string;
 }

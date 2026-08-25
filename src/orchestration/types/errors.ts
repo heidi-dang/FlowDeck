@@ -45,6 +45,7 @@ export const ErrorCodes = {
   REPLAY_IN_PROGRESS: { code: "REPLAY_IN_PROGRESS", category: ErrorCategory.CONFLICT, httpStatus: 409, retryable: false },
   REPLAY_STREAM_INVALID: { code: "REPLAY_STREAM_INVALID", category: ErrorCategory.VALIDATION, httpStatus: 400, retryable: false },
   COMPLETION_DECISION_IMMUTABLE: { code: "COMPLETION_DECISION_IMMUTABLE", category: ErrorCategory.CONFLICT, httpStatus: 409, retryable: false },
+  COMPLETION_POLICY_REQUIRED: { code: "COMPLETION_POLICY_REQUIRED", category: ErrorCategory.CONFLICT, httpStatus: 409, retryable: false },
   VERIFICATION_RESULT_IMMUTABLE: { code: "VERIFICATION_RESULT_IMMUTABLE", category: ErrorCategory.CONFLICT, httpStatus: 409, retryable: false },
   RUN_STATUS_TRANSITION_INVALID: { code: "RUN_STATUS_TRANSITION_INVALID", category: ErrorCategory.CONFLICT, httpStatus: 409, retryable: false },
   ASSIGNMENT_RESULT_PERSISTENCE_NOT_CONFIGURED: { code: "ASSIGNMENT_RESULT_PERSISTENCE_NOT_CONFIGURED", category: ErrorCategory.INTERNAL, httpStatus: 501, retryable: false },

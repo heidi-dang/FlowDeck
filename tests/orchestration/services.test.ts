@@ -45,6 +45,12 @@ function createMockRunRepo(): IRunRepository {
       return updated;
     }),
     findById: vi.fn(async (id: string) => runs.get(id) ?? null),
+    findByCorrelationId: vi.fn(async (correlationId: string) => {
+      for (const run of runs.values()) {
+        if (run.correlationId === correlationId) return run;
+      }
+      return null;
+    }),
     findMany: vi.fn(async (_filter: any, _pagination: PagePaginationRequest): Promise<PaginatedResult<Run>> => {
       const items = Array.from(runs.values());
       return { items, total: items.length, page: 1, limit: 20 };
@@ -93,6 +99,11 @@ function createMockVerificationRepo(): IVerificationRepository {
     findMany: vi.fn(async (_filter: VerificationFilter, _pagination: PagePaginationRequest) => ({ items: Array.from(items.values()), total: items.size, page: 1, limit: 20 })),
     count: vi.fn(async () => items.size),
     findByRunId: vi.fn(async (runId: string) => Array.from(items.values()).filter((v: any) => v.runId === runId)),
+    findByLiveIdentity: vi.fn(async (runId: string, stateVersion: number, stateFingerprint: string, checkType: string) =>
+      Array.from(items.values()).find((v: any) =>
+        v.runId === runId && v.stateVersion === stateVersion && v.stateFingerprint === stateFingerprint && v.checkType === checkType,
+      ) ?? null,
+    ),
   };
 }
 

@@ -37,12 +37,37 @@ export class TaskRunsRepository extends BaseRepository {
   }
 
   updateState(runId: string, state: string, sha?: string): boolean {
+    if (state === "completed") {
+      throw new Error("COMPLETION_POLICY_REQUIRED: direct task-run completion is forbidden");
+    }
     return this.tx.write(() => {
       const r = sha
-        ? this.db.query("UPDATE task_runs SET state = ?, current_sha = ? WHERE run_id = ?").run(state, sha, runId)
-        : this.db.query("UPDATE task_runs SET state = ? WHERE run_id = ?").run(state, runId)
+        ? this.db.query("UPDATE task_runs SET state = ?, aggregate_version = aggregate_version + 1, current_sha = ? WHERE run_id = ?").run(state, sha, runId)
+        : this.db.query("UPDATE task_runs SET state = ?, aggregate_version = aggregate_version + 1 WHERE run_id = ?").run(state, runId)
       return r.changes > 0
     })
+  }
+
+  transitionPhaseCas(input: {
+    runId: string;
+    expectedPhase: string;
+    expectedAggregateVersion: number;
+    targetPhase: string;
+    sha?: string;
+  }): { success: boolean; newAggregateVersion?: number } {
+    return this.tx.write(() => {
+      const sql = input.sha
+        ? "UPDATE task_runs SET state = ?, aggregate_version = aggregate_version + 1, current_sha = ? WHERE run_id = ? AND state = ? AND aggregate_version = ?"
+        : "UPDATE task_runs SET state = ?, aggregate_version = aggregate_version + 1 WHERE run_id = ? AND state = ? AND aggregate_version = ?";
+      const params = input.sha
+        ? [input.targetPhase, input.sha, input.runId, input.expectedPhase, input.expectedAggregateVersion]
+        : [input.targetPhase, input.runId, input.expectedPhase, input.expectedAggregateVersion];
+      const r = this.db.query(sql).run(...params);
+      if (r.changes > 0) {
+        return { success: true, newAggregateVersion: input.expectedAggregateVersion + 1 };
+      }
+      return { success: false };
+    });
   }
 }
 

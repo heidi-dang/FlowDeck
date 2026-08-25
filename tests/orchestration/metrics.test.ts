@@ -101,6 +101,44 @@ describe("OrchestrationMetrics", () => {
     });
   });
 
+  describe("specialist orchestration metrics", () => {
+    it("records bounded execution-mode, specialist, and setup-latency observations", () => {
+      metrics.recordSpecialistPlan("DIRECT")
+      metrics.recordSpecialistPlan("SINGLE_SPECIALIST", { deduplicated: 2, fanoutBlocked: 1, setupLatencyMs: 12 })
+      metrics.recordSpecialistPlan("MULTI_SPECIALIST", { fanoutBlocked: 3, setupLatencyMs: 24, replanned: true })
+      metrics.recordSpecialistSpawn()
+      metrics.recordSpecialistFailure()
+
+      expect(metrics.directTaskCount.get()).toBe(1)
+      expect(metrics.singleSpecialistTaskCount.get()).toBe(1)
+      expect(metrics.multiSpecialistTaskCount.get()).toBe(1)
+      expect(metrics.specialistsSpawned.get()).toBe(1)
+      expect(metrics.specialistDeduped.get()).toBe(2)
+      expect(metrics.fanoutBlocked.get()).toBe(4)
+      expect(metrics.specialistFailures.get()).toBe(1)
+      expect(metrics.specialistReplans.get()).toBe(1)
+      expect(metrics.specialistSetupLatency.get()).toMatchObject({ count: 2, sum: 36, min: 12, max: 24, avg: 18 })
+      expect(() => metrics.assertBoundedCardinality()).not.toThrow()
+      expect(metrics.toPrometheusText()).toContain("specialists_spawned 1")
+    })
+  })
+
+  describe("Repo Master advisory metrics", () => {
+    it("records aggregate consultation outcomes without unbounded labels", () => {
+      metrics.recordRepoMasterConsultation({ cacheHit: false, refreshed: true, fresh: true, latencyMs: 12 })
+      metrics.recordRepoMasterConsultation({ cacheHit: true, refreshed: false, fresh: false, latencyMs: 8 })
+
+      expect(metrics.repoMasterConsultations.get()).toBe(2)
+      expect(metrics.repoMasterCacheHits.get()).toBe(1)
+      expect(metrics.repoMasterCacheMisses.get()).toBe(1)
+      expect(metrics.repoMasterRefreshes.get()).toBe(1)
+      expect(metrics.repoMasterStaleAdvice.get()).toBe(1)
+      expect(metrics.repoMasterConsultationLatency.get()).toMatchObject({ count: 2, sum: 20, min: 8, max: 12, avg: 10 })
+      expect(() => metrics.assertBoundedCardinality()).not.toThrow()
+      expect(metrics.toPrometheusText()).toContain("repo_master_consultations 2")
+    })
+  })
+
   describe("snapshot()", () => {
     it("should snapshot all metrics including counter, gauge, and histogram statistics", () => {
       metrics.commandsDispatched.inc(3);

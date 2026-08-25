@@ -12,6 +12,8 @@
     "dist",
     "tests",
     "src/doctor",
-    "src/orchestration/persistence/adapters/dev2-compatibility-check.ts"
+    "src/orchestration/persistence/adapters/dev2-compatibility-check.ts",
+    "src/**/__tests__/*",
+    "src/**/*.test.ts"
   ]
 }

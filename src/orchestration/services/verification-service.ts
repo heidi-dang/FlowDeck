@@ -1,9 +1,27 @@
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import type { VerificationResult, VerificationFilter } from "../types";
 import { VerificationStatus, OrchestrationError, ErrorCodes, OrchestrationEventType, assertNever } from "../types";
 import { createEvent } from "../types/events";
 import type { IVerificationRepository, IEventBus, PaginatedResult } from "./ports";
 import type { PagePaginationRequest } from "../types/pagination";
+
+export interface LiveVerificationRequest {
+  runId: string;
+  stateVersion: number;
+  stateFingerprint: string;
+  checkType: string;
+  correlationId: string;
+  causationId?: string;
+  targetSha?: string;
+  evidenceIds: string[];
+}
+
+export interface LiveVerificationEvaluation {
+  requiredChecksComplete: boolean;
+  requiredChecksPassed: boolean;
+  evidenceIds: string[];
+  failureReasons: string[];
+}
 
 export class VerificationService {
   constructor(
@@ -12,37 +30,119 @@ export class VerificationService {
   ) {}
 
   async createVerification(input: {
+    id?: string;
     runId: string; assignmentId?: string; contractId?: string;
     checkType: string; correlationId: string; causationId?: string;
+    stateVersion?: number; stateFingerprint?: string; targetSha?: string;
+    evidenceIds?: string[]; failureReasons?: string[];
   }): Promise<VerificationResult> {
     const now = new Date().toISOString();
-    const id = randomUUID();
-
     const verification: VerificationResult = {
-      id, runId: input.runId, assignmentId: input.assignmentId,
-      contractId: input.contractId, status: VerificationStatus.PENDING,
-      checkType: input.checkType, result: "", evidenceIds: [],
-      correlationId: input.correlationId, causationId: input.causationId,
-      createdAt: now, updatedAt: now,
+      id: input.id ?? randomUUID(),
+      runId: input.runId,
+      assignmentId: input.assignmentId,
+      contractId: input.contractId,
+      status: VerificationStatus.PENDING,
+      checkType: input.checkType,
+      result: "",
+      evidenceIds: input.evidenceIds ?? [],
+      failureReasons: input.failureReasons ?? [],
+      correlationId: input.correlationId,
+      causationId: input.causationId,
+      stateVersion: input.stateVersion,
+      stateFingerprint: input.stateFingerprint,
+      targetSha: input.targetSha,
+      createdAt: now,
+      updatedAt: now,
     };
 
     const saved = await this.verificationRepo.create(verification);
-
-    await this.eventBus.publish(createEvent(
-      OrchestrationEventType.VERIFICATION_STARTED,
-      {
-        correlationId: input.correlationId,
-        causationId: input.causationId,
-        aggregateId: id,
-        aggregateVersion: 1,
-        runId: input.runId,
-        assignmentId: input.assignmentId,
-        contractId: input.contractId,
-        data: { checkType: input.checkType },
-      },
-    ));
+    // A create-or-get collision is a replay of a prior durable request, not a new start.
+    if (saved.id === verification.id) {
+      await this.eventBus.publish(createEvent(
+        OrchestrationEventType.VERIFICATION_STARTED,
+        {
+          correlationId: input.correlationId,
+          causationId: input.causationId,
+          aggregateId: saved.id,
+          aggregateVersion: input.stateVersion ?? 1,
+          runId: input.runId,
+          assignmentId: input.assignmentId,
+          contractId: input.contractId,
+          data: { checkType: input.checkType, stateFingerprint: input.stateFingerprint },
+        },
+      ));
+    }
 
     return saved;
+  }
+
+  /**
+   * Creates exactly one durable request for a Run state. The state identity is persisted
+   * by the repository, so retries and restart recovery cannot create another request.
+   */
+  async requestLiveVerification(input: LiveVerificationRequest): Promise<VerificationResult> {
+    const existing = await this.verificationRepo.findByLiveIdentity(
+      input.runId,
+      input.stateVersion,
+      input.stateFingerprint,
+      input.checkType,
+    );
+    if (existing) return existing;
+
+    const identity = this.liveIdentity(input);
+    return this.createVerification({
+      id: identity,
+      runId: input.runId,
+      checkType: input.checkType,
+      correlationId: input.correlationId,
+      causationId: input.causationId,
+      stateVersion: input.stateVersion,
+      stateFingerprint: input.stateFingerprint,
+      targetSha: input.targetSha,
+      evidenceIds: [...new Set(input.evidenceIds)].sort(),
+    });
+  }
+
+  /**
+   * Evaluates only durable evidence references captured by the request. A caller must
+   * revalidate the request's state fingerprint immediately before applying this result.
+   */
+  async evaluateLiveVerification(id: string, evaluation: LiveVerificationEvaluation): Promise<VerificationResult> {
+    const existing = await this.getVerification(id);
+    if (existing.isStale || existing.status === VerificationStatus.PASSED || existing.status === VerificationStatus.FAILED) {
+      return existing;
+    }
+
+    const evidenceIds = [...new Set(evaluation.evidenceIds)].sort();
+    const failureReasons = [...new Set(evaluation.failureReasons)];
+    if (evidenceIds.length === 0) failureReasons.push("NO_DURABLE_EVIDENCE");
+    if (!evaluation.requiredChecksComplete) failureReasons.push("REQUIRED_CHECKS_INCOMPLETE");
+    if (!evaluation.requiredChecksPassed) failureReasons.push("REQUIRED_CHECKS_FAILED");
+
+    const passed = failureReasons.length === 0;
+    const status = passed ? VerificationStatus.PASSED : VerificationStatus.FAILED;
+    const result = passed
+      ? "Live verification passed from persisted evidence."
+      : `Live verification failed: ${failureReasons.join(", ")}`;
+
+    return this.updateVerification(id, {
+      status,
+      result,
+      evidenceIds,
+      failureReasons,
+      error: passed ? undefined : failureReasons.join(", "),
+    });
+  }
+
+  async markLiveVerificationStale(id: string, reason: string): Promise<VerificationResult> {
+    const existing = await this.getVerification(id);
+    if (existing.isStale) return existing;
+    return this.updateVerification(id, {
+      isStale: true,
+      error: reason,
+      failureReasons: [...new Set([...(existing.failureReasons ?? []), reason])],
+    });
   }
 
   async updateVerification(id: string, input: Partial<VerificationResult>): Promise<VerificationResult> {
@@ -58,12 +158,20 @@ export class VerificationService {
         eventType,
         {
           correlationId: existing.correlationId,
-          causationId: existing.correlationId,
+          causationId: existing.causationId ?? existing.correlationId,
           aggregateId: id,
+          aggregateVersion: existing.stateVersion ?? 1,
           runId: existing.runId,
           assignmentId: existing.assignmentId,
           contractId: existing.contractId,
-          data: { status: input.status, result: input.result },
+          data: {
+            status: input.status,
+            result: input.result,
+            stateVersion: existing.stateVersion,
+            stateFingerprint: existing.stateFingerprint,
+            evidenceIds: input.evidenceIds,
+            failureReasons: input.failureReasons,
+          },
         },
       ));
     }
@@ -80,10 +188,15 @@ export class VerificationService {
     return this.verificationRepo.findMany(filter, pagination);
   }
 
+  private liveIdentity(input: LiveVerificationRequest): string {
+    const semanticIdentity = `verification:${input.runId}:${input.stateVersion}:${input.stateFingerprint}:${input.checkType}`;
+    return `live-verification-${createHash("sha256").update(semanticIdentity).digest("hex")}`;
+  }
+
   /** Exhaustive verification status → event mapping. */
   private getStatusEvent(status: string): string {
     switch (status) {
-      case VerificationStatus.PASSED: return OrchestrationEventType.VERIFICATION_COMPLETED;
+      case VerificationStatus.PASSED: return OrchestrationEventType.VERIFICATION_PASSED;
       case VerificationStatus.FAILED: return OrchestrationEventType.VERIFICATION_FAILED;
       case VerificationStatus.PENDING:
       case VerificationStatus.IN_PROGRESS:

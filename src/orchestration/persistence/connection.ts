@@ -81,15 +81,38 @@ export function openConnection(config: DatabaseConfig): Database {
   return db
 }
 
+function closeTerminalDatabase(db: Database): void {
+  try {
+    // Runtime disposal is a terminal ownership boundary. Prefer a forced close
+    // so outstanding prepared statements are finalized rather than deferred to
+    // garbage collection.
+    db.close(true)
+  } catch {
+    // Bun can report a transient busy finalization when a statement is still
+    // owned by a completed caller. Its regular close transitions the connection
+    // to SQLite's deferred-close state without retaining the registry lease.
+    db.close(false)
+  }
+}
+
 export function closeConnection(path: string): void {
   const key = resolve(path)
   const db = CONNECTIONS.get(key)
-  if (db) { db.close(); CONNECTIONS.delete(key) }
+  if (!db) return
+  try {
+    closeTerminalDatabase(db)
+  } finally {
+    // Never retain a stale, disposed connection in the shared cache.
+    CONNECTIONS.delete(key)
+  }
 }
 
 export function closeAllConnections(): void {
-  for (const [, db] of CONNECTIONS) db.close()
+  const entries = [...CONNECTIONS.entries()]
   CONNECTIONS.clear()
+  for (const [, db] of entries) {
+    closeTerminalDatabase(db)
+  }
 }
 
 export function getConnectionCount(): number {

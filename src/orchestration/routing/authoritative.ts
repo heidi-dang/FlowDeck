@@ -15,6 +15,15 @@ export class AuthoritativeRoutingService {
   activate(decision: RoutingDecision, currentSourceSha: string, evidence: RoutingActivationEvidence): EnforceResult | EnforceFallback {
     try {
       assertEnforceReady(evidence)
+      if (decision.routingMode === "recommendation") {
+        throw new Error("ROUTING_DECISION_RECOMMENDATION_ONLY")
+      }
+      if (decision.delegate && decision.delegations.length === 0) {
+        throw new Error("ROUTING_DELEGATION_OWNERSHIP_UNRESOLVED")
+      }
+      if (decision.strategy === "parallel_implementation" && decision.workstreams.length === 0) {
+        throw new Error("ROUTING_PARALLEL_WORKSTREAMS_UNRESOLVED")
+      }
       if (decision.sourceSha !== currentSourceSha) throw new Error("ROUTING_DECISION_STALE")
       const plan = executionPlanFromRouting(decision)
       const existing = typeof (this.execution as unknown as { getPlan?: unknown }).getPlan === "function" ? this.execution.getPlan(plan.planId) : null

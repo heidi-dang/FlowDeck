@@ -1,6 +1,6 @@
 {
   "name": "@heidi-dang/flowdeck",
-  "version": "2.4.1",
+  "version": "2.5.0",
   "description": "FlowDeck — production-grade multi-agent orchestration, governance, CI repair, and code intelligence for OpenCode",
   "type": "module",
   "main": "./dist/index.js",
@@ -60,6 +60,7 @@
     "verify:v2-milestones": "node scripts/verify-v2-milestones.mjs",
     "verify:v2:gatekeeper": "node scripts/v2-final-gatekeeper.mjs",
     "benchmark:v2": "bun scripts/benchmark-v2.ts",
+    "benchmark:adaptive-specialists": "bun scripts/orchestration/benchmark-adaptive-specialists.ts",
     "verify:benchmark:v2": "node scripts/verify-v2-benchmark.mjs",
     "validate:docs": "node scripts/validate-docs.mjs",
     "verify:fast": "node scripts/pre-push.mjs --fast",

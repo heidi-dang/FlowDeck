@@ -40,6 +40,7 @@ export interface IRunRepository {
   create(run: Run): Promise<Run>;
   update(id: string, input: UpdateRunInput): Promise<Run | null>;
   findById(id: string): Promise<Run | null>;
+  findByCorrelationId(correlationId: string): Promise<Run | null>;
   findMany(filter: RunFilter, pagination: PagePaginationRequest): Promise<PaginatedResult<Run>>;
   count(filter: RunFilter): Promise<number>;
 }
@@ -73,6 +74,8 @@ export interface IVerificationRepository {
   findMany(filter: VerificationFilter, pagination: PagePaginationRequest): Promise<PaginatedResult<VerificationResult>>;
   count(filter: VerificationFilter): Promise<number>;
   findByRunId(runId: string): Promise<VerificationResult[]>;
+  /** Finds the one durable live-verification request for an authoritative Run state. */
+  findByLiveIdentity(runId: string, stateVersion: number, stateFingerprint: string, checkType: string): Promise<VerificationResult | null>;
 }
 
 // ── Completion repository ─────────────────────────────────────────────────
