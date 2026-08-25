@@ -69,6 +69,29 @@ export interface FlowDeckConfig {
   };
   /** Hierarchical token-budget control. See token-budget-config.ts for profiles and validation. */
   tokenBudget?: TokenBudgetOverrides;
+  /**
+   * FDX Verifiable Change Intelligence (VCI) M1–M12 integration.
+   *
+   * Controls how Heidi uses FDX as its code-change intelligence and
+   * verification authority. FDX remains authoritative for change analysis,
+   * verification planning, and attestation. Heidi remains the orchestrator.
+   */
+  fdxVci?: {
+    /** Enable FDX VCI integration. Default: true. */
+    enabled?: boolean;
+    /** Override FDX binary path. Uses auto-discovery when unset. */
+    binaryPath?: string;
+    /** Enable M11 policy overlay (ADD_CHECK only). Default: true when supported. */
+    policyOverlayEnabled?: boolean;
+    /** Enable M10 shadow calibration recording. Default: true when supported. */
+    calibrationEnabled?: boolean;
+    /** Maximum verification retry attempts before convergence failure. Default: 3. */
+    maxVerificationRetries?: number;
+    /** Wall-clock budget per verification cycle in ms. Default: 300000 (5 min). */
+    verificationBudgetMs?: number;
+    /** Minimum assurance level required for completion. Default: "degraded". */
+    minimumAssuranceLevel?: "exact" | "high" | "medium" | "low" | "degraded";
+  };
 }
 
 export interface GovernanceConfig {
