@@ -1,27 +1,28 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest"
 import { join } from "node:path"
-import { unlinkSync, existsSync, rmSync, mkdirSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { existsSync, mkdtempSync, rmSync } from "node:fs"
 import { initializeDatabase, closeConnection } from "../src/orchestration/persistence"
 import { createProductionOrchestrationRuntime } from "../src/orchestration/composition"
 import type { Database } from "bun:sqlite"
 
-const TEST_DIR = join(process.cwd(), ".flowdeck-test-wiring")
-const TEST_DB = join(TEST_DIR, "flowdeck.db")
-
 describe("Plugin Orchestration Wiring (Phase 8 Gap)", () => {
   let db: Database
+  let testDir = ""
+  let testDb = ""
 
   beforeEach(() => {
-    if (existsSync(TEST_DB)) unlinkSync(TEST_DB)
-    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true, force: true })
-    mkdirSync(TEST_DIR, { recursive: true })
-    const init = initializeDatabase({ path: TEST_DB })
+    testDir = mkdtempSync(join(tmpdir(), "flowdeck-test-wiring-"))
+    testDb = join(testDir, "flowdeck.db")
+    const init = initializeDatabase({ path: testDb })
     db = init.db
   })
 
   afterEach(() => {
-    closeConnection(TEST_DB)
-    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true, force: true })
+    closeConnection(testDb)
+    // Bun may retain a Windows WAL handle after close. Each fixture is unique,
+    // so retaining that completed fixture does not affect later assertions.
+    if (process.platform !== "win32" && existsSync(testDir)) rmSync(testDir, { recursive: true, force: true })
   })
 
   it("initializes production orchestration runtime with all services, repositories, and router", () => {
