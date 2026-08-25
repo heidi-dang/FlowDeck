@@ -1,0 +1,1025 @@
+{
+  "status": "qualified",
+  "milestone": "M12",
+  "functional_source_sha": "7081df5140df5449253da0baa31153a50777668b",
+  "binary_source_sha": "7081df5140df5449253da0baa31153a50777668b",
+  "binary_sha256": "b42ebb9600b4f01a5cc08316929629725ed778c925079d105d79df2c3e4b1a7d",
+  "binary_profile": "release",
+  "binary_size_bytes": 18008488,
+  "benchmark_harness_sha": "6546231bfb4c830c2fd9128bdef24851035a5e52",
+  "qualification_head_sha": "6546231bfb4c830c2fd9128bdef24851035a5e52",
+  "schema_version": 10,
+  "cargo_version": "cargo 1.98.0 (797e8a9bc 2026-08-05)",
+  "rustc_version": "rustc 1.98.0 (88d9e12ae 2026-08-18)",
+  "target": "x86_64-unknown-linux-gnu",
+  "platform": "linux",
+  "arch": "x64",
+  "external_binary_contract": {
+    "required_variables": [
+      "FDX_BENCHMARK_FUNCTIONAL_SHA",
+      "FDX_BINARY_PATH",
+      "FDX_BINARY_SHA256"
+    ],
+    "external_binary_autobuild_forbidden": true,
+    "release_profile_enforced": true,
+    "supplied_sha_recalculated": true
+  },
+  "qualification_checkout": {
+    "clean_before_execution": true,
+    "f32_ancestor_of_h36": true,
+    "production_diff_from_f32": [],
+    "binary_path_recording": "sanitized; release profile and SHA are recorded without an absolute developer path"
+  },
+  "preflight_count": 102,
+  "preflights": [
+    {
+      "name": "external_binary_release_profile",
+      "passed": true,
+      "command": "external provenance validation",
+      "duration_ms": 0.02
+    },
+    {
+      "name": "external_binary_sha_matches",
+      "passed": true,
+      "command": "sha256 supplied external binary",
+      "duration_ms": 23.52
+    },
+    {
+      "name": "binary_source_exact_f32",
+      "passed": true,
+      "command": "FDX_BENCHMARK_FUNCTIONAL_SHA",
+      "duration_ms": 0.11
+    },
+    {
+      "name": "release_binary_executes",
+      "passed": true,
+      "command": "fdx --help",
+      "duration_ms": 11.82
+    },
+    {
+      "name": "debug_binary_rejected",
+      "passed": true,
+      "command": "in-process provenance rejection",
+      "duration_ms": 0.82
+    },
+    {
+      "name": "wrong_binary_sha_rejected",
+      "passed": true,
+      "command": "in-process provenance rejection",
+      "duration_ms": 27.75
+    },
+    {
+      "name": "wrong_functional_sha_rejected",
+      "passed": true,
+      "command": "in-process provenance rejection",
+      "duration_ms": 0.4
+    },
+    {
+      "name": "qualification_head_owns_h36",
+      "passed": true,
+      "command": "git log harness owner",
+      "duration_ms": 0.04
+    },
+    {
+      "name": "f32_is_h36_ancestor",
+      "passed": true,
+      "command": "git merge-base --is-ancestor",
+      "duration_ms": 5.52
+    },
+    {
+      "name": "no_production_diff_after_f32",
+      "passed": true,
+      "command": "git diff F32..H36 production paths",
+      "duration_ms": 4.14
+    },
+    {
+      "name": "qualification_checkout_clean",
+      "passed": true,
+      "command": "git status and diff --check",
+      "duration_ms": 21.61
+    },
+    {
+      "name": "setup_timer_excludes_fixture_delay",
+      "passed": true,
+      "command": "in-process prepared-fixture timing assertion",
+      "duration_ms": 45.87
+    },
+    {
+      "name": "rust_toolchain_resolver",
+      "passed": true,
+      "command": "scripts/rust-toolchain.mjs",
+      "duration_ms": 0.02
+    },
+    {
+      "name": "policy_cli_help_external_binary",
+      "passed": true,
+      "command": "external policy --help",
+      "duration_ms": 4.24
+    },
+    {
+      "name": "plan_overlay_help_external_binary",
+      "passed": true,
+      "command": "external plan --help",
+      "duration_ms": 3.91
+    },
+    {
+      "name": "verify_overlay_help_external_binary",
+      "passed": true,
+      "command": "external verify --help",
+      "duration_ms": 3.46
+    },
+    {
+      "name": "schema_v10_current",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_policy_schema test_policy_schema_v10_current_contains_additive_policy_tables -- --exact",
+      "duration_ms": 288.57
+    },
+    {
+      "name": "v9_to_v10_upgrade",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_policy_schema test_v9_to_v10_migration_is_additive_and_preserves_calibration_schema -- --exact",
+      "duration_ms": 103.65
+    },
+    {
+      "name": "qualified_m10_only",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_policy_candidate test_generate_candidates_uses_only_qualified_current_contract_m10_evidence -- --exact",
+      "duration_ms": 118.34
+    },
+    {
+      "name": "candidate_run_bounded_lookback",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_policy_candidate test_generate_candidates_lookback_limit_counts_calibration_runs_not_rows -- --exact",
+      "duration_ms": 99.99
+    },
+    {
+      "name": "policy_selected_evidence_excluded",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_policy_candidate test_generate_candidates_uses_only_qualified_current_contract_m10_evidence -- --exact",
+      "duration_ms": 100.79
+    },
+    {
+      "name": "self_reinforcement_excluded",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_policy_candidate test_policy_selected_future_observation_cannot_self_reinforce_promoted_support -- --exact",
+      "duration_ms": 101.85
+    },
+    {
+      "name": "candidate_deterministic_fail_closed_read",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_policy_candidate test_candidate_read_apis_are_stable_and_fail_closed_on_unknown_state -- --exact",
+      "duration_ms": 100.86
+    },
+    {
+      "name": "promotion_revalidation_and_idempotency",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_policy_candidate test_explicit_promotion_revalidates_evidence_and_revocation_is_idempotent -- --exact",
+      "duration_ms": 98.11
+    },
+    {
+      "name": "promotion_stale_evidence_rejected",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_policy_candidate test_promotion_fails_when_qualified_evidence_is_changed_after_candidate_generation -- --exact",
+      "duration_ms": 101.78
+    },
+    {
+      "name": "twenty_connection_promotion",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_policy_candidate test_concurrent_template_bound_promotions_commit_one_policy_and_one_event -- --exact",
+      "duration_ms": 1347.5
+    },
+    {
+      "name": "per_trigger_cap_conflict",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_policy_candidate test_promotion_enforces_per_trigger_additive_cap_without_mutating_second_candidate -- --exact",
+      "duration_ms": 116
+    },
+    {
+      "name": "template_exact_persistence_and_tamper",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_policy_candidate test_promotion_persists_exact_template_and_active_overlay_loading_fails_closed_on_tamper -- --exact",
+      "duration_ms": 102.01
+    },
+    {
+      "name": "policy_store_corruption_fail_closed",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_policy_candidate test_active_policy_snapshot_fails_closed_for_null_template_unknown_action_and_bad_provenance -- --exact",
+      "duration_ms": 99.99
+    },
+    {
+      "name": "base_plan_unchanged_affected_scope_addition",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_policy_overlay test_overlay_is_monotonic_and_uses_impacted_scope_even_without_a_base_check -- --exact",
+      "duration_ms": 94.7
+    },
+    {
+      "name": "unaffected_scope_noop_and_corrupt_template_rejected",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_policy_overlay test_overlay_is_noop_for_unaffected_scope_and_fails_closed_for_missing_template_or_invalid_state -- --exact",
+      "duration_ms": 82.26
+    },
+    {
+      "name": "policy_application_digest_determinism",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_policy_overlay test_overlay_noop_application_is_deterministic_and_additive -- --exact",
+      "duration_ms": 83.13
+    },
+    {
+      "name": "duplicate_policy_additions_deduped_snapshot_immutable",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_policy_overlay test_duplicate_policy_additions_are_deduped_and_captured_snapshot_stays_immutable -- --exact",
+      "duration_ms": 82.28
+    },
+    {
+      "name": "cli_promotion_overlay_application_revocation",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_policy_cli test_policy_cli_promotes_exact_template_preserves_default_plan_and_persists_verify_application -- --exact",
+      "duration_ms": 1627.16
+    },
+    {
+      "name": "m6_direct_path_package_plan",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_verification_planner test_plan_package_source_change_selects_tests_and_typecheck -- --exact",
+      "duration_ms": 140.26
+    },
+    {
+      "name": "m6_no_manufactured_tests",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_verification_planner test_plan_no_tests_found_does_not_manufacture_tests -- --exact",
+      "duration_ms": 117.35
+    },
+    {
+      "name": "m6_disconnected_isolation",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_verification_planner test_plan_disconnected_package_isolation -- --exact",
+      "duration_ms": 135.88
+    },
+    {
+      "name": "m6_root_config_widening",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_verification_planner test_plan_root_tsconfig_change_widens_to_all_ts_projects -- --exact",
+      "duration_ms": 131.05
+    },
+    {
+      "name": "m6_cargo_workspace",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_verification_planner test_plan_cargo_workspace_crate_change -- --exact",
+      "duration_ms": 134.18
+    },
+    {
+      "name": "m7_empty_plan_contract",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_verify_contract test_verification_contract_empty_plan_passes -- --exact",
+      "duration_ms": 105.7
+    },
+    {
+      "name": "m7_lifecycle_contract",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_verify_contract test_verification_contract_lifecycle_and_model -- --exact",
+      "duration_ms": 239.31
+    },
+    {
+      "name": "m7_duplicate_check_safety",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_verify_duplicate_checks test_duplicate_identical_checks_are_deduped -- --exact",
+      "duration_ms": 119.06
+    },
+    {
+      "name": "m7_output_bound",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_verify_output_bounds test_output_limit_marks_incomplete -- --exact",
+      "duration_ms": 99.31
+    },
+    {
+      "name": "m7_path_parent_escape",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_verify_path_safety test_verification_path_safety_rejects_parent_escape -- --exact",
+      "duration_ms": 105.95
+    },
+    {
+      "name": "m7_path_symlink_escape",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_verify_path_safety test_verification_path_safety_rejects_symlink_escape -- --exact",
+      "duration_ms": 97.33
+    },
+    {
+      "name": "m7_redaction",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_verify_redaction test_verification_redaction_before_persistence -- --exact",
+      "duration_ms": 279.9
+    },
+    {
+      "name": "m7_unresolved_obligations",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_verify_unresolved_obligations test_unresolved_obligations_with_zero_checks_is_incomplete -- --exact",
+      "duration_ms": 105.29
+    },
+    {
+      "name": "m8_runtime_planner_isolation",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_runtime_planner_isolation test_runtime_history_never_alters_planner_selected_checks -- --exact",
+      "duration_ms": 205.23
+    },
+    {
+      "name": "m8_runtime_idempotency",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_runtime_idempotency test_ingest_same_artifact_is_idempotent -- --exact",
+      "duration_ms": 94.62
+    },
+    {
+      "name": "m8_runtime_transactionality",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_runtime_transactionality test_runtime_ingest_is_atomic -- --exact",
+      "duration_ms": 105.65
+    },
+    {
+      "name": "m8_runtime_execution_truth",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_runtime_physical_execution_truth test_runtime_history_preserves_physical_execution_truth -- --exact",
+      "duration_ms": 101.91
+    },
+    {
+      "name": "m8_runtime_artifact_digest",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_runtime_exact_artifact_digest test_artifact_digest_is_exact_and_idempotent -- --exact",
+      "duration_ms": 100.48
+    },
+    {
+      "name": "m9_predicate_v1",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_attestation_predicate test_predicate_version_and_uri_constants -- --exact",
+      "duration_ms": 99.05
+    },
+    {
+      "name": "m9_context_omission",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_attestation_predicate test_source_context_workspace_clean_omitted_when_none -- --exact",
+      "duration_ms": 81.64
+    },
+    {
+      "name": "m9_plan_binding",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_attestation_plan_binding test_attestation_plan_digest_binding -- --exact",
+      "duration_ms": 95.3
+    },
+    {
+      "name": "m9_unresolved_binding",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_attestation_unresolved_binding test_attestation_unresolved_obligations_binding -- --exact",
+      "duration_ms": 129.24
+    },
+    {
+      "name": "m9_statement_determinism",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_attestation_determinism test_attestation_is_deterministic -- --exact",
+      "duration_ms": 98.05
+    },
+    {
+      "name": "m9_privacy",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_attestation_privacy test_attestation_redacts_private_paths_and_secrets -- --exact",
+      "duration_ms": 95.64
+    },
+    {
+      "name": "m9_tamper_rejection",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_attestation_tamper test_tampered_attestation_is_rejected -- --exact",
+      "duration_ms": 95.99
+    },
+    {
+      "name": "m10_candidate_plan_isolation",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_calibration_candidate_isolation test_candidate_plan_is_preserved_exact_and_unchanged -- --exact",
+      "duration_ms": 114.81
+    },
+    {
+      "name": "m10_planner_isolation",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_calibration_planner_isolation test_calibration_history_never_influences_planner_decisions_or_assurance -- --exact",
+      "duration_ms": 172.65
+    },
+    {
+      "name": "m10_runtime_isolation",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_calibration_runtime_isolation test_calibration_executions_do_not_pollute_runtime_history -- --exact",
+      "duration_ms": 129.07
+    },
+    {
+      "name": "m10_attestation_isolation",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_calibration_attestation_isolation test_calibration_does_not_change_attestation_bytes -- --exact",
+      "duration_ms": 100.83
+    },
+    {
+      "name": "m10_observed_shadow_miss",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_calibration_observed_miss test_observed_shadow_miss_is_recorded -- --exact",
+      "duration_ms": 100.07
+    },
+    {
+      "name": "m10_physical_execution_truth",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_calibration_physical_execution_truth test_non_physical_statuses_are_never_observed_misses -- --exact",
+      "duration_ms": 98.57
+    },
+    {
+      "name": "m10_reference_superset",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_calibration_shadow_execution test_shadow_reference_is_superset_of_candidate_plan -- --exact",
+      "duration_ms": 114.21
+    },
+    {
+      "name": "m10_bounded_duration",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_calibration_total_budget blocking_shadow_process_receives_only_remaining_total_budget -- --exact",
+      "duration_ms": 115.41
+    },
+    {
+      "name": "m10_atomic_transaction",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_calibration_transactionality test_transaction_rollback_leaves_zero_orphaned_rows_on_error -- --exact",
+      "duration_ms": 132.89
+    },
+    {
+      "name": "m10_privacy",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_calibration_privacy test_secrets_in_unsupported_reasons_or_environment_are_redacted -- --exact",
+      "duration_ms": 137.85
+    },
+    {
+      "name": "m10_reopen_determinism",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_calibration_reopen_determinism test_database_close_and_reopen_preserves_exact_metrics -- --exact",
+      "duration_ms": 134.65
+    },
+    {
+      "name": "protocol_schema_v10",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_protocol test_version_constants -- --exact",
+      "duration_ms": 95.67
+    },
+    {
+      "name": "protocol_graph_compatibility",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_protocol test_graph_compatibility_defaults -- --exact",
+      "duration_ms": 87.44
+    },
+    {
+      "name": "protocol_path_canonicalization",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_protocol test_path_canonicalization -- --exact",
+      "duration_ms": 92.25
+    },
+    {
+      "name": "protocol_path_jail",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_protocol test_path_jail_escaping -- --exact",
+      "duration_ms": 82.31
+    },
+    {
+      "name": "m12_capabilities_contract",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_capabilities",
+      "duration_ms": 98.53
+    },
+    {
+      "name": "m12_v2_schema_dispatch",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_attestation_v2_schema",
+      "duration_ms": 173.1
+    },
+    {
+      "name": "m12_v2_policy_binding_history",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_attestation_v2_policy_binding",
+      "duration_ms": 271.85
+    },
+    {
+      "name": "m12_cli_v1_default_v2_selection",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_attestation_cli",
+      "duration_ms": 155.28
+    },
+    {
+      "name": "m9_atomic_publication",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_attestation_atomic_publication",
+      "duration_ms": 123.02
+    },
+    {
+      "name": "m9_bounded_artifact_read",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_attestation_bounded_read",
+      "duration_ms": 93.77
+    },
+    {
+      "name": "m9_managed_directory_safety",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_attestation_directory_safety",
+      "duration_ms": 193.05
+    },
+    {
+      "name": "m9_external_handle_boundary",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_attestation_external_handle",
+      "duration_ms": 207.25
+    },
+    {
+      "name": "m9_handle_boundary",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_attestation_handle_boundary",
+      "duration_ms": 136.33
+    },
+    {
+      "name": "m9_integrity_anchor",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_attestation_integrity_anchor",
+      "duration_ms": 169.36
+    },
+    {
+      "name": "m9_rfc8785_conformance",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_attestation_jcs_conformance",
+      "duration_ms": 91.25
+    },
+    {
+      "name": "m9_managed_path_boundary",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_attestation_managed_path_boundary",
+      "duration_ms": 125.96
+    },
+    {
+      "name": "m9_outcome_binding",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_attestation_outcomes",
+      "duration_ms": 165.95
+    },
+    {
+      "name": "m9_run_id_path_safety",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_attestation_path_safety",
+      "duration_ms": 98.15
+    },
+    {
+      "name": "m9_persistence_race",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_attestation_persistence_race",
+      "duration_ms": 118.74
+    },
+    {
+      "name": "m9_qualified_history",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_attestation_qualified_history",
+      "duration_ms": 145.39
+    },
+    {
+      "name": "m9_runtime_history_binding",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_attestation_runtime_history_binding",
+      "duration_ms": 206.72
+    },
+    {
+      "name": "m9_in_toto_statement",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_attestation_statement",
+      "duration_ms": 141.82
+    },
+    {
+      "name": "m9_subject_digest",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_attestation_subject_digest",
+      "duration_ms": 115.36
+    },
+    {
+      "name": "m9_toctou_and_jail",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_attestation_toctou",
+      "duration_ms": 341.8
+    },
+    {
+      "name": "m9_uncertainty_privacy",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_attestation_uncertainty",
+      "duration_ms": 127.29
+    },
+    {
+      "name": "m9_verifier_completeness",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_attestation_verifier_completeness",
+      "duration_ms": 168.58
+    },
+    {
+      "name": "m9_schema_strictness",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_attestation_schema_strictness",
+      "duration_ms": 143.94
+    },
+    {
+      "name": "m9_tamper_rejection",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_attestation_tamper",
+      "duration_ms": 105.2
+    },
+    {
+      "name": "m9_secret_redaction",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_attestation_privacy",
+      "duration_ms": 105.02
+    },
+    {
+      "name": "m9_execution_binding",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_attestation_execution_binding",
+      "duration_ms": 117.74
+    },
+    {
+      "name": "m9_plan_binding",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_attestation_plan_binding",
+      "duration_ms": 107.94
+    },
+    {
+      "name": "m9_content_addressed_persistence",
+      "passed": true,
+      "command": "resolved cargo test -p fdx --test test_attestation_persistence",
+      "duration_ms": 120.62
+    }
+  ],
+  "benchmarks": {
+    "candidate_generation_cli_e2e": {
+      "10_qualified_runs": {
+        "fixture": {
+          "qualified_calibration_run_count": 10,
+          "generated_candidate_count": 1
+        },
+        "setup_ms": {
+          "samples": 15,
+          "min_ms": 53.49,
+          "median_ms": 58.31,
+          "p95_ms": 67.4,
+          "max_ms": 67.4,
+          "mean_ms": 58.43
+        },
+        "operation_ms": {
+          "samples": 15,
+          "min_ms": 8.09,
+          "median_ms": 8.86,
+          "p95_ms": 10.16,
+          "max_ms": 10.16,
+          "mean_ms": 8.97
+        }
+      },
+      "100_qualified_runs": {
+        "fixture": {
+          "qualified_calibration_run_count": 100,
+          "generated_candidate_count": 1
+        },
+        "setup_ms": {
+          "samples": 15,
+          "min_ms": 134.83,
+          "median_ms": 139.42,
+          "p95_ms": 156.48,
+          "max_ms": 156.48,
+          "mean_ms": 141.97
+        },
+        "operation_ms": {
+          "samples": 15,
+          "min_ms": 13.96,
+          "median_ms": 15.32,
+          "p95_ms": 20.7,
+          "max_ms": 20.7,
+          "mean_ms": 16.11
+        }
+      },
+      "1000_qualified_runs": {
+        "fixture": {
+          "qualified_calibration_run_count": 1000,
+          "generated_candidate_count": 1
+        },
+        "setup_ms": {
+          "samples": 7,
+          "min_ms": 527.03,
+          "median_ms": 551.09,
+          "p95_ms": 611.57,
+          "max_ms": 611.57,
+          "mean_ms": 563.99
+        },
+        "operation_ms": {
+          "samples": 7,
+          "min_ms": 733.07,
+          "median_ms": 746.07,
+          "p95_ms": 779.63,
+          "max_ms": 779.63,
+          "mean_ms": 751.86
+        }
+      }
+    },
+    "active_policy_list_cli_e2e": {
+      "0_active_policies": {
+        "fixture": {
+          "active_policy_count": 0
+        },
+        "setup_ms": {
+          "samples": 15,
+          "min_ms": 46.6,
+          "median_ms": 51.88,
+          "p95_ms": 57.42,
+          "max_ms": 57.42,
+          "mean_ms": 51.79
+        },
+        "operation_ms": {
+          "samples": 15,
+          "min_ms": 6.49,
+          "median_ms": 7.17,
+          "p95_ms": 8.3,
+          "max_ms": 8.3,
+          "mean_ms": 7.18
+        }
+      },
+      "10_active_policies": {
+        "fixture": {
+          "active_policy_count": 10
+        },
+        "setup_ms": {
+          "samples": 15,
+          "min_ms": 112.69,
+          "median_ms": 119.76,
+          "p95_ms": 127.56,
+          "max_ms": 127.56,
+          "mean_ms": 119.73
+        },
+        "operation_ms": {
+          "samples": 15,
+          "min_ms": 7.41,
+          "median_ms": 8.25,
+          "p95_ms": 9.98,
+          "max_ms": 9.98,
+          "mean_ms": 8.42
+        }
+      },
+      "100_active_policies": {
+        "fixture": {
+          "active_policy_count": 100
+        },
+        "setup_ms": {
+          "samples": 15,
+          "min_ms": 578.77,
+          "median_ms": 631.88,
+          "p95_ms": 710.31,
+          "max_ms": 710.31,
+          "mean_ms": 636.75
+        },
+        "operation_ms": {
+          "samples": 15,
+          "min_ms": 8.81,
+          "median_ms": 9.86,
+          "p95_ms": 12.74,
+          "max_ms": 12.74,
+          "mean_ms": 10.34
+        }
+      }
+    },
+    "overlay_planning_cli_e2e": {
+      "base_10_checks": {
+        "fixture": {
+          "base_selected_check_count": 10,
+          "active_policy_count": 0,
+          "distinct_policy_check_count": 0,
+          "effective_selected_check_count": 10,
+          "added_check_count": 0
+        },
+        "setup_ms": {
+          "samples": 15,
+          "min_ms": 45.92,
+          "median_ms": 48.8,
+          "p95_ms": 71.63,
+          "max_ms": 71.63,
+          "mean_ms": 50.62
+        },
+        "operation_ms": {
+          "samples": 15,
+          "min_ms": 40.02,
+          "median_ms": 41.82,
+          "p95_ms": 47.3,
+          "max_ms": 47.3,
+          "mean_ms": 43.19
+        }
+      },
+      "overlay_10_base_plus_10_policy_checks": {
+        "fixture": {
+          "base_selected_check_count": 10,
+          "active_policy_count": 10,
+          "distinct_policy_check_count": 10,
+          "effective_selected_check_count": 20,
+          "added_check_count": 10
+        },
+        "setup_ms": {
+          "samples": 15,
+          "min_ms": 97.67,
+          "median_ms": 103.43,
+          "p95_ms": 108.42,
+          "max_ms": 108.42,
+          "mean_ms": 102.62
+        },
+        "operation_ms": {
+          "samples": 15,
+          "min_ms": 42.61,
+          "median_ms": 44.82,
+          "p95_ms": 46,
+          "max_ms": 46,
+          "mean_ms": 44.44
+        }
+      },
+      "base_100_checks": {
+        "fixture": {
+          "base_selected_check_count": 100,
+          "active_policy_count": 0,
+          "distinct_policy_check_count": 0,
+          "effective_selected_check_count": 100,
+          "added_check_count": 0
+        },
+        "setup_ms": {
+          "samples": 15,
+          "min_ms": 48.11,
+          "median_ms": 49.45,
+          "p95_ms": 55.44,
+          "max_ms": 55.44,
+          "mean_ms": 50.48
+        },
+        "operation_ms": {
+          "samples": 15,
+          "min_ms": 191.51,
+          "median_ms": 195.66,
+          "p95_ms": 201.61,
+          "max_ms": 201.61,
+          "mean_ms": 196.09
+        }
+      },
+      "overlay_100_base_plus_100_policy_checks": {
+        "fixture": {
+          "base_selected_check_count": 100,
+          "active_policy_count": 100,
+          "distinct_policy_check_count": 100,
+          "effective_selected_check_count": 200,
+          "added_check_count": 100
+        },
+        "setup_ms": {
+          "samples": 15,
+          "min_ms": 542.82,
+          "median_ms": 584.52,
+          "p95_ms": 645.24,
+          "max_ms": 645.24,
+          "mean_ms": 590.18
+        },
+        "operation_ms": {
+          "samples": 15,
+          "min_ms": 211.9,
+          "median_ms": 219.91,
+          "p95_ms": 242.54,
+          "max_ms": 242.54,
+          "mean_ms": 221.27
+        }
+      }
+    },
+    "promotion_cli_e2e_with_provenance_revalidation": {
+      "fixture": {
+        "template_bound": true
+      },
+      "setup_ms": {
+        "samples": 15,
+        "min_ms": 56.31,
+        "median_ms": 63.84,
+        "p95_ms": 69.39,
+        "max_ms": 69.39,
+        "mean_ms": 62.29
+      },
+      "operation_ms": {
+        "samples": 15,
+        "min_ms": 9.64,
+        "median_ms": 10.37,
+        "p95_ms": 12.49,
+        "max_ms": 12.49,
+        "mean_ms": 10.52
+      }
+    },
+    "verify_overlay_e2e_with_application_persistence": {
+      "fixture": {
+        "policy_application_count": 1,
+        "includes_verification_execution": true
+      },
+      "setup_ms": {
+        "samples": 15,
+        "min_ms": 68.2,
+        "median_ms": 72.69,
+        "p95_ms": 76.5,
+        "max_ms": 76.5,
+        "mean_ms": 72.99
+      },
+      "operation_ms": {
+        "samples": 15,
+        "min_ms": 282.71,
+        "median_ms": 299.6,
+        "p95_ms": 322.19,
+        "max_ms": 322.19,
+        "mean_ms": 299.87
+      }
+    },
+    "m12_v2_policy_provenance_lifecycle_cli_e2e": {
+      "fixture": {
+        "verification_run_id_present": true,
+        "v1_default_preserved": true,
+        "v2_policy_context_present": true,
+        "policy_application_historically_verified_after_revocation": true,
+        "mixed_version_list_classified": true
+      },
+      "setup_ms": {
+        "samples": 15,
+        "min_ms": 67.99,
+        "median_ms": 72.57,
+        "p95_ms": 77.54,
+        "max_ms": 77.54,
+        "mean_ms": 72.99
+      },
+      "operation_ms": {
+        "samples": 15,
+        "min_ms": 408.51,
+        "median_ms": 423.7,
+        "p95_ms": 442.36,
+        "max_ms": 442.36,
+        "mean_ms": 425.36
+      }
+    },
+    "m12_local_capabilities_cli": {
+      "fixture": {
+        "capability_contract_version": 1,
+        "predicate_versions": [
+          "v1",
+          "v2"
+        ],
+        "graph_schema_maximum_writable": 10,
+        "network_access": false,
+        "telemetry": false
+      },
+      "setup_ms": {
+        "samples": 15,
+        "min_ms": 0,
+        "median_ms": 0,
+        "p95_ms": 0.02,
+        "max_ms": 0.02,
+        "mean_ms": 0
+      },
+      "operation_ms": {
+        "samples": 15,
+        "min_ms": 2.99,
+        "median_ms": 3.23,
+        "p95_ms": 3.99,
+        "max_ms": 3.99,
+        "mean_ms": 3.32
+      }
+    },
+    "connection_reopen_plus_active_policy_list_cli_e2e": {
+      "fixture": {
+        "active_policy_count": 10
+      },
+      "setup_ms": {
+        "samples": 15,
+        "min_ms": 93.21,
+        "median_ms": 101.5,
+        "p95_ms": 110.28,
+        "max_ms": 110.28,
+        "mean_ms": 100.62
+      },
+      "operation_ms": {
+        "samples": 15,
+        "min_ms": 6.59,
+        "median_ms": 7.05,
+        "p95_ms": 8.3,
+        "max_ms": 8.3,
+        "mean_ms": 7.13
+      }
+    },
+    "timing_methodology": {
+      "setup_is_measured_separately": true,
+      "operation_timer_starts_after_fixture_seed": true,
+      "low_latency_samples": 15,
+      "expensive_samples": 7
+    },
+    "comparison_note": "M10 timings are reported separately in benchmark-fdx-vci-m10-shadow-calibration.json; scenarios differ and no direct improvement claim is made."
+  },
+  "historical_qualification": {
+    "m11_h35_r34_frozen": true,
+    "correction": "H35/R34 remain the accepted M11 benchmark-methodology correction; H36/R35 do not modify M11 production, harness, or report evidence."
+  },
+  "invariants": [
+    "M9 Predicate v1 remains strict and is the default create path",
+    "M12 Predicate v2 uses the in-toto Statement v1 envelope and is unsigned/content-bound only",
+    "M12 policy context is absent for base-only runs and mandatory for overlay-added checks",
+    "M11 remains explicit ADD_CHECK only; M6 base checks, assurance, and unresolved obligations are preserved",
+    "M10 remains measurement-only and candidate-selected evidence cannot self-reinforce policy support",
+    "policy application, snapshot, policy, template, and canonical added-check evidence fail closed on corruption",
+    "historical v2 verification remains valid after a later policy revocation when application-time evidence reproduces exactly",
+    "capabilities are local deterministic machine-readable authority with no network access or telemetry",
+    "schema v10 remains current; no M12 migration modifies historical v1-v10 migrations"
+  ],
+  "executed_at": "2026-08-25T01:32:28.887Z"
+}
