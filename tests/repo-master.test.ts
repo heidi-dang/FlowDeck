@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test"
 import { execFileSync } from "node:child_process"
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 import { RepoMaster, parseRepoMasterAdvice, repoMasterConsultationRequirement } from "../src/orchestration/repository/repo-master"
@@ -60,7 +60,7 @@ describe("Repo Master durable advisory repository intelligence", () => {
   it("builds a bounded current repository view from existing FDX metadata", () => {
     const root = fixture()
     const result = new RepoMaster(root).consult(request())
-    expect(result.advice.repository.root).toBe(root)
+    expect(result.advice.repository.root).toBe(realpathSync(root))
     expect(result.advice.relevantFiles).toContain("src/auth-service.ts")
     expect(result.advice.dependencyEdges.some(edge => edge.from === "src/app.ts" && edge.to.includes("auth-service"))).toBe(true)
     expect(result.advice.likelyTests).toContain("tests/auth-service.test.ts")
