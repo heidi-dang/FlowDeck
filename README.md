@@ -5,7 +5,7 @@
 
 **FlowDeck v2.5.0** is an OpenCode plugin that adds deterministic task routing, bounded repository intelligence, specialist coordination, governance, and FDX code intelligence to software-development workflows. It extends OpenCode rather than replacing OpenCode’s execution environment.
 
-**89 validated skills**
+**14 registered agents** | **11 specialized subagents** | **89 validated skills** | **15 registered commands**
 
 > **Design principle:** FlowDeck decides and coordinates within explicit bounds. OpenCode remains the authority for model execution, native tools, sandboxing, sessions, and Task/subagent execution.
 
@@ -119,6 +119,12 @@ npm install -g @heidi-dang/flowdeck
 flowdeck install
 flowdeck verify
 flowdeck doctor
+```
+
+An installer script is also available for environments that explicitly permit a reviewed bootstrap command:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/heidi-dang/flowdeck/main/install.sh | bash
 ```
 
 For a project-local OpenCode registration, run the installer from the project root:
