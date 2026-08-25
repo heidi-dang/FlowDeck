@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
-import { rmSync, mkdirSync, existsSync, writeFileSync } from "fs";
+import { rmSync, mkdtempSync, mkdirSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
 import { join } from "path";
 import { randomUUID } from "crypto";
 import { Database } from "bun:sqlite";
@@ -11,6 +12,7 @@ import {
 import { classifyTask } from "../src/services/heidi-fast-router";
 import {
   acquireProjectRuntime,
+  disposeProjectRuntime,
   releaseProjectRuntime,
 } from "../src/runtime/project-registry";
 import { OrchestrationPhase as OP } from "../src/orchestration/types/runs";
@@ -20,44 +22,43 @@ import { runMigrations, getCurrentVersion } from "../src/orchestration/persisten
 import { MIGRATIONS } from "../src/orchestration/persistence/migrations/migration-registry";
 import { MigrationChecksumError } from "../src/orchestration/persistence/errors";
 
-const TEST_DIR = join(import.meta.dir, ".tmp-production-wiring-test");
+let testDir = "";
 
 describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees)", () => {
   beforeEach(() => {
-    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true, force: true });
-    mkdirSync(TEST_DIR, { recursive: true });
+    testDir = mkdtempSync(join(tmpdir(), "flowdeck-production-wiring-"));
   });
 
   afterEach(async () => {
-    await releaseProjectRuntime(TEST_DIR);
-    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true, force: true });
+    await disposeProjectRuntime(testDir);
+    rmSync(testDir, { recursive: true, force: true });
   });
 
   // 1. plugin-passes-opencode-client-to-runtime
   it("1. plugin-passes-opencode-client-to-runtime", async () => {
     const mockClient = { session: { abort: mock(() => Promise.resolve(true)), promptAsync: mock(() => Promise.resolve(true)) } };
-    const ctx = acquireProjectRuntime(TEST_DIR, mockClient);
+    const ctx = acquireProjectRuntime(testDir, mockClient);
     expect(ctx.adapter.getClient()).toBe(mockClient);
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 2. shared-runtime-preserves-valid-client
   it("2. shared-runtime-preserves-valid-client", async () => {
-    const ctx1 = acquireProjectRuntime(TEST_DIR);
+    const ctx1 = acquireProjectRuntime(testDir);
     expect(ctx1.adapter.getClient()).toBeUndefined();
 
     const mockClient = { session: { abort: mock(() => Promise.resolve(true)) } };
-    const ctx2 = acquireProjectRuntime(TEST_DIR, mockClient);
+    const ctx2 = acquireProjectRuntime(testDir, mockClient);
     expect(ctx2).toBe(ctx1);
     expect(ctx2.adapter.getClient()).toBe(mockClient);
 
-    await releaseProjectRuntime(TEST_DIR);
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
+    await releaseProjectRuntime(testDir);
   });
 
   // 3. continuation-success-reports-dispatched
   it("3. continuation-success-reports-dispatched", async () => {
-    const ctx = acquireProjectRuntime(TEST_DIR);
+    const ctx = acquireProjectRuntime(testDir);
     const mockClient = { session: { promptAsync: mock(() => Promise.resolve(true)) } };
     const dispatcher = new ContinuationDispatcher(ctx.runtime.db);
 
@@ -80,12 +81,12 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     expect(res.dispatched).toBe(true);
     expect(res.identity.length).toBeGreaterThan(10);
     expect(res.reason).toBeUndefined();
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 4. continuation-unavailable-reports-not-dispatched
   it("4. continuation-unavailable-reports-not-dispatched", async () => {
-    const ctx = acquireProjectRuntime(TEST_DIR);
+    const ctx = acquireProjectRuntime(testDir);
     const dispatcher = new ContinuationDispatcher(ctx.runtime.db);
 
     const token = {
@@ -106,12 +107,12 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
 
     expect(res.dispatched).toBe(false);
     expect(res.reason).toBe("native_dispatch_unavailable");
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 5. continuation-error-reports-not-dispatched
   it("5. continuation-error-reports-not-dispatched", async () => {
-    const ctx = acquireProjectRuntime(TEST_DIR);
+    const ctx = acquireProjectRuntime(testDir);
     const mockClient = { session: { promptAsync: mock(() => Promise.reject(new Error("RPC failed"))) } };
     const dispatcher = new ContinuationDispatcher(ctx.runtime.db);
 
@@ -133,12 +134,12 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
 
     expect(res.dispatched).toBe(false);
     expect(res.reason).toBe("native_dispatch_failed");
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 6. failed-dispatch-does-not-consume-success-dedupe
   it("6. failed-dispatch-does-not-consume-success-dedupe", async () => {
-    const ctx = acquireProjectRuntime(TEST_DIR);
+    const ctx = acquireProjectRuntime(testDir);
     let shouldFail = true;
     const mockClient = {
       session: {
@@ -165,12 +166,12 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     shouldFail = false;
     const res2 = await dispatcher.dispatch(token, { currentTurnVersion: 1, currentAggregateVersion: 1, client: mockClient });
     expect(res2.dispatched).toBe(true);
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 7. successful-dispatch-dedupes
   it("7. successful-dispatch-dedupes", async () => {
-    const ctx = acquireProjectRuntime(TEST_DIR);
+    const ctx = acquireProjectRuntime(testDir);
     const mockClient = { session: { promptAsync: mock(() => Promise.resolve(true)) } };
     const dispatcher = new ContinuationDispatcher(ctx.runtime.db);
 
@@ -190,12 +191,12 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     const res2 = await dispatcher.dispatch(token, { currentTurnVersion: 1, currentAggregateVersion: 1, client: mockClient });
     expect(res2.dispatched).toBe(false);
     expect(res2.reason).toBe("duplicate_dispatch");
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 8. dispatch-dedupe-survives-restart
   it("8. dispatch-dedupe-survives-restart", async () => {
-    const ctx1 = acquireProjectRuntime(TEST_DIR);
+    const ctx1 = acquireProjectRuntime(testDir);
     const mockClient = { session: { promptAsync: mock(() => Promise.resolve(true)) } };
     const dispatcher1 = new ContinuationDispatcher(ctx1.runtime.db);
 
@@ -211,21 +212,21 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
 
     const res1 = await dispatcher1.dispatch(token, { currentTurnVersion: 1, currentAggregateVersion: 1, client: mockClient });
     expect(res1.dispatched).toBe(true);
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
 
-    const ctx2 = acquireProjectRuntime(TEST_DIR);
+    const ctx2 = acquireProjectRuntime(testDir);
     const dispatcher2 = new ContinuationDispatcher(ctx2.runtime.db);
 
     const res2 = await dispatcher2.dispatch(token, { currentTurnVersion: 1, currentAggregateVersion: 1, client: mockClient });
     expect(res2.dispatched).toBe(false);
     expect(res2.reason).toBe("duplicate_dispatch");
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 9. user-turn-version-survives-restart
   it("9. user-turn-version-survives-restart", async () => {
-    const ctx1 = acquireProjectRuntime(TEST_DIR);
+    const ctx1 = acquireProjectRuntime(testDir);
     const sessionID = "sess-turn-restart";
     await ctx1.adapter.onChatMessage(
       { sessionID, agent: "heidi", messageID: "m1" },
@@ -239,16 +240,16 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     );
     expect(ctx1.adapter.getUserTurnVersion(sessionID)).toBe(2);
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
 
-    const ctx2 = acquireProjectRuntime(TEST_DIR);
+    const ctx2 = acquireProjectRuntime(testDir);
     expect(ctx2.adapter.getUserTurnVersion(sessionID)).toBe(2);
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 10. user-turn-version-increments-atomically
   it("10. user-turn-version-increments-atomically", async () => {
-    const ctx = acquireProjectRuntime(TEST_DIR);
+    const ctx = acquireProjectRuntime(testDir);
     const sessionID = "sess-turn-atomic";
 
     const v1 = ctx.runtime.sessionTurnRepo.incrementTurnVersion({ sessionId: sessionID, messageId: "m1" });
@@ -258,12 +259,12 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     expect(v1).toBe(1);
     expect(v2).toBe(2);
     expect(v3).toBe(3);
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 11. query-user-turn-invalidates-old-token
   it("11. query-user-turn-invalidates-old-token", async () => {
-    const ctx = acquireProjectRuntime(TEST_DIR);
+    const ctx = acquireProjectRuntime(testDir);
     const sessionID = "sess-query-inval";
     await ctx.adapter.onChatMessage(
       { sessionID, agent: "heidi", messageID: "m1" },
@@ -299,12 +300,12 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     expect(res.dispatched).toBe(false);
     expect(res.reason).toBe("stale_user_turn_version");
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 12. acknowledge-user-turn-invalidates-old-token
   it("12. acknowledge-user-turn-invalidates-old-token", async () => {
-    const ctx = acquireProjectRuntime(TEST_DIR);
+    const ctx = acquireProjectRuntime(testDir);
     const sessionID = "sess-ack-inval";
     await ctx.adapter.onChatMessage(
       { sessionID, agent: "heidi", messageID: "m1" },
@@ -340,12 +341,12 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     expect(res.dispatched).toBe(false);
     expect(res.reason).toBe("stale_user_turn_version");
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 13. modify-user-turn-invalidates-old-token
   it("13. modify-user-turn-invalidates-old-token", async () => {
-    const ctx = acquireProjectRuntime(TEST_DIR);
+    const ctx = acquireProjectRuntime(testDir);
     const sessionID = "sess-mod-inval";
     await ctx.adapter.onChatMessage(
       { sessionID, agent: "heidi", messageID: "m1" },
@@ -381,12 +382,12 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     expect(res.dispatched).toBe(false);
     expect(res.reason).toBe("stale_user_turn_version");
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 14. stale-run-version-rejected-from-live-db
   it("14. stale-run-version-rejected-from-live-db", async () => {
-    const ctx = acquireProjectRuntime(TEST_DIR);
+    const ctx = acquireProjectRuntime(testDir);
     const sessionID = "sess-stale-run-agg";
     await ctx.adapter.onChatMessage(
       { sessionID, agent: "heidi", messageID: "m1" },
@@ -416,12 +417,12 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     expect(res.dispatched).toBe(false);
     expect(res.reason).toBe("stale_run_aggregate_version");
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 15. stale-state-fingerprint-rejected
   it("15. stale-state-fingerprint-rejected", async () => {
-    const ctx = acquireProjectRuntime(TEST_DIR);
+    const ctx = acquireProjectRuntime(testDir);
     const sessionID = "sess-stale-fp";
     await ctx.adapter.onChatMessage(
       { sessionID, agent: "heidi", messageID: "m1" },
@@ -450,12 +451,12 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     expect(res.dispatched).toBe(false);
     expect(res.reason).toBe("stale_state_fingerprint");
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 16. token-uses-post-transition-snapshot
   it("16. token-uses-post-transition-snapshot", async () => {
-    const ctx = acquireProjectRuntime(TEST_DIR);
+    const ctx = acquireProjectRuntime(testDir);
     const sessionID = "sess-post-trans-snap";
     await ctx.adapter.onChatMessage(
       { sessionID, agent: "heidi", messageID: "m1" },
@@ -488,12 +489,12 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     const snap2 = ctx.runtime.orchestrationSnapshotService.getSnapshot(run.id, sessionID)!;
     expect(snap2.phase).toBe(OP.RECOVERING);
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 17. all-transition-engine-phase-writes-use-cas
   it("17. all-transition-engine-phase-writes-use-cas", async () => {
-    const ctx = acquireProjectRuntime(TEST_DIR);
+    const ctx = acquireProjectRuntime(testDir);
     const sessionID = "sess-cas-mandatory";
     await ctx.adapter.onChatMessage(
       { sessionID, agent: "heidi", messageID: "m1" },
@@ -510,12 +511,12 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     });
     expect(res).toBe(false);
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 18. cas-conflict-does-not-report-phase-changed
   it("18. cas-conflict-does-not-report-phase-changed", async () => {
-    const ctx = acquireProjectRuntime(TEST_DIR);
+    const ctx = acquireProjectRuntime(testDir);
     const sessionID = "sess-cas-conflict";
     await ctx.adapter.onChatMessage(
       { sessionID, agent: "heidi", messageID: "m1" },
@@ -540,12 +541,12 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     });
     expect(lose).toBe(false);
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 19. multi-step-phase-evaluation-does-not-reuse-stale-version
   it("19. multi-step-phase-evaluation-does-not-reuse-stale-version", async () => {
-    const ctx = acquireProjectRuntime(TEST_DIR);
+    const ctx = acquireProjectRuntime(testDir);
     const sessionID = "sess-multistep-ver";
     await ctx.adapter.onChatMessage(
       { sessionID, agent: "heidi", messageID: "m1" },
@@ -571,12 +572,12 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     });
     expect(t2).toBe(true);
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 20. real-concurrent-attempt-reservation-unique
   it("20. real-concurrent-attempt-reservation-unique", async () => {
-    const ctx = acquireProjectRuntime(TEST_DIR);
+    const ctx = acquireProjectRuntime(testDir);
     const sessionID = "sess-att-unique";
     await ctx.adapter.onChatMessage(
       { sessionID, agent: "heidi", messageID: "m1" },
@@ -611,12 +612,12 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     expect(ctx.runtime.transitionEngine.findAttemptByCallID("call-c1")).not.toBeNull();
     expect(ctx.runtime.transitionEngine.findAttemptByCallID("call-c2")).not.toBeNull();
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 21. duplicate-call-id-idempotent-or-conflict
   it("21. duplicate-call-id-idempotent-or-conflict", async () => {
-    const ctx = acquireProjectRuntime(TEST_DIR);
+    const ctx = acquireProjectRuntime(testDir);
     const sessionID = "sess-dup-callid";
     await ctx.adapter.onChatMessage(
       { sessionID, agent: "heidi", messageID: "m1" },
@@ -645,12 +646,12 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     expect(att1.attemptNumber).toBe(1);
     expect(att2.attemptNumber).toBe(1);
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 22. durable-call-id-finalizes-after-restart
   it("22. durable-call-id-finalizes-after-restart", async () => {
-    const ctx1 = acquireProjectRuntime(TEST_DIR);
+    const ctx1 = acquireProjectRuntime(testDir);
     const sessionID = "sess-durable-call";
     await ctx1.adapter.onChatMessage(
       { sessionID, agent: "heidi", messageID: "m1" },
@@ -665,9 +666,9 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
       args: { path: "src/app.ts", content: "export const x = 1;" },
     });
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
 
-    const ctx2 = acquireProjectRuntime(TEST_DIR);
+    const ctx2 = acquireProjectRuntime(testDir);
     await ctx2.adapter.onToolExecuteAfter(
       { tool: "write", sessionID, callID: "call-restart-1", args: { path: "src/app.ts" } },
       { output: "written", metadata: {} }
@@ -677,12 +678,12 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     expect(attempt).not.toBeNull();
     expect(attempt?.finishedAt).toBeDefined();
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 23. task-attempt-finalized
   it("23. task-attempt-finalized", async () => {
-    const ctx = acquireProjectRuntime(TEST_DIR);
+    const ctx = acquireProjectRuntime(testDir);
     const sessionID = "sess-task-att-fin";
     await ctx.adapter.onChatMessage(
       { sessionID, agent: "heidi", messageID: "m1" },
@@ -706,12 +707,12 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     expect(attempt?.finishedAt).toBeDefined();
     expect(attempt?.progressProduced).toBe(true);
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 24. subagent-attempt-finalized
   it("24. subagent-attempt-finalized", async () => {
-    const ctx = acquireProjectRuntime(TEST_DIR);
+    const ctx = acquireProjectRuntime(testDir);
     const sessionID = "sess-sub-att-fin";
     await ctx.adapter.onChatMessage(
       { sessionID, agent: "heidi", messageID: "m1" },
@@ -735,12 +736,12 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     expect(attempt?.finishedAt).toBeDefined();
     expect(attempt?.progressProduced).toBe(true);
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 25. child-a-tool-attributed-to-assignment-a
   it("25. child-a-tool-attributed-to-assignment-a", async () => {
-    const ctx = acquireProjectRuntime(TEST_DIR);
+    const ctx = acquireProjectRuntime(testDir);
     const sessionID = "sess-child-a-main";
     await ctx.adapter.onChatMessage(
       { sessionID, agent: "heidi", messageID: "m1" },
@@ -773,12 +774,12 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     const attA = ctx.runtime.transitionEngine.findAttemptByCallID("call-child-a-tool");
     expect(attA?.assignmentId).toBe("assignment-A");
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 26. child-b-tool-attributed-to-assignment-b
   it("26. child-b-tool-attributed-to-assignment-b", async () => {
-    const ctx = acquireProjectRuntime(TEST_DIR);
+    const ctx = acquireProjectRuntime(testDir);
     const sessionID = "sess-child-b-main";
     await ctx.adapter.onChatMessage(
       { sessionID, agent: "heidi", messageID: "m1" },
@@ -811,12 +812,12 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     const attB = ctx.runtime.transitionEngine.findAttemptByCallID("call-child-b-tool");
     expect(attB?.assignmentId).toBe("assignment-B");
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 27. optional-child-failure-does-not-force-recovery
   it("27. optional-child-failure-does-not-force-recovery", async () => {
-    const ctx = acquireProjectRuntime(TEST_DIR);
+    const ctx = acquireProjectRuntime(testDir);
     const sessionID = "sess-opt-fail";
     await ctx.adapter.onChatMessage(
       { sessionID, agent: "heidi", messageID: "m1" },
@@ -836,12 +837,12 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     expect(evalResult.reasonCode).not.toBe("CHILD_FAILED");
     expect(evalResult.reasonCode).not.toBe("ASSIGNMENT_FAILED");
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 28. required-child-failure-enters-recovery
   it("28. required-child-failure-enters-recovery", async () => {
-    const ctx = acquireProjectRuntime(TEST_DIR);
+    const ctx = acquireProjectRuntime(testDir);
     const sessionID = "sess-req-fail-28";
     await ctx.adapter.onChatMessage(
       { sessionID, agent: "heidi", messageID: "m1" },
@@ -871,12 +872,12 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     expect(evalResult.strategyDecision).toBe("CHANGE_STRATEGY");
     expect(evalResult.reasonCode).toBe("ASSIGNMENT_FAILED");
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 29. optional-active-child-policy
   it("29. optional-active-child-policy", async () => {
-    const ctx = acquireProjectRuntime(TEST_DIR);
+    const ctx = acquireProjectRuntime(testDir);
     const sessionID = "sess-opt-active";
     await ctx.adapter.onChatMessage(
       { sessionID, agent: "heidi", messageID: "m1" },
@@ -900,14 +901,14 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     const evalResult = ctx.runtime.transitionEngine.evaluate({ runId: run.id, sessionId: sessionID });
     expect(evalResult.reasonCode).toBe("READY_FOR_VERIFICATION");
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 30. production-run-cancel-invokes-native-abort
   it("30. production-run-cancel-invokes-native-abort", async () => {
     const abortMock = mock(() => Promise.resolve(true));
     const mockClient = { session: { abort: abortMock } };
-    const ctx = acquireProjectRuntime(TEST_DIR, mockClient);
+    const ctx = acquireProjectRuntime(testDir, mockClient);
     const sessionID = "sess-cancel-abort";
 
     await ctx.adapter.onChatMessage(
@@ -934,14 +935,14 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
 
     expect(abortMock).toHaveBeenCalled();
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 31. native-abort-success-confirms-child-cancel
   it("31. native-abort-success-confirms-child-cancel", async () => {
     const abortMock = mock(() => Promise.resolve(true));
     const mockClient = { session: { abort: abortMock } };
-    const ctx = acquireProjectRuntime(TEST_DIR, mockClient);
+    const ctx = acquireProjectRuntime(testDir, mockClient);
     const sessionID = "sess-abort-conf";
 
     await ctx.adapter.onChatMessage(
@@ -972,14 +973,14 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     expect(res?.record.status).toBe("cancelled");
     expect(res?.record.nativeTerminationConfirmed).toBe(true);
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 32. native-abort-failure-keeps-cancel-unconfirmed
   it("32. native-abort-failure-keeps-cancel-unconfirmed", async () => {
     const abortMock = mock(() => Promise.reject(new Error("Native process stuck")));
     const mockClient = { session: { abort: abortMock } };
-    const ctx = acquireProjectRuntime(TEST_DIR, mockClient);
+    const ctx = acquireProjectRuntime(testDir, mockClient);
     const sessionID = "sess-abort-unconf";
 
     await ctx.adapter.onChatMessage(
@@ -1011,14 +1012,14 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     expect(res?.record.cancelRequested).toBe(true);
     expect(res?.record.nativeTerminationConfirmed).toBe(false);
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 33. parent-cancel-status-truthful-with-unconfirmed-child
   it("33. parent-cancel-status-truthful-with-unconfirmed-child", async () => {
     const abortMock = mock(() => Promise.reject(new Error("Abort timeout")));
     const mockClient = { session: { abort: abortMock } };
-    const ctx = acquireProjectRuntime(TEST_DIR, mockClient);
+    const ctx = acquireProjectRuntime(testDir, mockClient);
     const sessionID = "sess-truthful-cancel";
 
     await ctx.adapter.onChatMessage(
@@ -1059,14 +1060,14 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     const session = ctx.runtime.sessionRepo.findById("child-truth-sess");
     expect(session?.status).not.toBe("cancelled");
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 34. replace-does-not-overlap-unconfirmed-old-run
   it("34. replace-does-not-overlap-unconfirmed-old-run", async () => {
     const abortMock = mock(() => Promise.reject(new Error("Native process stuck")));
     const mockClient = { session: { abort: abortMock, promptAsync: mock(() => Promise.resolve(true)) } };
-    const ctx = acquireProjectRuntime(TEST_DIR, mockClient);
+    const ctx = acquireProjectRuntime(testDir, mockClient);
     const sessionID = "sess-replace-no-overlap";
 
     await ctx.adapter.onChatMessage(
@@ -1106,12 +1107,12 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     const activeAfter = await ctx.adapter.resolveActiveRunForSession(sessionID);
     expect(activeAfter).toBeNull();
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 35. informational-read-remains-non-progress
   it("35. informational-read-remains-non-progress", async () => {
-    const ctx = acquireProjectRuntime(TEST_DIR);
+    const ctx = acquireProjectRuntime(testDir);
     const sessionID = "sess-info-read";
     await ctx.adapter.onChatMessage(
       { sessionID, agent: "heidi", messageID: "m1" },
@@ -1143,12 +1144,12 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     progDiag = ctx.runtime.progressObservationService.getDiagnosticsForRun(run.id);
     expect(progDiag.noProgressCount).toBe(2);
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 36. production-idle-repeated-action-blocks-at-boundary
   it("36. production-idle-repeated-action-blocks-at-boundary", async () => {
-    const ctx = acquireProjectRuntime(TEST_DIR);
+    const ctx = acquireProjectRuntime(testDir);
     const sessionID = "sess-stall-prod";
     await ctx.adapter.onChatMessage(
       { sessionID, agent: "heidi", messageID: "m1" },
@@ -1198,12 +1199,12 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     }
     expect(threw).toBe(true);
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 37. root-strategy-set-blocks-a-b-a-loop
   it("37. root-strategy-set-blocks-a-b-a-loop", async () => {
-    const ctx = acquireProjectRuntime(TEST_DIR);
+    const ctx = acquireProjectRuntime(testDir);
     const sessionID = "sess-aba-root";
     await ctx.adapter.onChatMessage(
       { sessionID, agent: "heidi", messageID: "m1" },
@@ -1268,12 +1269,12 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     }
     expect(threwB).toBe(true);
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 38. assignment-strategy-set-blocks-a-b-a-loop
   it("38. assignment-strategy-set-blocks-a-b-a-loop", async () => {
-    const ctx = acquireProjectRuntime(TEST_DIR);
+    const ctx = acquireProjectRuntime(testDir);
     const sessionID = "sess-aba-as";
     await ctx.adapter.onChatMessage(
       { sessionID, agent: "heidi", messageID: "m1" },
@@ -1329,12 +1330,12 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     }
     expect(threwA).toBe(true);
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 39. strategy-set-survives-restart
   it("39. strategy-set-survives-restart", async () => {
-    const ctx1 = acquireProjectRuntime(TEST_DIR);
+    const ctx1 = acquireProjectRuntime(testDir);
     const sessionID = "sess-set-restart";
     await ctx1.adapter.onChatMessage(
       { sessionID, agent: "heidi", messageID: "m1" },
@@ -1362,9 +1363,9 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
       reason: "REPEATED_ACTION_BLOCKED",
     });
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
 
-    const ctx2 = acquireProjectRuntime(TEST_DIR);
+    const ctx2 = acquireProjectRuntime(testDir);
     const set = ctx2.runtime.transitionEngine.getActiveStrategyConstraints(run.id, "root:" + run.id);
     expect(set?.prohibitedActionFingerprints).toContain(afpA);
     expect(set?.prohibitedActionFingerprints).toContain(afpB);
@@ -1382,7 +1383,7 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     }
     expect(threw).toBe(true);
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 40. change-strategy-continuation-carries-deterministic-constraint
@@ -1397,7 +1398,7 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
 
   // 41. concurrent-identical-continuation-dispatches-once
   it("41. concurrent-identical-continuation-dispatches-once", async () => {
-    const ctx = acquireProjectRuntime(TEST_DIR);
+    const ctx = acquireProjectRuntime(testDir);
     const promptAsyncMock = mock(() => Promise.resolve(true));
     const mockClient = { session: { promptAsync: promptAsyncMock } };
     const dispatcher = new ContinuationDispatcher(ctx.runtime.db);
@@ -1424,12 +1425,12 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     const loser = res1.dispatched ? res2 : res1;
     expect(["dispatch_in_progress", "duplicate_dispatch"]).toContain(loser.reason ?? "");
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 42. failed-continuation-retry-bounded
   it("42. failed-continuation-retry-bounded", async () => {
-    const ctx = acquireProjectRuntime(TEST_DIR);
+    const ctx = acquireProjectRuntime(testDir);
     const promptMock = mock(() => Promise.reject(new Error("RPC failure")));
     const mockClient = { session: { promptAsync: promptMock } };
     const dispatcher = new ContinuationDispatcher(ctx.runtime.db);
@@ -1454,12 +1455,12 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     expect(res3.dispatched).toBe(false);
     expect(promptMock).toHaveBeenCalledTimes(2);
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 43. out-of-order-duplicate-message-id-does-not-increment
   it("43. out-of-order-duplicate-message-id-does-not-increment", async () => {
-    const ctx = acquireProjectRuntime(TEST_DIR);
+    const ctx = acquireProjectRuntime(testDir);
     const sessionID = "sess-ooo-msg";
 
     const v1 = ctx.runtime.sessionTurnRepo.incrementTurnVersion({
@@ -1487,12 +1488,12 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     // Inspect current turn
     expect(ctx.runtime.sessionTurnRepo.getTurnVersion(sessionID)).toBe(2);
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 44. identical-text-different-message-id-increments-turn
   it("44. identical-text-different-message-id-increments-turn", async () => {
-    const ctx = acquireProjectRuntime(TEST_DIR);
+    const ctx = acquireProjectRuntime(testDir);
     const sessionID = "sess-diff-msg-id";
 
     const v1 = ctx.runtime.sessionTurnRepo.incrementTurnVersion({
@@ -1509,7 +1510,7 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     });
     expect(v2).toBe(2);
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 45. migration-v13-upgrades-real-historical-v12-schema-and-preserves-retry-columns
@@ -1560,7 +1561,7 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
 
   // 46. pending-dispatch-restart-becomes-outcome-unknown
   it("46. pending-dispatch-restart-becomes-outcome-unknown", async () => {
-    const ctx1 = acquireProjectRuntime(TEST_DIR);
+    const ctx1 = acquireProjectRuntime(testDir);
     const db = ctx1.runtime.db;
 
     const token = {
@@ -1583,10 +1584,10 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
       ) VALUES (?, 'run-c', 'sess-c', 1, 1, 'PROGRESS_CONFIRMED', 'as-1', 'fp-c', 'pending', 1, datetime('now'), datetime('now'))
     `).run(identity);
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
 
     // Reopen project runtime: startup reconciliation marks pending -> outcome_unknown
-    const ctx2 = acquireProjectRuntime(TEST_DIR);
+    const ctx2 = acquireProjectRuntime(testDir);
     const row = ctx2.runtime.db.query("SELECT status, error FROM continuation_dispatches WHERE identity = ?").get(identity) as { status: string; error: string };
     expect(row.status).toBe("outcome_unknown");
     expect(row.error).toBe("dispatch_outcome_unknown_after_restart");
@@ -1603,14 +1604,14 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     expect(res.reason).toBe("dispatch_outcome_unknown");
     expect(promptMock).not.toHaveBeenCalled();
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 47. session-deleted-confirms-cancellation-and-resumes-deferred-replace
   it("47. session-deleted-confirms-cancellation-and-resumes-deferred-replace", async () => {
     const abortMock = mock(() => Promise.reject(new Error("Native process stuck")));
     const mockClient = { session: { abort: abortMock, promptAsync: mock(() => Promise.resolve(true)) } };
-    const ctx = acquireProjectRuntime(TEST_DIR, mockClient);
+    const ctx = acquireProjectRuntime(testDir, mockClient);
     const sessionID = "sess-del-conf-resume";
 
     await ctx.adapter.onChatMessage(
@@ -1671,14 +1672,14 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     expect(activeNewRun).not.toBeNull();
     expect(activeNewRun?.id).not.toBe(run1.id);
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 48. modify-reclassification-uses-shared-cancellation-barrier
   it("48. modify-reclassification-uses-shared-cancellation-barrier", async () => {
     const abortMock = mock(() => Promise.reject(new Error("Process stuck")));
     const mockClient = { session: { abort: abortMock } };
-    const ctx = acquireProjectRuntime(TEST_DIR, mockClient);
+    const ctx = acquireProjectRuntime(testDir, mockClient);
     const sessionID = "sess-modify-barrier";
 
     await ctx.adapter.onChatMessage(
@@ -1713,12 +1714,12 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     const activeAfter = await ctx.adapter.resolveActiveRunForSession(sessionID);
     expect(activeAfter).toBeNull();
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 49. session-deleted-does-not-cancel-completed-child
   it("49. session-deleted-does-not-cancel-completed-child", async () => {
-    const ctx = acquireProjectRuntime(TEST_DIR);
+    const ctx = acquireProjectRuntime(testDir);
     const sessionID = "sess-comp-child";
     await ctx.adapter.onChatMessage(
       { sessionID, agent: "heidi", messageID: "m1" },
@@ -1755,12 +1756,12 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     const childRec = ctx.runtime.childExecutionLifecycleService.getChildExecution({ childSessionId: "child-completed-session" });
     expect(childRec?.status).toBe("completed"); // Not rewritten to cancelled!
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 50. root-old-progress-consumed-once
   it("50. root-old-progress-consumed-once", async () => {
-    const ctx = acquireProjectRuntime(TEST_DIR);
+    const ctx = acquireProjectRuntime(testDir);
     const sessionID = "sess-progress-once-50";
     await ctx.adapter.onChatMessage(
       { sessionID, agent: "heidi", messageID: "m1" },
@@ -1774,8 +1775,8 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
       callID: "call-prog-50",
       args: { path: "src/fix.ts", content: "export const x = 1;" },
     });
-    mkdirSync(join(TEST_DIR, "src"), { recursive: true });
-    writeFileSync(join(TEST_DIR, "src/fix.ts"), "export const x = 1;");
+    mkdirSync(join(testDir, "src"), { recursive: true });
+    writeFileSync(join(testDir, "src/fix.ts"), "export const x = 1;");
     await ctx.adapter.onToolExecuteAfter(
       { tool: "write", sessionID, callID: "call-prog-50", args: { path: "src/fix.ts" } },
       { output: "saved", metadata: {} }
@@ -1793,12 +1794,12 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     expect(eval2.reasonCode).toBe("NO_PROGRESS");
     expect(eval2.requiresAction).toBe(false);
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 51. strategy-set-exhaustion-blocks-further-tools
   it("51. strategy-set-exhaustion-blocks-further-tools", async () => {
-    const ctx = acquireProjectRuntime(TEST_DIR);
+    const ctx = acquireProjectRuntime(testDir);
     const sessionID = "sess-exhaustion";
     await ctx.adapter.onChatMessage(
       { sessionID, agent: "heidi", messageID: "m1" },
@@ -1861,14 +1862,14 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
       args: { path: "brand-new-path.json" },
     });
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 52. deferred-replacement-survives-restart-and-resumes-once
   it("52. deferred-replacement-survives-restart-and-resumes-once", async () => {
     const abortMock = mock(() => Promise.reject(new Error("Native process stuck")));
     const mockClient = { session: { abort: abortMock, promptAsync: mock(() => Promise.resolve(true)) } };
-    const ctx1 = acquireProjectRuntime(TEST_DIR, mockClient);
+    const ctx1 = acquireProjectRuntime(testDir, mockClient);
     const sessionID = "sess-deferred-restart";
 
     await ctx1.adapter.onChatMessage(
@@ -1900,9 +1901,9 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     );
 
     // Shutdown and restart runtime
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
 
-    const ctx2 = acquireProjectRuntime(TEST_DIR, mockClient);
+    const ctx2 = acquireProjectRuntime(testDir, mockClient);
 
     // Ensure pending deferred replacement exists in SQLite
     const savedDeferred = ctx2.runtime.deferredReplacementRepo.findCurrentForSession(sessionID);
@@ -1929,14 +1930,14 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     const finalDef = ctx2.runtime.deferredReplacementRepo.findCurrentForSession(sessionID);
     expect(finalDef).toBeNull(); // No longer pending_termination/resuming
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 53. newer-deferred-replacement-supersedes-older-deferred-replacement
   it("53. newer-deferred-replacement-supersedes-older-deferred-replacement", async () => {
     const abortMock = mock(() => Promise.reject(new Error("Native process stuck")));
     const mockClient = { session: { abort: abortMock, promptAsync: mock(() => Promise.resolve(true)) } };
-    const ctx = acquireProjectRuntime(TEST_DIR, mockClient);
+    const ctx = acquireProjectRuntime(testDir, mockClient);
     const sessionID = "sess-supersession";
 
     await ctx.adapter.onChatMessage(
@@ -1986,12 +1987,12 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     const route = ctx.adapter.getUserTurnVersion(sessionID);
     expect(route).toBeGreaterThan(1);
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 54. true-production-stall-detected-via-session-idle
   it("54. true-production-stall-detected-via-session-idle", async () => {
-    const ctx = acquireProjectRuntime(TEST_DIR);
+    const ctx = acquireProjectRuntime(testDir);
     const sessionID = "sess-true-stall";
     await ctx.adapter.onChatMessage(
       { sessionID, agent: "heidi", messageID: "m1" },
@@ -2048,7 +2049,7 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     }
     expect(threwStall).toBe(true);
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 55. migration-checksum-mismatch-throws-error
@@ -2120,7 +2121,7 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
 
   // 57. meaningful-state-version-persists-across-restart-and-increments-on-mutations
   it("57. meaningful-state-version-persists-across-restart-and-increments-on-mutations", async () => {
-    const ctx1 = acquireProjectRuntime(TEST_DIR);
+    const ctx1 = acquireProjectRuntime(testDir);
     const sessionID = "sess-meaningful-restart";
     await ctx1.adapter.onChatMessage(
       { sessionID, agent: "heidi", messageID: "m1" },
@@ -2131,14 +2132,14 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     expect(ctx1.runtime.progressObservationService.getMeaningfulStateVersion(run.id)).toBe(0);
 
     // Mutation 1: file written during tool execution
-    mkdirSync(join(TEST_DIR, "src"), { recursive: true });
+    mkdirSync(join(testDir, "src"), { recursive: true });
     await ctx1.adapter.onToolExecuteBefore({
       tool: "write",
       sessionID,
       callID: "call-m-1",
       args: { path: "src/a.ts", content: "export const a = 1;" },
     });
-    writeFileSync(join(TEST_DIR, "src/a.ts"), "export const a = 1;");
+    writeFileSync(join(testDir, "src/a.ts"), "export const a = 1;");
     await ctx1.adapter.onToolExecuteAfter(
       { tool: "write", sessionID, callID: "call-m-1", args: { path: "src/a.ts" } },
       { output: "ok", metadata: {} }
@@ -2165,25 +2166,25 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
       callID: "call-m-2",
       args: { path: "src/b.ts", content: "export const b = 2;" },
     });
-    writeFileSync(join(TEST_DIR, "src/b.ts"), "export const b = 2;");
+    writeFileSync(join(testDir, "src/b.ts"), "export const b = 2;");
     await ctx1.adapter.onToolExecuteAfter(
       { tool: "write", sessionID, callID: "call-m-2", args: { path: "src/b.ts" } },
       { output: "ok", metadata: {} }
     );
     expect(ctx1.runtime.progressObservationService.getMeaningfulStateVersion(run.id)).toBe(2);
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
 
     // Restart and assert version remains 2
-    const ctx2 = acquireProjectRuntime(TEST_DIR);
+    const ctx2 = acquireProjectRuntime(testDir);
     expect(ctx2.runtime.progressObservationService.getMeaningfulStateVersion(run.id)).toBe(2);
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 58. concurrent-duplicate-message-id-competing-parallel
   it("58. concurrent-duplicate-message-id-competing-parallel", async () => {
-    const ctx = acquireProjectRuntime(TEST_DIR);
+    const ctx = acquireProjectRuntime(testDir);
     const sessionID = "sess-conc-msg-compete";
 
     const [vA, vB] = await Promise.all([
@@ -2203,12 +2204,12 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     expect(vB).toBe(1);
     expect(ctx.runtime.sessionTurnRepo.getTurnVersion(sessionID)).toBe(1);
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 59. deferred-resuming-before-create-recovers-after-restart
   it("59. deferred-resuming-before-create-recovers-after-restart", async () => {
-    const ctx1 = acquireProjectRuntime(TEST_DIR);
+    const ctx1 = acquireProjectRuntime(testDir);
     const sessionID = "sess-rec-before-create";
 
     const goal = "Refactor backend telemetry architecture and rewrite services";
@@ -2221,12 +2222,12 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
       ) VALUES ('def-crash-1', ?, 'old-run-1', 'REPLACE', 'heidi', ?, 'h1', 'm1', 'corr-crash-1', ?, 'resuming', datetime('now'), datetime('now'))
     `).run(sessionID, goal, JSON.stringify(decision));
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
 
     // Restart runtime: fresh startup automatically drains safe deferred replacements when client is provided
     const promptAsyncMock = mock(() => Promise.resolve(true));
     const mockClient = { session: { promptAsync: promptAsyncMock } };
-    const ctx2 = acquireProjectRuntime(TEST_DIR, mockClient);
+    const ctx2 = acquireProjectRuntime(testDir, mockClient);
     await ctx2.adapter.startupReady;
 
     const def = ctx2.runtime.deferredReplacementRepo.findById("def-crash-1");
@@ -2239,12 +2240,12 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     expect(repRun).toBeDefined();
     expect(promptAsyncMock).toHaveBeenCalledTimes(1);
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 60. deferred-resuming-after-create-reuses-existing-run
   it("60. deferred-resuming-after-create-reuses-existing-run", async () => {
-    const ctx1 = acquireProjectRuntime(TEST_DIR);
+    const ctx1 = acquireProjectRuntime(testDir);
     const sessionID = "sess-rec-after-create";
     const correlationId = "corr-already-created";
 
@@ -2269,12 +2270,12 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
       ) VALUES ('def-crash-2', ?, 'old-run-2', 'REPLACE', 'heidi', ?, 'h2', 'm2', ?, ?, 'resuming', datetime('now'), datetime('now'))
     `).run(sessionID, goal, correlationId, JSON.stringify(decision));
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
 
     // Restart runtime with mock client: reconciliation discovers existing Run and completes native prompt handoff
     const promptAsyncMock = mock(() => Promise.resolve(true));
     const mockClient = { session: { promptAsync: promptAsyncMock } };
-    const ctx2 = acquireProjectRuntime(TEST_DIR, mockClient);
+    const ctx2 = acquireProjectRuntime(testDir, mockClient);
     await ctx2.adapter.startupReady;
 
     const def = ctx2.runtime.deferredReplacementRepo.findById("def-crash-2");
@@ -2284,23 +2285,23 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     expect(promptAsyncMock).toHaveBeenCalledTimes(1);
 
     // Restart again with existing dispatched record: converges to resumed without duplicate prompt
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
     const promptAsyncMock2 = mock(() => Promise.resolve(true));
     const mockClient2 = { session: { promptAsync: promptAsyncMock2 } };
-    const ctx3 = acquireProjectRuntime(TEST_DIR, mockClient2);
+    const ctx3 = acquireProjectRuntime(testDir, mockClient2);
     await ctx3.adapter.startupReady;
 
     expect(promptAsyncMock2).toHaveBeenCalledTimes(0);
     expect(ctx3.runtime.deferredReplacementRepo.findById("def-crash-2")?.status).toBe("resumed");
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 61. deferred-replacement-persists-actual-run-id
   it("61. deferred-replacement-persists-actual-run-id", async () => {
     const abortMock = mock(() => Promise.reject(new Error("Native process stuck")));
     const mockClient = { session: { abort: abortMock, promptAsync: mock(() => Promise.resolve(true)) } };
-    const ctx = acquireProjectRuntime(TEST_DIR, mockClient);
+    const ctx = acquireProjectRuntime(testDir, mockClient);
     const sessionID = "sess-actual-run-id";
 
     await ctx.adapter.onChatMessage(
@@ -2351,12 +2352,12 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     expect(taskRunRow?.runId).toBe(resumedDef!.replacementRunId!);
     expect(resumedDef!.replacementRunId).not.toContain("task-");
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 62. deferred-replacement-create-is-idempotent-by-correlation
   it("62. deferred-replacement-create-is-idempotent-by-correlation", async () => {
-    const ctx = acquireProjectRuntime(TEST_DIR);
+    const ctx = acquireProjectRuntime(testDir);
     const correlationId = "corr-idem-competing-" + randomUUID();
 
     // Truly concurrent competing creation calls using Promise.all
@@ -2387,14 +2388,14 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     const byCorr = await ctx.runtime.services.runRepo.findByCorrelationId(correlationId);
     expect(byCorr?.id).toBe(runA.id);
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 63. duplicate-session-delete-after-crash-does-not-create-second-run
   it("63. duplicate-session-delete-after-crash-does-not-create-second-run", async () => {
     const abortMock = mock(() => Promise.reject(new Error("Native process stuck")));
     const mockClient = { session: { abort: abortMock, promptAsync: mock(() => Promise.resolve(true)) } };
-    const ctx1 = acquireProjectRuntime(TEST_DIR, mockClient);
+    const ctx1 = acquireProjectRuntime(testDir, mockClient);
     const sessionID = "sess-dup-del-crash";
 
     await ctx1.adapter.onChatMessage(
@@ -2426,9 +2427,9 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     );
 
     // Simulate crash and restart
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
 
-    const ctx2 = acquireProjectRuntime(TEST_DIR, mockClient);
+    const ctx2 = acquireProjectRuntime(testDir, mockClient);
 
     // First session.deleted event
     await ctx2.adapter.onEvent({
@@ -2448,14 +2449,14 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     const activeRunSecond = await ctx2.adapter.resolveActiveRunForSession(sessionID);
     expect(activeRunSecond?.id).toBe(activeRunFirst?.id);
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 64. newer-user-message-while-deferred-does-not-bypass-barrier
   it("64. newer-user-message-while-deferred-does-not-bypass-barrier", async () => {
     const abortMock = mock(() => Promise.reject(new Error("Native process stuck")));
     const mockClient = { session: { abort: abortMock, promptAsync: mock(() => Promise.resolve(true)) } };
-    const ctx = acquireProjectRuntime(TEST_DIR, mockClient);
+    const ctx = acquireProjectRuntime(testDir, mockClient);
     const sessionID = "sess-barrier-bypass";
 
     await ctx.adapter.onChatMessage(
@@ -2526,14 +2527,14 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     const activeNewRun = await ctx.adapter.resolveActiveRunForSession(sessionID);
     expect(activeNewRun).not.toBeNull();
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 65. user-cancel-supersedes-or-cancels-deferred-intent
   it("65. user-cancel-supersedes-or-cancels-deferred-intent", async () => {
     const abortMock = mock(() => Promise.reject(new Error("Native process stuck")));
     const mockClient = { session: { abort: abortMock, promptAsync: mock(() => Promise.resolve(true)) } };
-    const ctx = acquireProjectRuntime(TEST_DIR, mockClient);
+    const ctx = acquireProjectRuntime(testDir, mockClient);
     const sessionID = "sess-cancel-deferred";
 
     await ctx.adapter.onChatMessage(
@@ -2587,14 +2588,14 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     const activeRun = await ctx.adapter.resolveActiveRunForSession(sessionID);
     expect(activeRun).toBeNull();
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 66. deferred-fast-direct-survives-restart-and-resumes-at-most-once
   it("66. deferred-fast-direct-survives-restart-and-resumes-at-most-once", async () => {
     const abortMock = mock(() => Promise.reject(new Error("Native process stuck")));
     const mockClient = { session: { abort: abortMock, promptAsync: mock(() => Promise.resolve(true)) } };
-    const ctx1 = acquireProjectRuntime(TEST_DIR, mockClient);
+    const ctx1 = acquireProjectRuntime(testDir, mockClient);
     const sessionID = "sess-fast-direct-restart";
 
     await ctx1.adapter.onChatMessage(
@@ -2626,9 +2627,9 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     );
 
     // Restart runtime before child termination
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
 
-    const ctx2 = acquireProjectRuntime(TEST_DIR, mockClient);
+    const ctx2 = acquireProjectRuntime(testDir, mockClient);
 
     const savedDef = ctx2.runtime.deferredReplacementRepo.findCurrentForSession(sessionID);
     expect(savedDef).not.toBeNull();
@@ -2655,25 +2656,25 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     expect(defAtFault?.status).toBe("handoff_pending");
 
     // Process crash and restart
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
 
     // Restart runtime: handoff_pending reconciles to handoff_outcome_unknown to prevent blind replay
     const promptAsyncMockAfterCrash = mock(() => Promise.resolve(true));
-    const ctx3 = acquireProjectRuntime(TEST_DIR, { session: { promptAsync: promptAsyncMockAfterCrash } });
+    const ctx3 = acquireProjectRuntime(testDir, { session: { promptAsync: promptAsyncMockAfterCrash } });
     await ctx3.adapter.startupReady;
 
     const defAfterCrash = ctx3.runtime.deferredReplacementRepo.findById(savedDef!.id);
     expect(defAfterCrash?.status).toBe("handoff_outcome_unknown");
     expect(promptAsyncMockAfterCrash).toHaveBeenCalledTimes(0);
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 67. strategy-exhausted-evaluate-returns-explicit-reason-and-stops-autonomous-idle
   it("67. strategy-exhausted-evaluate-returns-explicit-reason-and-stops-autonomous-idle", async () => {
     const promptAsyncMock = mock(() => Promise.resolve(true));
     const mockClient = { session: { abort: mock(() => Promise.resolve(true)), promptAsync: promptAsyncMock } };
-    const ctx = acquireProjectRuntime(TEST_DIR, mockClient);
+    const ctx = acquireProjectRuntime(testDir, mockClient);
     const sessionID = "sess-exhaust-test";
 
     await ctx.adapter.onChatMessage(
@@ -2771,7 +2772,7 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     });
     expect(evalAfterMut.reasonCode).not.toBe("STRATEGY_SET_EXHAUSTED");
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 68. v13-checksum-covers-schema-aware-migration-contract-and-rejects-changed-behavior
@@ -2809,7 +2810,7 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
   it("70. deferred-intent-semantics-replay-continue-query-ack-modify", async () => {
     const abortMock = mock(() => Promise.reject(new Error("Native process stuck")));
     const mockClient = { session: { abort: abortMock, promptAsync: mock(() => Promise.resolve(true)) } };
-    const ctx = acquireProjectRuntime(TEST_DIR, mockClient);
+    const ctx = acquireProjectRuntime(testDir, mockClient);
     const sessionID = "sess-deferred-intent-matrix";
 
     await ctx.adapter.onChatMessage(
@@ -2872,7 +2873,7 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     expect(modDef?.effectiveGoal).toContain("also add strict types");
     expect(modDef?.sourceIntent).toBe("MODIFY_RECLASSIFICATION");
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 71. deferred-prompt-failure-does-not-mark-resumed
@@ -2880,7 +2881,7 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     const abortMock = mock(() => Promise.reject(new Error("Native process stuck")));
     const promptAsyncMock = mock(() => Promise.reject(new Error("Native OpenCode dispatch failed")));
     const mockClient = { session: { abort: abortMock, promptAsync: promptAsyncMock } };
-    const ctx = acquireProjectRuntime(TEST_DIR, mockClient);
+    const ctx = acquireProjectRuntime(testDir, mockClient);
     const sessionID = "sess-prompt-fail";
 
     await ctx.adapter.onChatMessage(
@@ -2925,23 +2926,23 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     expect(defAfterFail?.status).toBe("handoff_pending");
 
     // Process restart: known failure is preserved as retryable and startup recovery retries with same identity
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
     const retryPromptMock = mock(() => Promise.resolve(true));
-    const ctx2 = acquireProjectRuntime(TEST_DIR, { session: { abort: abortMock, promptAsync: retryPromptMock } });
+    const ctx2 = acquireProjectRuntime(testDir, { session: { abort: abortMock, promptAsync: retryPromptMock } });
     await ctx2.adapter.startupReady;
 
     const defAfterRetry = ctx2.runtime.deferredReplacementRepo.findById(savedDef!.id);
     expect(defAfterRetry?.status).toBe("resumed");
     expect(retryPromptMock).toHaveBeenCalledTimes(1);
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 76. outcome-unknown-cancel-after-child-termination-cancels-deferred
   it("76. outcome-unknown-cancel-after-child-termination-cancels-deferred", async () => {
     const abortMock = mock(() => Promise.reject(new Error("Native process stuck")));
     const mockClient = { session: { abort: abortMock, promptAsync: mock(() => Promise.resolve(true)) } };
-    const ctx = acquireProjectRuntime(TEST_DIR, mockClient);
+    const ctx = acquireProjectRuntime(testDir, mockClient);
     const sessionID = "sess-ou-cancel";
 
     const goal = "Refactor backend telemetry architecture";
@@ -2963,7 +2964,7 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     const defAfter = ctx.runtime.deferredReplacementRepo.findById("def-ou-1");
     expect(defAfter?.status).toBe("cancelled");
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 77. outcome-unknown-replace-after-child-termination-supersedes-old
@@ -2971,7 +2972,7 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     const abortMock = mock(() => Promise.reject(new Error("Native process stuck")));
     const promptAsyncMock = mock(() => Promise.resolve(true));
     const mockClient = { session: { abort: abortMock, promptAsync: promptAsyncMock } };
-    const ctx = acquireProjectRuntime(TEST_DIR, mockClient);
+    const ctx = acquireProjectRuntime(testDir, mockClient);
     const sessionID = "sess-ou-replace";
 
     const goal = "Old uncertain deferred task";
@@ -2999,7 +3000,7 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     expect(curDef).not.toBeNull();
     expect(curDef?.effectiveGoal).toContain("refactor database schema");
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 78. handoff-pending-query-does-not-strand-dispatch
@@ -3007,7 +3008,7 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     const abortMock = mock(() => Promise.reject(new Error("Native process stuck")));
     const promptAsyncMock = mock(() => Promise.resolve(true));
     const mockClient = { session: { abort: abortMock, promptAsync: promptAsyncMock } };
-    const ctx = acquireProjectRuntime(TEST_DIR, mockClient);
+    const ctx = acquireProjectRuntime(testDir, mockClient);
     const sessionID = "sess-query-race";
 
     await ctx.adapter.onChatMessage(
@@ -3057,7 +3058,7 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     const defAfter = ctx.runtime.deferredReplacementRepo.findById(savedDef!.id);
     expect(defAfter?.status).toBe("resumed");
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 79. failed-max-attempts-transitions-deferred-blocked
@@ -3065,7 +3066,7 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     const abortMock = mock(() => Promise.reject(new Error("Native process stuck")));
     const promptAsyncMock = mock(() => Promise.reject(new Error("Permanent prompt failure")));
     const mockClient = { session: { abort: abortMock, promptAsync: promptAsyncMock } };
-    const ctx = acquireProjectRuntime(TEST_DIR, mockClient);
+    const ctx = acquireProjectRuntime(testDir, mockClient);
     const sessionID = "sess-block-fail";
 
     await ctx.adapter.onChatMessage(
@@ -3104,8 +3105,8 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     expect(ctx.runtime.deferredReplacementRepo.findById(savedDef!.id)?.status).toBe("handoff_pending");
 
     // Restart runtime: Attempt 2 fails -> max attempts reached -> status becomes blocked
-    await releaseProjectRuntime(TEST_DIR);
-    const ctx2 = acquireProjectRuntime(TEST_DIR, mockClient);
+    await releaseProjectRuntime(testDir);
+    const ctx2 = acquireProjectRuntime(testDir, mockClient);
     await ctx2.adapter.startupReady;
 
     const defBlocked = ctx2.runtime.deferredReplacementRepo.findById(savedDef!.id);
@@ -3128,7 +3129,7 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     );
     expect(ctx2.runtime.deferredReplacementRepo.findById(savedDef!.id)?.status).toBe("cancelled");
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 80. fast-direct-failed-dispatch-retries-safely
@@ -3136,7 +3137,7 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     const abortMock = mock(() => Promise.reject(new Error("Native process stuck")));
     const promptAsyncMock = mock(() => Promise.reject(new Error("Transient network failure")));
     const mockClient = { session: { abort: abortMock, promptAsync: promptAsyncMock } };
-    const ctx = acquireProjectRuntime(TEST_DIR, mockClient);
+    const ctx = acquireProjectRuntime(testDir, mockClient);
     const sessionID = "sess-fd-fail-retry";
 
     await ctx.adapter.onChatMessage(
@@ -3175,16 +3176,16 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     expect(ctx.runtime.deferredReplacementRepo.findById(savedDef!.id)?.status).toBe("handoff_pending");
 
     // Restart with working promptAsync -> Attempt 2 succeeds -> marked resumed
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
     const retryPromptMock = mock(() => Promise.resolve(true));
-    const ctx2 = acquireProjectRuntime(TEST_DIR, { session: { abort: abortMock, promptAsync: retryPromptMock } });
+    const ctx2 = acquireProjectRuntime(testDir, { session: { abort: abortMock, promptAsync: retryPromptMock } });
     await ctx2.adapter.startupReady;
 
     const defResumed = ctx2.runtime.deferredReplacementRepo.findById(savedDef!.id);
     expect(defResumed?.status).toBe("resumed");
     expect(retryPromptMock).toHaveBeenCalledTimes(1);
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 72. deferred-cancel-race-before-dispatch-prevents-prompt
@@ -3192,7 +3193,7 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     const abortMock = mock(() => Promise.reject(new Error("Native process stuck")));
     const promptAsyncMock = mock(() => Promise.resolve(true));
     const mockClient = { session: { abort: abortMock, promptAsync: promptAsyncMock } };
-    const ctx = acquireProjectRuntime(TEST_DIR, mockClient);
+    const ctx = acquireProjectRuntime(testDir, mockClient);
     const sessionID = "sess-cancel-race";
 
     await ctx.adapter.onChatMessage(
@@ -3239,7 +3240,7 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     expect(defAfterCancel?.status).toBe("cancelled");
     expect(promptAsyncMock).toHaveBeenCalledTimes(0);
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 73. deferred-replace-race-before-dispatch-prevents-stale-prompt
@@ -3247,7 +3248,7 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     const abortMock = mock(() => Promise.reject(new Error("Native process stuck")));
     const promptAsyncMock = mock(() => Promise.resolve(true));
     const mockClient = { session: { abort: abortMock, promptAsync: promptAsyncMock } };
-    const ctx = acquireProjectRuntime(TEST_DIR, mockClient);
+    const ctx = acquireProjectRuntime(testDir, mockClient);
     const sessionID = "sess-replace-race";
 
     await ctx.adapter.onChatMessage(
@@ -3306,7 +3307,7 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     const curDef = ctx.runtime.deferredReplacementRepo.findCurrentForSession(sessionID);
     expect(curDef?.effectiveGoal).toBe("Replacement R2");
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 74. deferred-dispatch-uses-durable-user-turn-without-increment
@@ -3314,7 +3315,7 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     const abortMock = mock(() => Promise.reject(new Error("Native process stuck")));
     const promptAsyncMock = mock(() => Promise.resolve(true));
     const mockClient = { session: { abort: abortMock, promptAsync: promptAsyncMock } };
-    const ctx = acquireProjectRuntime(TEST_DIR, mockClient);
+    const ctx = acquireProjectRuntime(testDir, mockClient);
     const sessionID = "sess-turn-version-integrity";
 
     // User message 1 -> Turn version 1
@@ -3356,7 +3357,7 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     // Crucial: internal deferred continuation injection MUST NOT increment the durable user turn version!
     expect(ctx.runtime.sessionTurnRepo.getTurnVersion(sessionID)).toBe(2);
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 75. fast-direct-success-uses-native-prompt-and-marks-resumed
@@ -3364,7 +3365,7 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     const abortMock = mock(() => Promise.reject(new Error("Native process stuck")));
     const promptAsyncMock = mock(() => Promise.resolve(true));
     const mockClient = { session: { abort: abortMock, promptAsync: promptAsyncMock } };
-    const ctx = acquireProjectRuntime(TEST_DIR, mockClient);
+    const ctx = acquireProjectRuntime(testDir, mockClient);
     const sessionID = "sess-fd-prompt-success";
 
     await ctx.adapter.onChatMessage(
@@ -3408,7 +3409,7 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     expect(resumedDef?.status).toBe("resumed");
     expect(resumedDef?.replacementRunId).toBeUndefined();
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
   });
 
   // 69. historical-v12-byte-identity-remains-valid

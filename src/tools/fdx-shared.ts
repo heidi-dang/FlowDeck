@@ -356,6 +356,8 @@ export interface RunFdxAsyncOptions {
   timeoutMs?: number
   signal?: AbortSignal
   maxBuffer?: number
+  /** Optional observation hook invoked after the child process is created. */
+  onSpawn?: (pid: number | undefined) => void
 }
 
 /**
@@ -558,6 +560,8 @@ export function runExecutableAsync(
       }
       finish(null, stdout)
     })
+
+    try { opts.onSpawn?.(proc.pid) } catch {}
 
     timer = setTimeout(() => {
       if (!settled) { try { proc.kill("SIGKILL") } catch {} }

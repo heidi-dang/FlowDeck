@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest"
 import { join } from "node:path"
-import { unlinkSync, existsSync } from "node:fs"
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
 import { openConnection, closeConnection } from "../../src/orchestration/persistence/connection"
 import { runMigrations } from "../../src/orchestration/persistence/migrations/migration-runner"
 import { createTransactionManager } from "../../src/orchestration/persistence/transaction-manager"
@@ -9,7 +10,6 @@ import { SqliteContextItemRepository } from "../../src/orchestration/persistence
 import { TaskRunsRepository } from "../../src/orchestration/persistence/repositories/task-run"
 import type { Database } from "bun:sqlite"
 
-const TEST_DB = join(process.cwd(), ".flowdeck", "test-session-context.db")
 
 function seedContract(db: Database, contractId: string = "contract-1", familyId: string = "fam-1") {
   db.query(
@@ -25,16 +25,19 @@ function seedContract(db: Database, contractId: string = "contract-1", familyId:
 
 describe("Session and Context Persistence (Phase 3 Gap)", () => {
   let db: Database
+  let testDirectory: string
+  let testDb: string
 
   beforeEach(() => {
-    if (existsSync(TEST_DB)) unlinkSync(TEST_DB)
-    db = openConnection({ path: TEST_DB })
+    testDirectory = mkdtempSync(join(tmpdir(), "flowdeck-session-context-"))
+    testDb = join(testDirectory, "session-context.db")
+    db = openConnection({ path: testDb })
     runMigrations(db)
   })
 
   afterEach(() => {
-    closeConnection(TEST_DB)
-    if (existsSync(TEST_DB)) unlinkSync(TEST_DB)
+    closeConnection(testDb)
+    rmSync(testDirectory, { recursive: true, force: true })
   })
 
   it("persists agent session and updates status and metrics", () => {

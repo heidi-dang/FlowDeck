@@ -282,11 +282,16 @@ describe("Native process cancellation", () => {
   it("kills an already spawned native process when AbortSignal fires", async () => {
     const { runExecutableAsync } = await import("../src/tools/fdx-shared")
     const ctrl = new AbortController()
+    let markSpawned: (() => void) | undefined
+    const spawned = new Promise<void>(resolve => { markSpawned = resolve })
 
-    const p = runExecutableAsync("node", ["-e", "setTimeout(() => {}, 10000)"], { signal: ctrl.signal, timeoutMs: 10000 })
+    const p = runExecutableAsync("node", ["-e", "setTimeout(() => {}, 10000)"], {
+      signal: ctrl.signal,
+      timeoutMs: 10000,
+      onSpawn: () => markSpawned?.(),
+    })
 
-    // Give it a tiny bit to spawn
-    await new Promise(r => setTimeout(r, 50))
+    await spawned
     ctrl.abort()
 
     await expect(p).rejects.toThrow("FDX_EXEC_ABORTED")
