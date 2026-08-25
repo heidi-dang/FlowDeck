@@ -53,6 +53,8 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
   private inFlightAttempts = new Map<string, { runId: string; assignmentId: string; attemptNumber: number; preStateFingerprint: string; actionFingerprint: string; startedAt: string }>();
   private continuationDispatcher: ContinuationDispatcher;
   private startupReadyPromise: Promise<number | void> | null = null;
+  /** Deferred recovery work must complete before terminal persistence shutdown. */
+  private readonly lifecycleTasks = new Set<Promise<unknown>>();
   public testHandoffFaultHook?: (type: "FAST_DIRECT" | "ORCHESTRATED", deferred: DeferredReplacementRecord, replacement?: Run) => Promise<void> | void;
 
   constructor(
@@ -63,7 +65,7 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
     this.continuationDispatcher = new ContinuationDispatcher(this.runtime.db);
     this.runtime.childExecutionLifecycleService?.setControlPort(this);
     if (this.client) {
-      this.startupReadyPromise = this.drainSafeDeferredReplacements().catch(err => {
+      this.startupReadyPromise = this.trackLifecycleTask(this.drainSafeDeferredReplacements()).catch(err => {
         console.warn("[FlowDeckLifecycleAdapter] drainSafeDeferredReplacements on startup threw:", err);
       });
     }
@@ -78,7 +80,7 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
       this.client = client;
     }
     if (!this.startupReadyPromise) {
-      this.startupReadyPromise = this.drainSafeDeferredReplacements().catch(err => {
+      this.startupReadyPromise = this.trackLifecycleTask(this.drainSafeDeferredReplacements()).catch(err => {
         console.warn("[FlowDeckLifecycleAdapter] drainSafeDeferredReplacements on initialize threw:", err);
       });
     }
@@ -89,11 +91,24 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
     return this.client;
   }
 
+  private trackLifecycleTask<T>(task: Promise<T>): Promise<T> {
+    let tracked: Promise<T>;
+    tracked = task.finally(() => this.lifecycleTasks.delete(tracked));
+    this.lifecycleTasks.add(tracked);
+    return tracked;
+  }
+
+  private async awaitLifecycleQuiescence(): Promise<void> {
+    while (this.lifecycleTasks.size > 0) {
+      await Promise.allSettled(this.lifecycleTasks);
+    }
+  }
+
   setClient(client: any): void {
     if (client) {
       this.client = client;
       // Trigger drain of any safe deferred replacements waiting on native prompt dispatch
-      this.startupReadyPromise = this.drainSafeDeferredReplacements().catch(err => {
+      this.startupReadyPromise = this.trackLifecycleTask(this.drainSafeDeferredReplacements()).catch(err => {
         console.warn("[FlowDeckLifecycleAdapter] drainSafeDeferredReplacements on setClient threw:", err);
       });
     }
@@ -400,7 +415,9 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
             routingDecision: decision,
           });
           if (!diag?.currentTerminationPending) {
-            this.drainSafeDeferredReplacements().catch(() => {});
+            // Keep detached recovery work ownership-bound to this adapter. Terminal
+            // runtime disposal waits for it before closing persistence.
+            void this.trackLifecycleTask(this.drainSafeDeferredReplacements()).catch(() => {});
           }
           return;
         }
@@ -419,7 +436,8 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
           routingDecision: decision,
         });
         if (!diag?.currentTerminationPending) {
-          this.drainSafeDeferredReplacements().catch(() => {});
+          // See MODIFY above: the task remains adapter-owned until it settles.
+          void this.trackLifecycleTask(this.drainSafeDeferredReplacements()).catch(() => {});
         }
         return;
       }
@@ -1205,11 +1223,12 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
    * Called during startup recovery and after session termination events.
    */
   async drainSafeDeferredReplacements(): Promise<number> {
-    if (!this.runtime.deferredReplacementRepo) return 0;
+    if (this.disposed || !this.runtime.deferredReplacementRepo) return 0;
     const pendingList = this.runtime.deferredReplacementRepo.listPendingReadyForResume();
     let resumedCount = 0;
 
     for (const deferred of pendingList) {
+      if (this.disposed) break;
       const diag = this.runtime.childExecutionLifecycleService?.getDiagnosticsForRun(deferred.oldRunId);
       if (!diag?.currentTerminationPending) {
         const claimed = this.runtime.deferredReplacementRepo.claimForResume(deferred.id);
@@ -1230,6 +1249,7 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
    * - Orchestrated: syncOrchestrationRun -> markResumed -> native promptAsync injection with dedicated prompt contract
    */
   async resumeDeferredReplacement(deferred: DeferredReplacementRecord): Promise<void> {
+    if (this.disposed) return;
     const current = this.runtime.deferredReplacementRepo.findById(deferred.id);
     if (!current || current.status !== "resuming") {
       return;
@@ -1261,6 +1281,7 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
       if (this.testHandoffFaultHook) {
         await this.testHandoffFaultHook("FAST_DIRECT", current);
       }
+      if (this.disposed) return;
 
       // Re-verify eligibility before dispatch
       const activeCheck = this.runtime.deferredReplacementRepo.findById(current.id);
@@ -1349,6 +1370,7 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
       if (this.testHandoffFaultHook) {
         await this.testHandoffFaultHook("ORCHESTRATED", current, replacement);
       }
+      if (this.disposed) return;
 
       // Re-verify eligibility before dispatch
       const activeCheck = this.runtime.deferredReplacementRepo.findById(current.id);
@@ -1399,6 +1421,7 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
   }
 
   async onSessionDeleted(sessionID: string) {
+    if (this.disposed) return;
     this.pendingFastDirectTurns.delete(sessionID);
     clearRouteDecision(sessionID);
 
@@ -1409,13 +1432,20 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
         await this.runtime.childExecutionLifecycleService.confirmNativeTermination({ childSessionId: sessionID });
       }
 
-      // Check and drain any pending deferred replacements ready to resume
-      await this.drainSafeDeferredReplacements();
+      // Check and drain any pending deferred replacements ready to resume.
+      // The guard prevents a terminal teardown from re-entering persistence after
+      // an awaited native-termination confirmation.
+      if (!this.disposed) {
+        await this.drainSafeDeferredReplacements();
+      }
     }
   }
 
-  dispose(): void {
+  async dispose(): Promise<void> {
     this.disposed = true;
     this.pendingFastDirectTurns.clear();
+    // Do not close SQLite while adapter-owned deferred recovery is still using
+    // it. This is a terminal lifecycle barrier, not a retry or timing heuristic.
+    await this.awaitLifecycleQuiescence();
   }
 }

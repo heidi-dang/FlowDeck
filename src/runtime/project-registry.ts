@@ -98,9 +98,11 @@ export async function releaseProjectRuntime(directory: string): Promise<void> {
     }
   }
 
-  // Dispose adapter
+  // Dispose adapter and await its terminal lifecycle barrier before closing
+  // persistence. This prevents detached deferred recovery from touching a
+  // database after its file handle has been released.
   try {
-    context.adapter.dispose();
+    await context.adapter.dispose();
   } catch {
     // Ignore teardown error
   }
