@@ -1,0 +1,253 @@
+{
+  "harness": "H39",
+  "supersedes": [
+    "H38",
+    "H37"
+  ],
+  "timestamp": "2026-08-25T11:52:42.184Z",
+  "platform": "linux-x64",
+  "provenance": {
+    "functionalCommit": "bad5a3b3c55e0b371cee5ef110760b618fddf9f4",
+    "binarySha256": "0f818cbf6bfa78d5f9f62830fdf0dcee299badfa9de19a11620f8b7d6d8487b7",
+    "binarySize": 18159160,
+    "targetPlatform": "linux-x64",
+    "profile": "release"
+  },
+  "scenarios": [
+    {
+      "id": "S1_EXACT_NATIVE_PROVENANCE",
+      "title": "Exact Native Provenance & Functional Commit Binding",
+      "passed": true,
+      "durationMs": 0
+    },
+    {
+      "id": "S2_PROTOCOL_SCHEMA_CONTRACT",
+      "title": "Canonical Protocol 2 / Schema 10 / Capability v1 Evaluation",
+      "passed": true,
+      "durationMs": 4
+    },
+    {
+      "id": "S3_SIMPLE_TASK_FAST_BYPASS",
+      "title": "Non-Code & Simple Task Fast Classification",
+      "passed": true,
+      "durationMs": 0
+    },
+    {
+      "id": "S4_REAL_CHANGE_INTELLIGENCE",
+      "title": "Milestone 1–5 Real Native Change Intelligence",
+      "passed": true,
+      "durationMs": 8
+    },
+    {
+      "id": "S5_NATIVE_PLANNING_M6",
+      "title": "Milestone 6 Real Native Verification Planning with Exact Digests",
+      "passed": true,
+      "durationMs": 21
+    },
+    {
+      "id": "S6_NATIVE_EXECUTION_M7",
+      "title": "Milestone 7 Real Native Verification Execution",
+      "passed": true,
+      "durationMs": 297
+    },
+    {
+      "id": "S7_PERSISTENCE_AND_REOPEN_M8",
+      "title": "Milestone 8 Real Persistence & Exact Artifact Reopen/Query",
+      "passed": true,
+      "durationMs": 292
+    },
+    {
+      "id": "S8_REAL_M8_PERSISTENCE_FAULT",
+      "title": "Milestone 8 Real Persistence Fault Injection & Containment",
+      "passed": true,
+      "durationMs": 26
+    },
+    {
+      "id": "S9_ATTESTATION_M9_V1",
+      "title": "Milestone 9 Content-Bound in-toto Attestation (Predicate v1)",
+      "passed": true,
+      "durationMs": 10
+    },
+    {
+      "id": "S10_CONTENT_BOUND_FINGERPRINT",
+      "title": "Content-Bound Working-Tree State Fingerprint Invariant",
+      "passed": true,
+      "durationMs": 11
+    },
+    {
+      "id": "S11_M10_MIXED_PER_CHECK_TRUTH",
+      "title": "Milestone 10 Real Mixed Per-Check Execution Truth",
+      "passed": true,
+      "durationMs": 0
+    },
+    {
+      "id": "S12_M10_MISSING_EVIDENCE_REFUSAL",
+      "title": "Milestone 10 Refusal of Calibration Signal on Incomplete Evidence",
+      "passed": true,
+      "durationMs": 0
+    },
+    {
+      "id": "S13_M11_CANDIDATE_GENERATION",
+      "title": "Milestone 11 Real Candidate Generation from Qualified M10 Evidence",
+      "passed": true,
+      "durationMs": 15
+    },
+    {
+      "id": "S14_M11_EXPLICIT_PROMOTION",
+      "title": "Milestone 11 Real Explicit Candidate Promotion to Active ADD_CHECK Policy",
+      "passed": true,
+      "durationMs": 12
+    },
+    {
+      "id": "S15_M11_ADDITIVE_REPLAN",
+      "title": "Milestone 11 Real Additive Plan Overlay with Policy Application Digest",
+      "passed": true,
+      "durationMs": 25
+    },
+    {
+      "id": "S16_M11_POLICY_APPLICATION_PERSISTENCE",
+      "title": "Milestone 11 Real Policy Application Verification & M8 Persistence",
+      "passed": true,
+      "durationMs": 30
+    },
+    {
+      "id": "S17_PREDICATE_V2_CREATE_AND_VERIFY",
+      "title": "Milestone 11 Real Content-Bound in-toto Attestation (Predicate v2)",
+      "passed": true,
+      "durationMs": 22
+    },
+    {
+      "id": "S18_M11_POLICY_REVOCATION",
+      "title": "Milestone 11 Real Policy Revocation & Active Set Invalidation",
+      "passed": true,
+      "durationMs": 14
+    },
+    {
+      "id": "S19_HISTORICAL_V2_VERIFIES_AFTER_REVOKE",
+      "title": "Milestone 11 Historical Predicate v2 Verification Preserved After Revocation",
+      "passed": true,
+      "durationMs": 18
+    },
+    {
+      "id": "S20_PRODUCTION_VERIFICATION_COMPLETION_PASS",
+      "title": "Production VerificationService → FDX Provider → CompletionPolicy Authority Path",
+      "passed": true,
+      "durationMs": 133
+    },
+    {
+      "id": "S21_STALE_EVIDENCE_BLOCKS_COMPLETION",
+      "title": "CompletionPolicy Rejection of Stale Verification Evidence",
+      "passed": true,
+      "durationMs": 0
+    },
+    {
+      "id": "S22_PERSISTENCE_FAILURE_BLOCKS_COMPLETION",
+      "title": "CompletionPolicy Blocks on M8 Persistence Failure",
+      "passed": true,
+      "durationMs": 5
+    },
+    {
+      "id": "S23_ACTIVE_NATIVE_CANCELLATION",
+      "title": "Real Active Cancellation of Native FDX Child Process",
+      "passed": true,
+      "durationMs": 23
+    },
+    {
+      "id": "S24_DURABLE_RESTART_RECOVERY",
+      "title": "Durable SQLite Restart & Recovery Loop Convergence",
+      "passed": true,
+      "durationMs": 43
+    },
+    {
+      "id": "S25_REPO_MASTER_FACT_BRIDGE",
+      "title": "Real Repo Master Fact Bridge & Architectural Intelligence Invocation",
+      "passed": true,
+      "durationMs": 0
+    },
+    {
+      "id": "S26_OPENCODE_SPECIALIST_DELEGATION",
+      "title": "Real OpenCode Native Specialist Child Delegation Registration",
+      "passed": true,
+      "durationMs": 0
+    },
+    {
+      "id": "S27_SINGLE_FLIGHT_DUPLICATE_COALESCING",
+      "title": "20 Duplicate Verification Triggers Coalesce to Single Physical Native Execution",
+      "passed": true,
+      "durationMs": 302
+    },
+    {
+      "id": "S28_CHANGED_STATE_NEW_EXECUTION",
+      "title": "Changed Repository State Executes Fresh Verification with Distinct Digest",
+      "passed": true,
+      "durationMs": 299
+    },
+    {
+      "id": "S29_INCOMPATIBLE_CAPABILITIES_FAIL_CLOSED",
+      "title": "Incompatible Capability Negotiation Fails Closed Gracefully",
+      "passed": true,
+      "durationMs": 0
+    },
+    {
+      "id": "S30_NATIVE_ABSENCE_FALLBACK",
+      "title": "Graceful Fallback Execution When FDX Native Binary is Absent",
+      "passed": true,
+      "durationMs": 20
+    }
+  ],
+  "benchmarks": {
+    "capabilityNegotiation": {
+      "samples": 15,
+      "min": 2.71,
+      "median": 2.94,
+      "p95": 3.53,
+      "max": 3.53,
+      "mean": 2.99
+    },
+    "changeIntelligence": {
+      "samples": 15,
+      "min": 11.52,
+      "median": 24.33,
+      "p95": 25.58,
+      "max": 25.58,
+      "mean": 21.86
+    },
+    "m6Planning": {
+      "samples": 15,
+      "min": 47.88,
+      "median": 48.67,
+      "p95": 49.98,
+      "max": 49.98,
+      "mean": 48.84
+    },
+    "m7Execution": {
+      "samples": 15,
+      "min": 290.16,
+      "median": 290.78,
+      "p95": 353.24,
+      "max": 353.24,
+      "mean": 296.24
+    },
+    "attestationV1": {
+      "samples": 15,
+      "min": 3.77,
+      "median": 3.99,
+      "p95": 4.57,
+      "max": 4.57,
+      "mean": 4.05
+    },
+    "singleFlightCoalescing20x": {
+      "samples": 10,
+      "min": 289.97,
+      "median": 290.93,
+      "p95": 361.97,
+      "max": 361.97,
+      "mean": 298.85
+    }
+  },
+  "passed": 30,
+  "failed": 0,
+  "total": 30,
+  "score": 10,
+  "status": "PASS"
+}
