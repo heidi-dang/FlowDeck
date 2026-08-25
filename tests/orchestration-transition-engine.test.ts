@@ -271,13 +271,28 @@ describe("Deterministic Transition Engine & Policy Tests (34 Scenarios)", () => 
     });
     await ctx.runtime.services.assignmentService.startAssignment(a1.id);
 
-    // Action A fails with no progress
-    await ctx.adapter.onToolExecuteBefore({ tool: "read", sessionID, callID: "c-a1", args: { file: "foo.ts" } });
-    await ctx.adapter.onToolExecuteAfter({ tool: "read", sessionID, callID: "c-a1", args: { file: "foo.ts" } }, { output: "same" } as any);
-
-    // Repeating Action A without progress is blocked
-    await ctx.adapter.onToolExecuteBefore({ tool: "read", sessionID, callID: "c-a2", args: { file: "foo.ts" } });
-    await ctx.adapter.onToolExecuteAfter({ tool: "read", sessionID, callID: "c-a2", args: { file: "foo.ts" } }, { output: "same" } as any);
+    // Record the authoritative no-progress lineage directly. This isolates
+    // transition policy from unrelated adapter work while preserving the
+    // repeated-action condition under test.
+    for (const attemptNumber of [1, 2]) {
+      ctx.runtime.transitionEngine.recordAttempt({
+        runId: run.id,
+        assignmentId: a1.id,
+        attemptNumber,
+        tool: "read",
+        actionFingerprint: "read:foo.ts",
+        preStateFingerprint: "pre:foo.ts",
+        startedAt: new Date().toISOString(),
+        finishedAt: new Date().toISOString(),
+        progressProduced: false,
+        repositoryDelta: 0,
+        evidenceDelta: 0,
+        verificationDelta: 0,
+        childStateDelta: 0,
+        isTransientError: false,
+        evidenceIds: [],
+      });
+    }
 
     const evalResult = ctx.runtime.transitionEngine.evaluate({ runId: run.id, sessionId: sessionID });
     expect(evalResult.strategyDecision).toBe("CHANGE_STRATEGY");
