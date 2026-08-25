@@ -17,6 +17,7 @@ import {
   buildCanonicalRoutingDecision,
   reconstructRouterDecision,
   mapExecutionClassToRunStrategy,
+  specialistPlanFromRoutingDecision,
 } from "../orchestration/routing/fast-router-adapter";
 import { classifyUserTurnIntent } from "../services/user-turn-intent";
 import { normalizeTaskInvocation } from "../services/task-invocation-adapter";
@@ -35,6 +36,12 @@ import {
 } from "./mutation-observation-adapter";
 import type { NativeChildControlPort } from "../orchestration/services/child-execution-lifecycle-service";
 import { ContinuationDispatcher, type ContinuationToken, getContinuationPrompt } from "../orchestration/services/continuation-policy";
+import { readySpecialistSpecs } from "../orchestration/routing/specialist-planner";
+
+function specialistIdFromNativeTask(prompt?: string, description?: string): string | undefined {
+  const match = `${description ?? ""}\n${prompt ?? ""}`.match(/\[FlowDeck specialist:([A-Za-z0-9-]+)\]/);
+  return match?.[1];
+}
 
 export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
   private disposed = false;
@@ -244,6 +251,7 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
             setRouteDecision(input.sessionID, taskId, modResult.newDecision, modResult.effectiveGoal, msgHash);
 
             if (modResult.newDecision.executionClass === "FAST_DIRECT") {
+              this.runtime.metrics.recordSpecialistPlan("DIRECT");
               this.pendingFastDirectTurns.set(input.sessionID, {
                 sessionID: input.sessionID,
                 taskId,
@@ -396,6 +404,7 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
       setRouteDecision(input.sessionID, taskId, decision, text, msgHash);
 
       if (decision.executionClass === "FAST_DIRECT") {
+        this.runtime.metrics.recordSpecialistPlan("DIRECT");
         this.pendingFastDirectTurns.set(input.sessionID, {
           sessionID: input.sessionID,
           taskId,
@@ -472,6 +481,7 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
           });
 
       // Authoritative routing persistence using real repository assessment
+      const specialistSetupStartedAt = performance.now();
       const canonicalRouting = buildCanonicalRoutingDecision({
         runId: run.id,
         decision,
@@ -480,6 +490,14 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
         directory: this.directory,
       });
       this.runtime.routingDecisionRepository.saveDecision(canonicalRouting);
+      const specialistPlan = specialistPlanFromRoutingDecision(canonicalRouting);
+      if (specialistPlan) {
+        this.runtime.metrics.recordSpecialistPlan(specialistPlan.executionMode, {
+          deduplicated: specialistPlan.deduplicated,
+          fanoutBlocked: specialistPlan.fanoutBlocked,
+          setupLatencyMs: performance.now() - specialistSetupStartedAt,
+        });
+      }
 
       // Bind session -> active run
       this.runtime.sessionRepo.bindActiveRun({
@@ -602,15 +620,19 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
         input.args ?? {}
       );
       if (effectiveRunId) {
+        const specialistId = specialistIdFromNativeTask(normalized.prompt, normalized.description);
+        const existingChild = this.runtime.childExecutionLifecycleService.getChildExecution({ taskCallId: input.callID });
         await this.runtime.childExecutionLifecycleService.registerDelegation({
           runId: effectiveRunId,
           parentSessionId: input.sessionID,
           taskCallId: input.callID,
           targetAgent: normalized.targetAgent,
+          specialistId,
           prompt: normalized.prompt,
           description: normalized.description,
           background: normalized.background,
         });
+        if (specialistId && !existingChild) this.runtime.metrics.recordSpecialistSpawn();
       }
     }
   }
@@ -795,6 +817,7 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
         error: error ? String(error.message ?? error) : "Session error occurred",
       });
       if (trans && trans.changed) {
+        if (childRec.specialistId) this.runtime.metrics.recordSpecialistFailure();
         this.runtime.progressObservationService.recordChildLifecycleObservation({
           runId: childRec.runId,
           sessionId: sessionID,
@@ -806,6 +829,67 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
         });
       }
     }
+  }
+
+  /**
+   * Dispatches the smallest ready persisted specialist batch through the existing
+   * bounded parent-session native prompt channel. It never creates child sessions
+   * or lifecycle records itself: OpenCode Task/subagent events remain the only
+   * source of native child identity and ChildExecutionLifecycleService remains
+   * their authoritative registrar.
+   */
+  private async dispatchReadySpecialists(activeRun: Run, sessionId: string): Promise<boolean> {
+    // A specialist session cannot create a new team. Heidi is the sole dispatcher.
+    if (this.runtime.childExecutionLifecycleService.getChildExecution({ childSessionId: sessionId })) return false;
+
+    const decision = this.runtime.routingDecisionRepository.getLatestDecisionForRun(activeRun.id);
+    const plan = decision ? specialistPlanFromRoutingDecision(decision) : null;
+    if (!plan || plan.specs.length === 0 || plan.rejectedReason) return false;
+
+    const children = this.runtime.childExecutionLifecycleService.listChildExecutionsForRun(activeRun.id);
+    const settled = new Set(
+      children
+        .filter(child => child.status === "completed")
+        .map(child => child.specialistId)
+        .filter((id): id is string => Boolean(id))
+    );
+    const launched = new Set(
+      children
+        .map(child => child.specialistId)
+        .filter((id): id is string => Boolean(id))
+    );
+    const ready = readySpecialistSpecs(plan, settled).filter(spec => !launched.has(spec.specialistId));
+    if (ready.length === 0) return false;
+
+    const snapshot = this.runtime.orchestrationSnapshotService.getSnapshot(activeRun.id, sessionId);
+    const stateFingerprint = this.runtime.orchestrationSnapshotService.computeStateFingerprint(activeRun.id, sessionId) ??
+      `${activeRun.id}:${ready.map(spec => spec.specialistId).join(",")}`;
+    const token: ContinuationToken = {
+      runId: activeRun.id,
+      sessionId,
+      userTurnVersion: this.runtime.sessionTurnRepo.getTurnVersion(sessionId),
+      runAggregateVersion: snapshot?.aggregateVersion ?? this.runtime.taskRunsRepo.findById(activeRun.id)?.aggregateVersion ?? 0,
+      transitionReason: "PROGRESS_CONFIRMED",
+      currentWorkItemId: `specialist:${ready.map(spec => spec.specialistId).join(",")}`,
+      stateFingerprint,
+    };
+    const promptText = [
+      "[FlowDeck Specialist Dispatch] Use OpenCode native Task/subagent calls only for the following ready specialist assignments.",
+      "Do not delegate recursively, do not choose or override a model, and do not create tasks outside this list.",
+      "Each Task must be background-capable and include its exact FlowDeck specialist marker in its prompt and description.",
+      ...ready.map(spec => `- targetAgent=${spec.targetAgent}; description=[FlowDeck specialist:${spec.specialistId}] ${spec.role}; prompt=[FlowDeck specialist:${spec.specialistId}] Objective: ${spec.objective}; Scope: ${spec.scope.join(", ")}; Required evidence: ${spec.expectedEvidence.join(", ")}.`),
+    ].join("\n");
+
+    const dispatched = await this.continuationDispatcher.dispatch(token, {
+      client: this.client,
+      promptText,
+      validateAuthority: () => {
+        const current = this.runtime.routingDecisionRepository.getLatestDecisionForRun(activeRun.id);
+        const currentPlan = current ? specialistPlanFromRoutingDecision(current) : null;
+        return Boolean(currentPlan && currentPlan.runId === activeRun.id && currentPlan.specs.some(spec => spec.specialistId === ready[0]?.specialistId));
+      },
+    });
+    return dispatched.dispatched;
   }
 
   private async runLiveVerification(runId: string, sessionId: string): Promise<void> {
@@ -934,6 +1018,16 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
         snapshot = refreshed;
       }
     }
+
+    // A validated persisted specialist plan is an independent source of ready
+    // work, including the initial CREATED state before any native child exists,
+    // but it remains downstream of transition evaluation. Recovering,
+    // verifying, terminal, and strategy-exhausted runs cannot spawn.
+    if (
+      (snapshot.phase === OP.CREATED || snapshot.phase === OP.EXECUTING || snapshot.phase === OP.DELEGATING) &&
+      transition.reasonCode !== "STRATEGY_SET_EXHAUSTED" &&
+      await this.dispatchReadySpecialists(activeRun, sessionID)
+    ) return;
 
     // session.idle merely triggers this deterministic path. Durable work, child,
     // barrier, and evidence state decide whether verification can happen.

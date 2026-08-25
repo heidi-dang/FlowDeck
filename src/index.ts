@@ -91,11 +91,27 @@ export function getSessionMetricsDiagnostics(sessionID: string, directory?: stri
   lastEvidenceDelta?: number;
   lastRepositoryDelta?: number;
   isStalled?: boolean;
+  executionMode?: "DIRECT" | "SINGLE_SPECIALIST" | "MULTI_SPECIALIST";
+  specialistState?: {
+    planned: number;
+    active: number;
+    completed: number;
+    failed: number;
+    blocked: number;
+    required: number;
+    optional: number;
+    attempts: number;
+    deduplicated: number;
+    fanoutBlocked: number;
+    reasonCode?: string;
+    rejectedReason?: string;
+  };
   childExecutions?: Array<{
     assignmentId: string;
     executionId: string;
     agentId: string;
     taskCallId: string;
+    specialistId?: string;
     childSessionId?: string;
     status: string;
     startedAt?: string;
@@ -118,6 +134,9 @@ export function getSessionMetricsDiagnostics(sessionID: string, directory?: stri
 
   const progDiag = sessionRow.runId
     ? projectCtx.runtime.progressObservationService.getDiagnosticsForRun(sessionRow.runId)
+    : undefined;
+  const orchestrationSnapshot = sessionRow.runId
+    ? projectCtx.runtime.orchestrationSnapshotService.getSnapshot(sessionRow.runId, sessionID)
     : undefined;
 
   return {
@@ -142,6 +161,8 @@ export function getSessionMetricsDiagnostics(sessionID: string, directory?: stri
     lastEvidenceDelta: progDiag?.lastEvidenceDelta,
     lastRepositoryDelta: progDiag?.lastRepositoryDelta,
     isStalled: progDiag?.isStalled,
+    executionMode: orchestrationSnapshot?.executionMode,
+    specialistState: orchestrationSnapshot?.specialistState,
     childExecutions: childDiag?.childExecutions,
   };
 }

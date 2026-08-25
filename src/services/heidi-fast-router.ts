@@ -34,12 +34,31 @@ export type SpecialistDomain =
   | "REVIEW"
   | "ARCHITECTURE"
 
+/** Semantic orchestration depth, intentionally mapped onto existing execution classes. */
+export type ExecutionMode = "DIRECT" | "SINGLE_SPECIALIST" | "MULTI_SPECIALIST"
+
+export function executionModeForClass(executionClass: ExecutionClass): ExecutionMode {
+  switch (executionClass) {
+    case "SPECIALIST":
+      return "SINGLE_SPECIALIST"
+    case "PARALLEL_SPECIALISTS":
+      return "MULTI_SPECIALIST"
+    case "FAST_DIRECT":
+    case "STANDARD":
+      return "DIRECT"
+    case "DEEP":
+      return "MULTI_SPECIALIST"
+  }
+}
+
 import { evaluateCodeModeEligibility } from "./heidi-code-mode-evaluator"
 import type { CodeModeTelemetry } from "./heidi-code-mode-policy"
 
 export interface RouterDecision {
   /** Resolved execution class */
   executionClass: ExecutionClass
+  /** Explicit semantic orchestration depth mapped from the compatibility execution class. Legacy decisions may omit it and are derived at the persistence boundary. */
+  executionMode?: ExecutionMode
   /** For SPECIALIST/PARALLEL_SPECIALISTS: which specialist(s) to route to */
   specialists?: SpecialistDomain[]
   /** Suggested agent name(s) (canonical agent IDs from agent registry) */
@@ -59,6 +78,11 @@ export interface RouterDecision {
 }
 
 // ─── Keyword patterns ────────────────────────────────────────────────────────
+
+const SIMPLE_DIRECT_QUERY_PATTERNS: RegExp[] = [
+  /\b(what|which|show|tell me|explain|read)\b.{0,180}\b(version|configured|configuration|setting|function|file|value|package)\b/i,
+  /\b(read|inspect)\b.{0,120}\b(explain|summarize|describe)\b/i,
+]
 
 const FAST_DIRECT_PATTERNS: RegExp[] = [
   /fix (a )?typo/i,
@@ -206,10 +230,26 @@ const DEEP_PATTERNS: RegExp[] = [
   /breaking (api|change|migration)/i,
   /full (refactor|rewrite|migration)/i,
   /migrate (from|to) (a )?new/i,
+  /migrate.{0,80}(application|system|architecture|framework)/i,
   /system.wide (change|refactor|redesign)/i,
   /major (refactor|redesign|overhaul)/i,
   /phase \d+ of/i,
   /release (qualification|gate)/i,
+]
+
+const EXPLICIT_DIRECT_PATTERNS: RegExp[] = [
+  /\b(do|handle|perform|solve) (this )?(yourself|directly)\b/i,
+  /\b(do not|don't|without) (delegate|delegating|use (an? )?(agent|specialist|subagent))\b/i,
+]
+
+const EXPLICIT_SINGLE_SPECIALIST_PATTERNS: RegExp[] = [
+  /\bdelegate (this|it|the task)?\b/i,
+  /\buse (an? )?(specialist|subagent)\b/i,
+]
+
+const EXPLICIT_MULTI_SPECIALIST_PATTERNS: RegExp[] = [
+  /\b(use|delegate to|spawn) (multiple|several|two|three) (agents|specialists|subagents)\b/i,
+  /\bmultiple[- ]agent\b/i,
 ]
 
 const STANDARD_PATTERNS: RegExp[] = [
@@ -252,15 +292,27 @@ function matchesAny(input: string, patterns: RegExp[]): boolean {
   return patterns.some(p => p.test(input))
 }
 
+function detectSpecialistDomains(input: string): SpecialistDomain[] {
+  const domains: SpecialistDomain[] = []
+  if (matchesAny(input, SECURITY_PATTERNS)) domains.push("SECURITY")
+  if (matchesAny(input, DEBUG_PATTERNS) || /\b(race|deadlock|intermittent)\b/i.test(input)) domains.push("DEBUG")
+  if (matchesAny(input, UI_PATTERNS) || /\b(ui|frontend|client)\b/i.test(input)) domains.push("UI")
+  if (matchesAny(input, BACKEND_PATTERNS) || /\b(api|database|db|server)\b/i.test(input)) domains.push("BACKEND")
+  if (matchesAny(input, DEVOPS_PATTERNS)) domains.push("DEVOPS")
+  if (matchesAny(input, RELEASE_PATTERNS)) domains.push("RELEASE")
+  if (matchesAny(input, REVIEW_PATTERNS)) domains.push("REVIEW")
+  if (matchesAny(input, ARCHITECTURE_PATTERNS)) domains.push("ARCHITECTURE")
+  return domains
+}
+
 function classifySpecialistDomain(input: string): SpecialistDomain | null {
-  if (matchesAny(input, SECURITY_PATTERNS)) return "SECURITY"
-  if (matchesAny(input, DEBUG_PATTERNS)) return "DEBUG"
-  if (matchesAny(input, UI_PATTERNS)) return "UI"
-  if (matchesAny(input, BACKEND_PATTERNS)) return "BACKEND"
-  if (matchesAny(input, DEVOPS_PATTERNS)) return "DEVOPS"
-  if (matchesAny(input, RELEASE_PATTERNS)) return "RELEASE"
-  if (matchesAny(input, REVIEW_PATTERNS)) return "REVIEW"
-  if (matchesAny(input, ARCHITECTURE_PATTERNS)) return "ARCHITECTURE"
+  return detectSpecialistDomains(input)[0] ?? null
+}
+
+function explicitlyRequestedMode(input: string): ExecutionMode | null {
+  if (matchesAny(input, EXPLICIT_DIRECT_PATTERNS)) return "DIRECT"
+  if (matchesAny(input, EXPLICIT_MULTI_SPECIALIST_PATTERNS)) return "MULTI_SPECIALIST"
+  if (matchesAny(input, EXPLICIT_SINGLE_SPECIALIST_PATTERNS)) return "SINGLE_SPECIALIST"
   return null
 }
 
@@ -290,7 +342,6 @@ export function classifyTask(
   }
 ): RouterDecision {
   const text = prompt.trim()
-  const lc = text.toLowerCase()
 
   // ── FAST_DIRECT: trivial local task ──────────────────────────────────────
   const mcpCompositionCandidateRaw = matchesAny(text, MCP_COMPOSITION_EXTERNAL_PATTERNS) && matchesAny(text, MCP_COMPOSITION_ACTION_PATTERNS)
@@ -299,12 +350,89 @@ export function classifyTask(
   const codeModeRejectedReason = codeModeEval.rejectionReason
   const codeModeTelemetry = codeModeEval.telemetry
 
+  const explicitMode = explicitlyRequestedMode(text)
+  if (explicitMode === "DIRECT") {
+    return {
+      executionClass: "FAST_DIRECT",
+      executionMode: explicitMode,
+      reason: "User explicitly requested direct execution; specialist delegation is not justified.",
+      reasonCode: "USER_REQUESTED_DIRECT",
+      confidence: 1,
+      forcedByExplicitSignal: true,
+      mcpCompositionCandidate,
+      codeModeRejectedReason,
+      codeModeTelemetry,
+    }
+  }
+  if (explicitMode === "MULTI_SPECIALIST") {
+    return {
+      executionClass: "PARALLEL_SPECIALISTS",
+      executionMode: explicitMode,
+      reason: "User explicitly requested bounded multi-specialist execution; downstream planning must still validate scope and fan-out.",
+      reasonCode: "USER_REQUESTED_MULTI_SPECIALIST",
+      confidence: 1,
+      forcedByExplicitSignal: true,
+      mcpCompositionCandidate,
+      codeModeRejectedReason,
+      codeModeTelemetry,
+    }
+  }
+  if (explicitMode === "SINGLE_SPECIALIST") {
+    const domain = classifySpecialistDomain(text)
+    return {
+      executionClass: "SPECIALIST",
+      executionMode: explicitMode,
+      ...(domain ? { specialists: [domain], suggestedAgents: [SPECIALIST_AGENT_MAP[domain]] } : {}),
+      reason: "User explicitly requested a specialist; downstream planning must select one justified supported capability.",
+      reasonCode: "USER_REQUESTED_SPECIALIST",
+      confidence: 1,
+      forcedByExplicitSignal: true,
+      mcpCompositionCandidate,
+      codeModeRejectedReason,
+      codeModeTelemetry,
+    }
+  }
+
+  // DEEP must precede length-based fallbacks: a short repository migration is still multi-domain work.
+  if (matchesAny(text, DEEP_PATTERNS)) {
+    const deepDomains: SpecialistDomain[] = ["ARCHITECTURE", "REVIEW"]
+    return {
+      executionClass: "DEEP",
+      executionMode: "MULTI_SPECIALIST",
+      specialists: deepDomains,
+      suggestedAgents: deepDomains.map(domain => SPECIALIST_AGENT_MAP[domain]),
+      reason: "Task matched architecture-level migration or breaking change pattern requiring bounded design and independent review work.",
+      reasonCode: "MULTI_DEEP_MIGRATION",
+      confidence: 0.85,
+      forcedByExplicitSignal: false,
+      mcpCompositionCandidate,
+      codeModeRejectedReason,
+      codeModeTelemetry,
+    }
+  }
+
+  const isSimpleDirectQuery = matchesAny(text, SIMPLE_DIRECT_QUERY_PATTERNS)
+  if (isSimpleDirectQuery && !hints?.isResuming) {
+    return {
+      executionClass: "FAST_DIRECT",
+      executionMode: "DIRECT",
+      reason: "Read-only or explanatory task has a bounded local answer and does not need specialist orchestration.",
+      reasonCode: "DIRECT_SCOPED_QUERY",
+      confidence: 0.9,
+      forcedByExplicitSignal: false,
+      mcpCompositionCandidate,
+      codeModeRejectedReason,
+      codeModeTelemetry,
+    }
+  }
+
   const isFastDirect = matchesAny(text, FAST_DIRECT_PATTERNS)
   if (isFastDirect && !hints?.isResuming) {
     const estFiles = hints?.estimatedFileCount ?? 1
     if (estFiles <= 2) {
       return {
         executionClass: "FAST_DIRECT",
+        executionMode: "DIRECT",
         reason: "Trivial local task matched fast-direct pattern with minimal file surface.",
         reasonCode: "FAST_DIRECT_PATTERN",
         confidence: 0.9,
@@ -316,33 +444,18 @@ export function classifyTask(
     }
   }
 
-  // ── DEEP: architectural migration ────────────────────────────────────────
-  if (matchesAny(text, DEEP_PATTERNS)) {
-    return {
-      executionClass: "DEEP",
-      reason: "Task matched architecture-level migration or breaking change pattern.",
-      reasonCode: "DEEP_PATTERN",
-      confidence: 0.85,
-      forcedByExplicitSignal: false,
-      mcpCompositionCandidate,
-      codeModeRejectedReason,
-      codeModeTelemetry,
-    }
-  }
-
   // ── PARALLEL_SPECIALISTS: disjoint independent domains ───────────────────
   // Detect frontend + backend (or api + ui) pairs explicitly. The backend
   // workstream maps to backend-coder (NOT reviewer). UI maps to frontend-coder.
+  const detectedDomains = detectSpecialistDomains(text)
+  const crossDomainScope = /\b(across|and|plus|with|together)\b/i.test(text)
   const isParallel = matchesAny(text, PARALLEL_SIGNALS)
-  if (isParallel) {
-    const domains: SpecialistDomain[] = []
-    const hasUI = matchesAny(text, UI_PATTERNS) || /\bfrontend\b/i.test(text)
-    const hasBackend = matchesAny(text, BACKEND_PATTERNS) || /\bbackend\b/i.test(text) || /\bapi\b/i.test(text) && (lc.includes("build") || lc.includes("implement") || lc.includes("create") || lc.includes("add"))
-    if (hasUI) domains.push("UI")
-    if (hasBackend && !domains.includes("BACKEND")) domains.push("BACKEND")
+  if (isParallel || (crossDomainScope && detectedDomains.length >= 2)) {
+    const domains = detectedDomains
     if (domains.length >= 2) {
       return {
         executionClass: "PARALLEL_SPECIALISTS",
+        executionMode: "MULTI_SPECIALIST",
         specialists: domains,
         suggestedAgents: domains.map(d => SPECIALIST_AGENT_MAP[d]),
         reason: "Task contains disjoint independent domain signals (frontend + backend) with separate ownership — parallel specialist execution.",
@@ -358,6 +471,7 @@ export function classifyTask(
     if (domains.length === 1) {
       return {
         executionClass: "SPECIALIST",
+        executionMode: "SINGLE_SPECIALIST",
         specialists: domains,
         suggestedAgents: domains.map(d => SPECIALIST_AGENT_MAP[d]),
         reason: "Task mentions parallel execution but only one clear domain — route to the single matching specialist.",
@@ -372,6 +486,7 @@ export function classifyTask(
     // Parallel signal with no detected domain → treat as STANDARD multi-workstream
     return {
       executionClass: "STANDARD",
+      executionMode: "DIRECT",
       reason: "Task signals parallel work but no disjoint specialist domains were detected — scoped planning with independent workstreams.",
       reasonCode: "PARALLEL_SIGNAL_NO_DOMAIN",
       confidence: 0.65,
@@ -387,6 +502,7 @@ export function classifyTask(
   if (domain) {
     return {
       executionClass: "SPECIALIST",
+      executionMode: "SINGLE_SPECIALIST",
       specialists: [domain],
       suggestedAgents: [SPECIALIST_AGENT_MAP[domain]],
       reason: "Task matched specialist domain '" + domain + "' — route to dedicated specialist on turn 1.",
@@ -404,6 +520,7 @@ export function classifyTask(
   if (matchesAny(text, STANDARD_PATTERNS) || estFiles > 3) {
     return {
       executionClass: "STANDARD",
+      executionMode: "DIRECT",
       reason: "Multi-file feature or refactor task — requires scoped planning and execution.",
       reasonCode: "STANDARD_MULTIFILE",
       confidence: 0.75,
@@ -419,6 +536,7 @@ export function classifyTask(
   if (wordCount <= 15 && estFiles <= 1) {
     return {
       executionClass: "FAST_DIRECT",
+      executionMode: "DIRECT",
       reason: "Short prompt with no complex signals — default to FAST_DIRECT.",
       reasonCode: "FAST_DIRECT_SHORT",
       confidence: 0.65,
@@ -432,6 +550,7 @@ export function classifyTask(
   // ── Default: STANDARD ─────────────────────────────────────────────────────
   return {
     executionClass: "STANDARD",
+    executionMode: "DIRECT",
     reason: "No strong classification signal — falling back to STANDARD execution.",
     reasonCode: "STANDARD_FALLBACK",
     confidence: 0.6,

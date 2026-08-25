@@ -16,10 +16,12 @@ import {
   type BudgetProfile,
 } from "./contracts/task-intelligence";
 import { assessTask } from "./intelligence";
+import { buildSpecialistPlan, parseSpecialistPlan, type SpecialistPlan } from "./specialist-planner";
 import {
   type RouterDecision,
   type ExecutionClass,
   type SpecialistDomain,
+  executionModeForClass,
 } from "../../services/heidi-fast-router";
 import {
   CODE_MODE_REJECTION_REASONS,
@@ -126,6 +128,12 @@ export function buildCanonicalRoutingDecision(input: {
   sourceSha?: string;
 }): RoutingDecision {
   const sourceSha = resolveSourceSha(input.directory, input.sourceSha);
+  const executionMode = input.decision.executionMode ?? executionModeForClass(input.decision.executionClass);
+  const specialistPlan = buildSpecialistPlan({
+    runId: input.runId,
+    goal: input.goal,
+    decision: { ...input.decision, executionMode },
+  });
 
   // Use real FlowDeck assessment logic to compute taskClass, complexity, ambiguity, risk
   const baseAssessment = assessTask({
@@ -136,6 +144,8 @@ export function buildCanonicalRoutingDecision(input: {
 
   const additionalEvidence: RoutingEvidence[] = [
     { id: `ev-exec-class-${randomUUID().slice(0, 8)}`, kind: "classification", signal: "executionClass", value: input.decision.executionClass, weight: 100 },
+    { id: `ev-exec-mode-${randomUUID().slice(0, 8)}`, kind: "classification", signal: "executionMode", value: executionMode, weight: 100 },
+    { id: `ev-specialist-plan-${randomUUID().slice(0, 8)}`, kind: "specialist_plan", signal: "specialistPlan", value: JSON.stringify(specialistPlan), weight: 100 },
     { id: `ev-user-goal-${randomUUID().slice(0, 8)}`, kind: "goal", signal: "goal", value: input.goal, weight: 100 },
     { id: `ev-msg-hash-${randomUUID().slice(0, 8)}`, kind: "hash", signal: "lastUserMessageHash", value: input.lastUserMessageHash, weight: 100 },
     { id: `ev-reason-code-${randomUUID().slice(0, 8)}`, kind: "classification", signal: "reasonCode", value: input.decision.reasonCode, weight: 100 },
@@ -218,6 +228,13 @@ export function buildCanonicalRoutingDecision(input: {
   return routingDecisionSchema.parse(raw);
 }
 
+export function specialistPlanFromRoutingDecision(decision: RoutingDecision): SpecialistPlan | null {
+  const evidence = decision?.assessment?.evidence
+  if (!Array.isArray(evidence)) return null
+  const raw = evidence.find(item => item.signal === "specialistPlan")?.value
+  return typeof raw === "string" ? parseSpecialistPlan(raw) : null
+}
+
 export function reconstructRouterDecision(decision: RoutingDecision): {
   decision: RouterDecision;
   goal: string;
@@ -248,6 +265,11 @@ export function reconstructRouterDecision(decision: RoutingDecision): {
   if (!lastUserMessageHash || typeof lastUserMessageHash !== "string") {
     return null;
   }
+
+  const executionModeRaw = evMap.get("executionMode");
+  const executionMode = executionModeRaw === "DIRECT" || executionModeRaw === "SINGLE_SPECIALIST" || executionModeRaw === "MULTI_SPECIALIST"
+    ? executionModeRaw
+    : executionModeForClass(executionClassRaw);
 
   const reasonCode = evMap.get("reasonCode");
   if (!reasonCode || typeof reasonCode !== "string") {
@@ -316,6 +338,7 @@ export function reconstructRouterDecision(decision: RoutingDecision): {
 
   const routerDecision: RouterDecision = {
     executionClass: executionClassRaw,
+    executionMode,
     reason: decision.rationale[0] || "Restored from authoritative routing decision",
     reasonCode,
     confidence,

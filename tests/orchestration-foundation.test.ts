@@ -13,7 +13,7 @@ import { getSessionMetricsDiagnostics, cleanupSessionState } from "../src/index"
 import { _resetRouteState, getRouteDecision } from "../src/services/heidi-route-state";
 import { createTaskState, getTaskState, _resetAllTaskState } from "../src/services/heidi-task-state";
 import { closeAllConnections } from "../src/orchestration/persistence/connection";
-import { isTerminalRunStatus } from "../src/orchestration/types/runs";
+import { isTerminalRunStatus, OrchestrationPhase as OP } from "../src/orchestration/types/runs";
 import {
   buildCanonicalRoutingDecision,
   reconstructRouterDecision,
@@ -21,7 +21,10 @@ import {
   UNKNOWN_SOURCE_SHA,
   resolveSourceSha,
   isCodeModeTelemetry,
+  specialistPlanFromRoutingDecision,
 } from "../src/orchestration/routing/fast-router-adapter";
+import { buildSpecialistPlan, readySpecialistSpecs } from "../src/orchestration/routing/specialist-planner";
+import { classifyTask } from "../src/services/heidi-fast-router";
 import { classifyUserTurnIntent } from "../src/services/user-turn-intent";
 import { AuthoritativeRoutingService } from "../src/orchestration/routing/authoritative";
 import flowDeckPlugin from "../src/index";
@@ -283,6 +286,7 @@ describe("FlowDeck Orchestration Foundation Integration Tests", () => {
       runId: "run-forced-1",
       decision: {
         executionClass: "SPECIALIST",
+        executionMode: "SINGLE_SPECIALIST",
         specialists: ["SECURITY"],
         suggestedAgents: ["security-auditor"],
         reason: "Security audit",
@@ -298,6 +302,8 @@ describe("FlowDeck Orchestration Foundation Integration Tests", () => {
     expect(reconstructed).not.toBeNull();
     expect(reconstructed?.decision.forcedByExplicitSignal).toBe(true);
     expect(reconstructed?.decision.executionClass).toBe("SPECIALIST");
+    expect(reconstructed?.decision.executionMode).toBe("SINGLE_SPECIALIST");
+    expect(validDecision.assessment.evidence.find(e => e.signal === "executionMode")?.value).toBe("SINGLE_SPECIALIST");
     expect(reconstructed?.decision.specialists).toEqual(["SECURITY"]);
 
     // Malformed specialists -> fails closed
@@ -337,8 +343,159 @@ describe("FlowDeck Orchestration Foundation Integration Tests", () => {
     });
 
     expect(decision.modelRecommendation).toBe(PRESERVE_CONFIGURED_MODEL);
+    expect(reconstructRouterDecision(decision)?.decision.executionMode).toBe("DIRECT");
+    expect(decision.assessment.evidence.find(e => e.signal === "executionMode")?.value).toBe("DIRECT");
     expect(decision.delegations).toEqual([]);
     expect(decision.workstreams).toEqual([]);
+  });
+
+  it("9a. adaptive-specialist-dispatch-uses-persisted-plan-and-native-task-registration", async () => {
+    const ctx = acquireProjectRuntime(dirA);
+    const sessionID = "sess-adaptive-specialist";
+    const nativePrompts: any[] = [];
+    ctx.adapter.setClient({
+      session: {
+        promptAsync: async (input: any) => {
+          nativePrompts.push(input);
+          return { data: { accepted: true } };
+        },
+      },
+    });
+
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "adaptive-1" },
+      { message: {} as any, parts: [{ type: "text", text: "Perform a security vulnerability scan on the authentication routes.", id: "adaptive-1", sessionID, messageID: "adaptive-1" }] }
+    );
+
+    const session = ctx.runtime.sessionRepo.findById(sessionID)!;
+    const persisted = ctx.runtime.routingDecisionRepository.getLatestDecisionForRun(session.runId)!;
+    const specialistPlan = specialistPlanFromRoutingDecision(persisted);
+    expect(specialistPlan?.executionMode).toBe("SINGLE_SPECIALIST");
+    expect(specialistPlan?.specs).toHaveLength(1);
+    expect(ctx.runtime.metrics.singleSpecialistTaskCount.get()).toBe(1);
+    expect(ctx.runtime.orchestrationSnapshotService.getSnapshot(session.runId, sessionID)?.specialistState).toMatchObject({
+      planned: 1, active: 0, completed: 0, failed: 0, attempts: 0, reasonCode: "SPECIALIST_SECURITY",
+    });
+
+    await ctx.adapter.onSessionIdle(sessionID);
+    const postIdleSnapshot = ctx.runtime.orchestrationSnapshotService.getSnapshot(session.runId, sessionID)!;
+    expect([OP.CREATED, OP.EXECUTING, OP.DELEGATING]).toContain(postIdleSnapshot.phase);
+    expect(nativePrompts).toHaveLength(1);
+    const instruction = nativePrompts[0].body.parts[0].text as string;
+    expect(instruction).toContain("Use OpenCode native Task/subagent calls only");
+    expect(instruction).toContain(`[FlowDeck specialist:${specialistPlan!.specs[0].specialistId}]`);
+
+    // The same idle state must not dispatch a duplicate team instruction.
+    await ctx.adapter.onSessionIdle(sessionID);
+    expect(nativePrompts).toHaveLength(1);
+
+    await ctx.adapter.onToolExecuteBefore({
+      tool: "task",
+      sessionID,
+      callID: "native-specialist-task-1",
+      args: {
+        subagent_type: specialistPlan!.specs[0].targetAgent,
+        background: true,
+        description: `[FlowDeck specialist:${specialistPlan!.specs[0].specialistId}] ${specialistPlan!.specs[0].role}`,
+        prompt: `[FlowDeck specialist:${specialistPlan!.specs[0].specialistId}] ${specialistPlan!.specs[0].objective}`,
+      },
+    });
+    const childExecutions = ctx.runtime.childExecutionLifecycleService.listChildExecutionsForRun(session.runId);
+    expect(childExecutions).toHaveLength(1);
+    expect(childExecutions[0].specialistId).toBe(specialistPlan!.specs[0].specialistId);
+    expect(ctx.runtime.metrics.specialistsSpawned.get()).toBe(1);
+    expect(ctx.runtime.orchestrationSnapshotService.getSnapshot(session.runId, sessionID)?.specialistState).toMatchObject({
+      planned: 1, active: 1, attempts: 1,
+    });
+    const publicDiagnostics = getSessionMetricsDiagnostics(sessionID, dirA);
+    expect(publicDiagnostics.executionMode).toBe("SINGLE_SPECIALIST");
+    expect(publicDiagnostics.specialistState).toMatchObject({ planned: 1, active: 1, attempts: 1 });
+    expect(JSON.stringify(publicDiagnostics)).not.toContain(specialistPlan!.specs[0].objective);
+  });
+
+  it("9b. deep-specialist-review-waits-for-architecture-evidence", () => {
+    const decision = classifyTask("Migrate the entire application architecture from REST to GraphQL");
+    const plan = buildSpecialistPlan({ runId: "run-deep-plan", goal: "Migrate the entire application architecture from REST to GraphQL", decision });
+    expect(plan.executionMode).toBe("MULTI_SPECIALIST");
+    expect(plan.specs.map(spec => spec.specialistId).sort()).toEqual(["architecture-architect", "review-reviewer"]);
+    expect(plan.specs.find(spec => spec.specialistId === "review-reviewer")?.dependsOn).toEqual(["architecture-architect"]);
+    expect(readySpecialistSpecs(plan, new Set()).map(spec => spec.specialistId)).toEqual(["architecture-architect"]);
+    expect(readySpecialistSpecs(plan, new Set(["architecture-architect"])).map(spec => spec.specialistId).sort()).toEqual(["architecture-architect", "review-reviewer"]);
+  });
+
+  it("9c. multi-specialist-dispatch-batches-independent-ready-specs-once", async () => {
+    const ctx = acquireProjectRuntime(dirA);
+    const sessionID = "sess-parallel-specialist";
+    const prompts: any[] = [];
+    ctx.adapter.setClient({ session: { promptAsync: async (input: any) => { prompts.push(input); return { data: { accepted: true } }; } } });
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "parallel-1" },
+      { message: {} as any, parts: [{ type: "text", text: "Fix auth race across API DB UI.", id: "parallel-1", sessionID, messageID: "parallel-1" }] }
+    );
+    const runId = ctx.runtime.sessionRepo.findById(sessionID)!.runId;
+    const plan = specialistPlanFromRoutingDecision(ctx.runtime.routingDecisionRepository.getLatestDecisionForRun(runId)!)!;
+    expect(plan.executionMode).toBe("MULTI_SPECIALIST");
+    expect(plan.specs).toHaveLength(3);
+    expect(plan.specs.every(spec => spec.dependsOn.length === 0)).toBe(true);
+    await ctx.adapter.onSessionIdle(sessionID);
+    const instruction = prompts[0].body.parts[0].text as string;
+    for (const spec of plan.specs) expect(instruction).toContain(`[FlowDeck specialist:${spec.specialistId}]`);
+    await ctx.adapter.onSessionIdle(sessionID);
+    expect(prompts).toHaveLength(1);
+  });
+
+  it("9d. restart-preserves-specialist-plan-and-never-dispatches-a-second-team", async () => {
+    const sessionID = "sess-specialist-restart";
+    const ctx1 = acquireProjectRuntime(dirA);
+    const firstPrompts: any[] = [];
+    ctx1.adapter.setClient({ session: { promptAsync: async (input: any) => { firstPrompts.push(input); return { data: { accepted: true } }; } } });
+    await ctx1.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "restart-1" },
+      { message: {} as any, parts: [{ type: "text", text: "Delegate this security audit to a specialist.", id: "restart-1", sessionID, messageID: "restart-1" }] }
+    );
+    const runId = ctx1.runtime.sessionRepo.findById(sessionID)!.runId;
+    const beforeRestart = specialistPlanFromRoutingDecision(ctx1.runtime.routingDecisionRepository.getLatestDecisionForRun(runId)!)!;
+    await ctx1.adapter.onSessionIdle(sessionID);
+    expect(firstPrompts).toHaveLength(1);
+    await releaseProjectRuntime(dirA);
+
+    const ctx2 = acquireProjectRuntime(dirA);
+    const resumedPrompts: any[] = [];
+    ctx2.adapter.setClient({ session: { promptAsync: async (input: any) => { resumedPrompts.push(input); return { data: { accepted: true } }; } } });
+    await ctx2.adapter.onSessionIdle(sessionID);
+    const afterRestart = specialistPlanFromRoutingDecision(ctx2.runtime.routingDecisionRepository.getLatestDecisionForRun(runId)!)!;
+    expect(afterRestart).toEqual(beforeRestart);
+    expect(resumedPrompts).toHaveLength(0);
+  });
+
+  it("9e. dependent-specialist-native-dispatch-waits-for-completed-prerequisite", async () => {
+    const ctx = acquireProjectRuntime(dirA);
+    const sessionID = "sess-dependent-specialist";
+    const prompts: any[] = [];
+    ctx.adapter.setClient({ session: { promptAsync: async (input: any) => { prompts.push(input); return { data: { accepted: true } }; } } });
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "dependent-1" },
+      { message: {} as any, parts: [{ type: "text", text: "Migrate the entire application architecture from REST to GraphQL", id: "dependent-1", sessionID, messageID: "dependent-1" }] }
+    );
+    const runId = ctx.runtime.sessionRepo.findById(sessionID)!.runId;
+    const plan = specialistPlanFromRoutingDecision(ctx.runtime.routingDecisionRepository.getLatestDecisionForRun(runId)!)!;
+    const architect = plan.specs.find(spec => spec.specialistId === "architecture-architect")!;
+    const reviewer = plan.specs.find(spec => spec.specialistId === "review-reviewer")!;
+
+    await ctx.adapter.onSessionIdle(sessionID);
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0].body.parts[0].text).toContain(`[FlowDeck specialist:${architect.specialistId}]`);
+    expect(prompts[0].body.parts[0].text).not.toContain(`[FlowDeck specialist:${reviewer.specialistId}]`);
+
+    const taskInput = {
+      tool: "task", sessionID, callID: "dependent-architect-1",
+      args: { subagent_type: architect.targetAgent, background: true, description: `[FlowDeck specialist:${architect.specialistId}] ${architect.role}`, prompt: `[FlowDeck specialist:${architect.specialistId}] ${architect.objective}` },
+    };
+    await ctx.adapter.onToolExecuteBefore(taskInput);
+    await ctx.adapter.onToolExecuteAfter(taskInput, { output: "architecture evidence", metadata: {} });
+    await ctx.adapter.onSessionIdle(sessionID);
+    expect(prompts).toHaveLength(2);
+    expect(prompts[1].body.parts[0].text).toContain(`[FlowDeck specialist:${reviewer.specialistId}]`);
   });
 
   it("10. source-sha-unavailable-is-explicit", () => {

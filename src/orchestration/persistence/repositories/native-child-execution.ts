@@ -17,6 +17,8 @@ export interface ChildExecutionRecord {
   runId: string;
   assignmentId: string;
   taskCallId: string;
+  /** Persisted routing SpecialistSpec identity when the native Task came from a specialist plan. */
+  specialistId?: string;
   parentSessionId: string;
   childSessionId?: string;
   agentId: string;

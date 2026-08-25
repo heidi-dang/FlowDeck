@@ -81,6 +81,8 @@ export interface RegisterDelegationInput {
   parentSessionId: string;
   taskCallId: string;
   targetAgent: string;
+  /** Optional persisted projection of the routing SpecialistSpec identity. */
+  specialistId?: string;
   assignmentId?: string;
   executionId?: string;
   prompt?: string;
@@ -234,6 +236,7 @@ export class ChildExecutionLifecycleService {
       runId: input.runId,
       assignmentId,
       taskCallId: input.taskCallId,
+      specialistId: input.specialistId,
       parentSessionId: input.parentSessionId,
       agentId,
       status: "queued",
@@ -710,6 +713,7 @@ export class ChildExecutionLifecycleService {
       executionId: string;
       agentId: string;
       taskCallId: string;
+      specialistId?: string;
       childSessionId?: string;
       status: string;
       cancelRequested?: boolean;
@@ -758,6 +762,7 @@ export class ChildExecutionLifecycleService {
         executionId: item.executionId,
         agentId: item.agentId,
         taskCallId: item.taskCallId,
+        specialistId: item.specialistId,
         childSessionId: item.childSessionId,
         status: item.status,
         cancelRequested: item.cancelRequested,

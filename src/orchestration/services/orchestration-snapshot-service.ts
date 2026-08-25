@@ -20,6 +20,7 @@ import type { ProgressObservationService } from "./progress-observation-service"
 import type { SqliteSessionRepository } from "../persistence/repositories/session";
 import type { OrchestrationPhase } from "../types/runs";
 import type { AssignmentStatus } from "../types/assignments";
+import { specialistPlanFromRoutingDecision } from "../routing/fast-router-adapter";
 
 export interface WorkItemSnapshot {
   id: string;
@@ -39,6 +40,21 @@ export interface OrchestrationSnapshot {
   runId: string;
   sessionId: string;
   executionClass?: string;
+  executionMode?: "DIRECT" | "SINGLE_SPECIALIST" | "MULTI_SPECIALIST";
+  specialistState: {
+    planned: number;
+    active: number;
+    completed: number;
+    failed: number;
+    blocked: number;
+    required: number;
+    optional: number;
+    attempts: number;
+    deduplicated: number;
+    fanoutBlocked: number;
+    reasonCode?: string;
+    rejectedReason?: string;
+  };
   phase: OrchestrationPhase;
   aggregateVersion: number;
   currentWorkItemId?: string;
@@ -159,6 +175,7 @@ export class OrchestrationSnapshotService {
     // 2. Resolve Routing Decision
     const decision = this.routingDecisionRepo.getLatestDecisionForRun(runId);
     const executionClass = decision?.strategy;
+    const specialistPlan = decision ? specialistPlanFromRoutingDecision(decision) : null;
 
     // 3. Resolve Work Items (Assignments)
     const assignmentRows = this.db.query("SELECT * FROM assignments WHERE run_id = ? ORDER BY created_at ASC, id ASC").all(runId) as Record<string, unknown>[];
@@ -261,6 +278,29 @@ export class OrchestrationSnapshotService {
       if (c.cancelRequested && !c.nativeTerminationConfirmed) childCancelRequested += 1;
     }
 
+    const childBySpecialistId = new Map(
+      childRecords
+        .filter(child => Boolean(child.specialistId))
+        .map(child => [child.specialistId!, child])
+    );
+    const specialistSpecs = specialistPlan?.specs ?? [];
+    const specialistCompleted = new Set(
+      specialistSpecs
+        .filter(spec => childBySpecialistId.get(spec.specialistId)?.status === "completed")
+        .map(spec => spec.specialistId)
+    );
+    const specialistActive = specialistSpecs.filter(spec => {
+      const state = childBySpecialistId.get(spec.specialistId)?.status;
+      return state === "queued" || state === "running";
+    }).length;
+    const specialistFailed = specialistSpecs.filter(spec => {
+      const state = childBySpecialistId.get(spec.specialistId)?.status;
+      return state === "failed" || state === "timed_out" || state === "cancelled";
+    }).length;
+    const specialistBlocked = specialistSpecs.filter(spec =>
+      !childBySpecialistId.has(spec.specialistId) && spec.dependsOn.some(id => !specialistCompleted.has(id))
+    ).length;
+
     // 6. Lifecycle barriers must be represented in the same authoritative state
     // used for verification eligibility and stale-result detection.
     let unresolvedDeferredReplacement = false;
@@ -286,6 +326,21 @@ export class OrchestrationSnapshotService {
       runId,
       sessionId: resolvedSessionId,
       executionClass,
+      executionMode: specialistPlan?.executionMode,
+      specialistState: {
+        planned: specialistSpecs.length,
+        active: specialistActive,
+        completed: specialistCompleted.size,
+        failed: specialistFailed,
+        blocked: specialistBlocked,
+        required: specialistSpecs.filter(spec => spec.required).length,
+        optional: specialistSpecs.filter(spec => !spec.required).length,
+        attempts: childRecords.filter(child => Boolean(child.specialistId)).length,
+        deduplicated: specialistPlan?.deduplicated ?? 0,
+        fanoutBlocked: specialistPlan?.fanoutBlocked ?? 0,
+        reasonCode: specialistPlan?.reasonCode,
+        rejectedReason: specialistPlan?.rejectedReason,
+      },
       phase,
       aggregateVersion: taskRun.aggregateVersion,
       currentWorkItemId: currentWorkItem?.id,
