@@ -1,0 +1,75 @@
+{
+  "timestamp": "2026-08-25T05:49:54.998Z",
+  "platform": "linux",
+  "arch": "x64",
+  "scenarios": [
+    {
+      "scenario": "simple-task-overhead",
+      "stages": [
+        {
+          "name": "classify-task",
+          "durationMs": 0
+        }
+      ],
+      "totalMs": 49
+    },
+    {
+      "scenario": "capabilities-dry-run",
+      "stages": [
+        {
+          "name": "capabilities-dry-run",
+          "durationMs": 1,
+          "providerState": "typescript_fallback"
+        }
+      ],
+      "totalMs": 2
+    },
+    {
+      "scenario": "mutation-classification",
+      "stages": [
+        {
+          "name": "classify-all",
+          "durationMs": 0
+        }
+      ],
+      "totalMs": 1
+    },
+    {
+      "scenario": "stale-evidence-detection",
+      "stages": [
+        {
+          "name": "stale-check-10000x",
+          "durationMs": 0
+        }
+      ],
+      "totalMs": 1
+    },
+    {
+      "scenario": "recovery-bounds",
+      "stages": [
+        {
+          "name": "recovery-state",
+          "durationMs": 0
+        }
+      ],
+      "totalMs": 1
+    }
+  ],
+  "summary": {
+    "simpleTaskOverheadMs": 49,
+    "capabilitiesDryRunMs": 2,
+    "mutationClassificationMs": 1,
+    "staleDetectionMs": 1,
+    "recoveryBoundsMs": 1
+  },
+  "architectureVerification": {
+    "fdxIsCodeIntelligenceAuthority": true,
+    "heidiIsPrimaryOrchestrator": true,
+    "repoMasterUsesFdxFacts": true,
+    "specialistsDynamicOnly": true,
+    "simpleTasksBypass": true,
+    "m10MeasurementOnly": true,
+    "m11AddCheckOnly": true,
+    "vciHistoryFrozen": true
+  }
+}
