@@ -1,0 +1,278 @@
+{
+  "harness": "H40",
+  "supersedes": [
+    "H39",
+    "H38",
+    "H37"
+  ],
+  "timestamp": "2026-08-25T22:22:50.938Z",
+  "platform": "linux-x64",
+  "provenance": {
+    "functionalCommit": "af9482017c05fd68fc1a12a05667d3fb9570bb08",
+    "binarySha256": "e594d5bff0d711890a5bf6ed64210c0fb658b8feb8e9ee9297b0494a9ae1f643",
+    "binarySize": 18198088,
+    "targetPlatform": "linux-x64",
+    "profile": "release"
+  },
+  "scenarios": [
+    {
+      "id": "S1_EXACT_NATIVE_PROVENANCE",
+      "title": "Exact Native Provenance & Functional Commit Binding",
+      "passed": true,
+      "durationMs": 0
+    },
+    {
+      "id": "S2_PROTOCOL_SCHEMA_CONTRACT",
+      "title": "Canonical Protocol 2 / Schema 10 / Capability v1 Evaluation",
+      "passed": true,
+      "durationMs": 5
+    },
+    {
+      "id": "S3_SIMPLE_TASK_FAST_BYPASS",
+      "title": "Non-Code & Simple Task Fast Classification",
+      "passed": true,
+      "durationMs": 0
+    },
+    {
+      "id": "S4_REAL_CHANGE_INTELLIGENCE",
+      "title": "Milestone 1–5 Real Native Change Intelligence",
+      "passed": true,
+      "durationMs": 9
+    },
+    {
+      "id": "S5_NATIVE_PLANNING_M6_EXACT_ORIGIN",
+      "title": "Milestone 6 Real Native Verification Planning with Exact Authoritative Digest Passthrough",
+      "passed": true,
+      "durationMs": 33
+    },
+    {
+      "id": "S6_NATIVE_EXECUTION_M7_EXACT_ORIGIN",
+      "title": "Milestone 7 Real Native Verification Execution with Exact Digest Origin",
+      "passed": true,
+      "durationMs": 582
+    },
+    {
+      "id": "S7_PERSISTENCE_AND_REOPEN_M8",
+      "title": "Milestone 8 Real Persistence & Exact Artifact Reopen/Query",
+      "passed": true,
+      "durationMs": 292
+    },
+    {
+      "id": "S8_REAL_M8_PERSISTENCE_FAULT",
+      "title": "Milestone 8 Real Persistence Fault Injection & Containment",
+      "passed": true,
+      "durationMs": 26
+    },
+    {
+      "id": "S9_PREDICATE_V1_ATTESTATION",
+      "title": "Milestone 9 Real Predicate v1 in-toto Attestation Creation & Verification",
+      "passed": true,
+      "durationMs": 10
+    },
+    {
+      "id": "S10_CONTENT_BOUND_STATE_FINGERPRINT",
+      "title": "Content-Bound Repository State Fingerprint (Working-Tree Dirty Bytes Binding)",
+      "passed": true,
+      "durationMs": 7
+    },
+    {
+      "id": "S11_M10_PER_CHECK_TRUTH",
+      "title": "Milestone 10 Exact Per-Check Truth Preserved Without Whole-Run Collapsing",
+      "passed": true,
+      "durationMs": 0
+    },
+    {
+      "id": "S12_REFUSE_CALIBRATION_ON_INCOMPLETE_EVIDENCE",
+      "title": "Milestone 10 Refusal of Calibration Signal on Incomplete Evidence",
+      "passed": true,
+      "durationMs": 0
+    },
+    {
+      "id": "S13_M11_CANDIDATE_GENERATION",
+      "title": "Milestone 11 Real Candidate Generation from Qualified M10 Evidence",
+      "passed": true,
+      "durationMs": 15
+    },
+    {
+      "id": "S14_M11_EXPLICIT_PROMOTION",
+      "title": "Milestone 11 Real Explicit Candidate Promotion to Active ADD_CHECK Policy",
+      "passed": true,
+      "durationMs": 12
+    },
+    {
+      "id": "S15_M11_ADDITIVE_REPLAN_EXACT_PROVENANCE",
+      "title": "Milestone 11 Real Additive Plan Overlay with Exact Native Policy Provenance",
+      "passed": true,
+      "durationMs": 25
+    },
+    {
+      "id": "S16_M11_POLICY_APPLICATION_PERSISTENCE",
+      "title": "Milestone 11 Real Policy Application Verification & M8 Persistence",
+      "passed": true,
+      "durationMs": 30
+    },
+    {
+      "id": "S17_PREDICATE_V2_CREATE_AND_VERIFY",
+      "title": "Milestone 11 Real Content-Bound in-toto Attestation (Predicate v2)",
+      "passed": true,
+      "durationMs": 22
+    },
+    {
+      "id": "S18_M11_POLICY_REVOCATION",
+      "title": "Milestone 11 Real Policy Revocation & Active Set Invalidation",
+      "passed": true,
+      "durationMs": 14
+    },
+    {
+      "id": "S19_HISTORICAL_V2_VERIFIES_AFTER_REVOKE",
+      "title": "Milestone 11 Historical Predicate v2 Verification Preserved After Revocation",
+      "passed": true,
+      "durationMs": 18
+    },
+    {
+      "id": "S20_PRODUCTION_VERIFICATION_COMPLETION_PASS",
+      "title": "Production VerificationService → FDX Provider → CompletionPolicy Authority Path",
+      "passed": true,
+      "durationMs": 146
+    },
+    {
+      "id": "S21_STALE_EVIDENCE_BLOCKS_COMPLETION",
+      "title": "CompletionPolicy Rejection of Stale Verification Evidence",
+      "passed": true,
+      "durationMs": 0
+    },
+    {
+      "id": "S22_PERSISTENCE_FAILURE_BLOCKS_COMPLETION",
+      "title": "CompletionPolicy Blocks on M8 Persistence Failure",
+      "passed": true,
+      "durationMs": 5
+    },
+    {
+      "id": "S23_ACTIVE_NATIVE_CANCELLATION",
+      "title": "Real Active Cancellation of Native FDX Child Process",
+      "passed": true,
+      "durationMs": 24
+    },
+    {
+      "id": "S24_DURABLE_RESTART_RECOVERY",
+      "title": "Durable SQLite Restart & Recovery Loop Convergence",
+      "passed": true,
+      "durationMs": 45
+    },
+    {
+      "id": "S25_REPO_MASTER_FACT_BRIDGE",
+      "title": "Real Repo Master Fact Bridge & Architectural Intelligence Invocation",
+      "passed": true,
+      "durationMs": 0
+    },
+    {
+      "id": "S26_OPENCODE_SPECIALIST_DELEGATION",
+      "title": "Real OpenCode Native Specialist Child Delegation Registration",
+      "passed": true,
+      "durationMs": 0
+    },
+    {
+      "id": "S27_SINGLE_FLIGHT_DUPLICATE_COALESCING",
+      "title": "20 Duplicate Verification Triggers Coalesce to Single Physical Native Execution",
+      "passed": true,
+      "durationMs": 300
+    },
+    {
+      "id": "S28_CHANGED_STATE_NEW_EXECUTION",
+      "title": "Changed Repository State Executes Fresh Verification with Distinct Digest",
+      "passed": true,
+      "durationMs": 300
+    },
+    {
+      "id": "S29_INCOMPATIBLE_CAPABILITIES_FAIL_CLOSED",
+      "title": "Incompatible Capability Negotiation Fails Closed Gracefully",
+      "passed": true,
+      "durationMs": 0
+    },
+    {
+      "id": "S30_NATIVE_ABSENCE_FALLBACK",
+      "title": "Graceful Fallback Execution When FDX Native Binary is Absent",
+      "passed": true,
+      "durationMs": 17
+    },
+    {
+      "id": "S31_HOSTILE_MISSING_NATIVE_DIGEST_FAIL_CLOSED",
+      "title": "Hostile Test 1: Native Plan Missing Authoritative Digest Fails Closed (UNVERIFIED)",
+      "passed": true,
+      "durationMs": 0
+    },
+    {
+      "id": "S32_HOSTILE_NATIVE_DIGEST_WINS_OVER_LOCAL_HASH",
+      "title": "Hostile Test 2: Native Authoritative Digest Consumed Over Locally Synthesized JSON Hash",
+      "passed": true,
+      "durationMs": 0
+    },
+    {
+      "id": "S33_HOSTILE_INCOMPLETE_OVERLAY_PROVENANCE_FAIL_CLOSED",
+      "title": "Hostile Test 3: Incomplete Policy Overlay Provenance Rejected",
+      "passed": true,
+      "durationMs": 0
+    },
+    {
+      "id": "S34_HOSTILE_TAMPERED_DIGEST_BLOCKS_COMPLETION",
+      "title": "Hostile Test 4: Tampered Verification Identity Blocks Completion Policy Transition",
+      "passed": true,
+      "durationMs": 114
+    }
+  ],
+  "benchmarks": {
+    "capabilityNegotiation": {
+      "samples": 15,
+      "min": 3.89,
+      "median": 4.07,
+      "p95": 4.35,
+      "max": 4.35,
+      "mean": 4.06
+    },
+    "changeIntelligence": {
+      "samples": 15,
+      "min": 8.25,
+      "median": 8.58,
+      "p95": 8.79,
+      "max": 8.79,
+      "mean": 8.55
+    },
+    "m6Planning": {
+      "samples": 15,
+      "min": 16.08,
+      "median": 16.56,
+      "p95": 16.78,
+      "max": 16.78,
+      "mean": 16.53
+    },
+    "m7Execution": {
+      "samples": 15,
+      "min": 280.73,
+      "median": 291.28,
+      "p95": 331.2,
+      "max": 331.2,
+      "mean": 295.78
+    },
+    "attestationV1": {
+      "samples": 15,
+      "min": 4.1,
+      "median": 4.27,
+      "p95": 5.21,
+      "max": 5.21,
+      "mean": 4.36
+    },
+    "singleFlightCoalescing20x": {
+      "samples": 10,
+      "min": 290.74,
+      "median": 290.93,
+      "p95": 314.05,
+      "max": 314.05,
+      "mean": 293.27
+    }
+  },
+  "passed": 34,
+  "failed": 0,
+  "total": 34,
+  "score": 10,
+  "status": "PASS"
+}
