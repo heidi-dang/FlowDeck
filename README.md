@@ -1,255 +1,232 @@
 # FlowDeck
 
-FlowDeck is an OpenCode-native development intelligence layer built around Heidi, a coordinator that decides when to work directly, when to delegate, and when a small tool composition is better handled by OpenCode's native Code Mode.
-
 [![npm version](https://img.shields.io/npm/v/@heidi-dang/flowdeck.svg)](https://www.npmjs.com/package/@heidi-dang/flowdeck)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**14 registered agents** | **11 specialized subagents** | **89 validated skills** | **15 registered commands**
+**FlowDeck v2.5.0** is an OpenCode plugin that adds deterministic task routing, bounded repository intelligence, specialist coordination, governance, and FDX code intelligence to software-development workflows. It extends OpenCode rather than replacing OpenCode’s execution environment.
+
+**89 validated skills**
+
+> **Design principle:** FlowDeck decides and coordinates within explicit bounds. OpenCode remains the authority for model execution, native tools, sandboxing, sessions, and Task/subagent execution.
 
 ## Overview
 
-FlowDeck extends OpenCode instead of replacing it. By acting as a specialized orchestration and intelligence layer atop OpenCode, FlowDeck brings deterministic routing, deep codebase analysis via native Rust extensions (FDX), and multi-agent delegation, while deferring execution, sandboxing, and session lifecycles to OpenCode's robust native environment.
+FlowDeck’s primary coordinator, **Heidi**, classifies each user task before repository investigation. Small work follows a lean direct path. Repository-significant work can use an advisory **Repo Master** consultation and a durable `SpecialistPlan`, then dispatches work through OpenCode’s native Task/subagent lifecycle. Verification and terminal completion remain separate, evidence-based authorities.
 
-## Why FlowDeck Exists
-
-Modern code generation requires complex reasoning across large repositories. A single LLM prompt often lacks the necessary precision to both explore a repository and execute a complex, multi-file refactor safely. FlowDeck exists to manage this complexity by separating structural orchestration (Heidi) from sandboxed atomic execution (OpenCode).
-
-## What FlowDeck Adds to OpenCode
-
-FlowDeck introduces autonomous multi-agent coordination, deterministic capability routing, and high-performance Rust-backed repository analysis. It categorizes tasks and routes them efficiently—whether directly applying a small edit, delegating a systemic change to specialized subagents, or leveraging OpenCode's native Code Mode for quick contextual lookups.
+| Capability | Primary authority | FlowDeck contribution |
+| --- | --- | --- |
+| Model execution, native tools, sandboxing, sessions | OpenCode | Supplies routing and policy context only. |
+| Native Task and subagent lifecycle | OpenCode | Maps approved specialist plans to native lifecycle events. |
+| Task routing and orchestration policy | FlowDeck / Heidi | Classifies work, persists routing evidence, and coordinates the active run. |
+| Specialist planning | FlowDeck `SpecialistPlan` | Validates targets, deduplicates, orders dependencies, enforces caps, and preserves inherited model policy. |
+| Repository intelligence | FDX and Repo Master | Provides bounded repository facts and advisory scope evidence. |
+| Verification and terminal completion | FlowDeck `VerificationService` and `CompletionPolicy` | Evaluates explicit verification evidence; advisory prose never completes work. |
 
 ## Architecture
 
 ```mermaid
 graph TD
-    Developer["Developer"]
+    U[Developer request] --> R[Heidi deterministic routing]
+    R -->|FAST_DIRECT| D[Direct OpenCode workflow]
+    R -->|SINGLE_SPECIALIST / MULTI_SPECIALIST| C{Repo Master consultation policy}
+    C -->|none| P[SpecialistPlan]
+    C -->|optional or required| RM[Repo Master: bounded advisory evidence]
+    RM --> P
+    P --> N[OpenCode native Task / subagent lifecycle]
+    D --> V[VerificationService]
+    N --> V
+    V --> CP[CompletionPolicy]
 
-    Developer --> OpenCode
-
-    subgraph "OpenCode"
-    OpenCode_Native["Native tools"]
-    OpenCode_Task["Native Task / subagents"]
-    OpenCode_CodeMode["Native Code Mode"]
-    OpenCode_Permissions["Native permissions"]
-    OpenCode_Session["Native session lifecycle"]
-    end
-
-    OpenCode --> FlowDeck
-
-    subgraph "FlowDeck"
-    Heidi["Heidi coordination"]
-    TaskClass["Task classification"]
-    BoundedMode["Bounded Code Mode selection"]
-    FDX["FDX code intelligence"]
-    Doctor["Doctor / diagnostics"]
-    DevIntel["FlowDeck-specific development intelligence"]
+    subgraph Repository intelligence
+      FDX[FDX workspace index]
+      HC[Repository hot context]
+      RM
+      FDX --> RM
+      HC --> RM
     end
 ```
 
-## Heidi
+The diagram intentionally separates **advice**, **planning**, **execution**, **verification**, and **completion**. Repo Master is not an agent, scheduler, source-of-truth code index, model router, execution engine, verifier, or completion authority.
 
-Heidi acts as FlowDeck's primary coordinator, analyzing user requests to route them efficiently across available systems.
+## Adaptive execution modes
 
-### When Heidi Acts Directly
-For focused, single-domain changes (e.g., updating a component, fixing a localized bug), Heidi processes the request directly using a fast, lean system prompt (under 600 baseline tokens).
+Heidi uses a deterministic route before expensive repository work. The execution mode controls the amount of planning and whether Repo Master is consulted.
 
-### When Heidi Uses Specialists
-For architectural overhauls, security audits, or cross-cutting migrations, Heidi delegates to specialized subagents using OpenCode's `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` capability. This parallelizes workstreams without stalling the primary session.
+| Mode | Intended work | Repo Master behavior | Specialist behavior |
+| --- | --- | --- | --- |
+| `DIRECT` | Trivial, localized work | Not consulted. No repository scan is started by the direct path. | No specialist plan. |
+| `SINGLE_SPECIALIST` | A focused domain task such as security, UI, backend, or review | Optional when useful to scope a focused repository task. | One validated specialist with inherited model and tool policy. |
+| `MULTI_SPECIALIST` | Cross-domain or repository-significant work | Required for applicable multi-specialist routes; a failure blocks instead of inventing evidence. | Planner retains capability selection, deduplication, dependencies, and fan-out limits. |
+| Standard or deep work | Larger implementation, migration, or release qualification | Routed under the same bounded policy when specialist planning is active. | Existing lifecycle and verification gates remain in force. |
 
-### When Heidi Uses Code Mode
-When an action fits the profile of a small MCP (Model Context Protocol) composition, Heidi delegates the operation to OpenCode's native Code Mode.
+### Repo Master: bounded advisory intelligence
 
-## Native Code Mode Integration
+Repo Master reuses the existing `FdxWorkspaceIndex` and repository hot-context primitives. It creates compact advice containing bounded relevant scope, likely tests, dependency edges, risks, constraints, and suggested *capabilities*. It does not retain source blobs, hidden reasoning, prompts, credentials, model identifiers, or native execution state.
 
-FlowDeck respects OpenCode as the authoritative environment for actual execution and confinement.
+Advice is bound to a deterministic repository identity and source-state fingerprint. Freshness considers the canonical workspace root, Git HEAD and branch, meaningful dirty-tree state, package manifests, and FlowDeck configuration. Repo Master ignores only its own generated metadata files; user-authored files, including user-managed `.flowdeck` content, remain meaningful source changes.
 
-### Capability Model
-
-Code Mode capabilities are strictly modeled:
-
-```mermaid
-graph TD
-    MCP["MCP composition candidate"]
-    Gate["Heidi complexity gate"]
-    Avail{"Native execute available?"}
-
-    MCP --> Gate
-    Gate --> Avail
-    Avail -- Yes --> Native["OpenCode Code Mode"]
-    Avail -- No / Unknown --> Normal["Normal Heidi execution"]
-```
-
-| State | Definition |
+| Boundary | Behavior |
 | --- | --- |
-| `UNAVAILABLE` | Code Mode is disabled or explicitly unsupported. |
-| `UNKNOWN` | Code Mode is enabled but no eligible MCP context was detected. |
-| `AVAILABLE` | Code Mode is enabled and eligible. Heidi may select native Code Mode. |
+| Shared state | `.flowdeck/repo-master.json` stores compact repository metadata only and is written atomically. |
+| Run-specific evidence | Persists only on the existing canonical routing decision for that run. It is not stored in shared Repo Master state. |
+| Restart | Valid routing evidence can be read from the durable routing decision and is revalidated against current repository state. |
+| Corruption or mismatch | Fails closed; malformed, oversized, stale, or cross-repository advice is not reused. |
+| Cancellation, replacement, and modification | Superseded advice cannot be dispatched into a later run. |
 
-### Bounded Composition Model
+Repo Master can influence a specialist objective or scope only after its suggestions pass the existing SpecialistPlan validation path. It cannot introduce an agent, choose a model, recursively delegate, or bypass planner policy.
 
-Heidi Code Mode selection-policy bounds restrict when an operation qualifies for native execution:
+## Reliability, verification, and completion
 
-| Policy | Bound |
+FlowDeck’s lifecycle distinguishes a plan from evidence that work is complete.
+
+| Concern | Guardrail |
 | --- | --- |
-| Tool calls | 10 |
-| Parallel calls | 4 |
-| Dependency stages | 3 |
-| Collection items | 25 |
-| Source guidance | 80 lines / 12 KiB |
-| Timeout target | 30 seconds |
-| Result target | 64 KiB |
-| Retries | 0 |
-| Recursion | disabled |
-| Nested execute | disabled |
-| Agent spawning | disabled |
+| Specialist recursion | Specialists have no delegation authority and a maximum depth of one is enforced. |
+| Fan-out and duplication | `SpecialistPlan` validates capability targets, removes duplicates, checks dependencies, and applies configured limits. |
+| Stale repository advice | Native specialist dispatch rechecks required advice freshness immediately before launch. |
+| Required consultation failure | The route or dispatch is blocked explicitly; no substitute advice is fabricated. |
+| Repository mutation | Observed meaningful mutations invalidate advisory repository intelligence. |
+| Metrics | Repo Master metrics are aggregate-only: consultations, cache outcome, refreshes, stale observations, and latency. No repository path, prompt, model, session, or run labels are emitted. |
+| Verification | `VerificationService` evaluates explicit verification evidence. |
+| Completion | `CompletionPolicy` is the only terminal-completion authority. Repo Master and specialist prose cannot complete a run. |
 
-### Example: Suitable for Code Mode
+## FDX code intelligence
 
-**User:**
-> "List the open GitHub bug issues, inspect the related pull requests, and show which PR appears to address each issue."
+FDX is FlowDeck’s repository-intelligence foundation. Repo Master uses its existing workspace index rather than implementing a second index.
 
-**Heidi:**
-1. Recognizes a small MCP composition.
-2. Confirms native Code Mode is `AVAILABLE`.
-3. Uses OpenCode execute for the bounded fetch/correlate operation.
-4. Receives structured evidence.
-5. Produces the final explanation.
+| FDX capability | Purpose |
+| --- | --- |
+| Search and bounded reads | Locate code and provide line-correlated context. |
+| Outline and impact analysis | Produce structural and change-impact facts for repository work. |
+| Workspace snapshots | Reuse bounded, incrementally refreshed repository metadata. |
+| Native parity | TypeScript and native Rust behavior are qualified through the repository’s FDX parity gate. |
 
-### Example: Stays in Normal Heidi
+## Compatibility
 
-**User:**
-> "Fix this race condition in src/index.ts."
-
-**Heidi:**
-This requires repository mutation, debugging, and verification. Heidi classifies this as development execution, skipping Code Mode entirely to perform iterative fixes using the primary OpenCode native task lifecycle.
-
-## FDX Code Intelligence
-
-FlowDeck includes FDX, a native Rust binary designed for high-performance, deterministic repository intelligence. (FDX remains outside OpenCode 1.18.20 native Code Mode to maintain secure execution boundaries).
-
-* **Search:** Regex and semantic lookups across the repository.
-* **Read:** Bounded file extraction with line-number correlation.
-* **Outline:** AST-aware symbol resolution and structural summarization.
-* **Impact Analysis:** Pre-computation of refactor touchpoints.
-* **Evidence-Oriented Understanding:** Immutable state snapshots for multi-agent reasoning.
-
-## FlowDeck Doctor
-
-FlowDeck includes a comprehensive diagnostic suite (`flowdeck doctor`) to evaluate environment configuration, runtime plugin paths, expected capabilities, and OpenCode compatibility. It verifies your setup locally before execution.
+| Dependency | Requirement |
+| --- | --- |
+| FlowDeck package | `@heidi-dang/flowdeck` v2.5.0 |
+| Node.js | `>=20.0.0` |
+| OpenCode | `>=1.18.18` |
+| Package manager | npm for installation and the documented package scripts; Bun is used by the test and build tooling. |
 
 ## Installation
 
-```bash
-# Automated install (recommended)
-curl -fsSL https://raw.githubusercontent.com/heidi-dang/flowdeck/main/install.sh | bash
+Install FlowDeck globally, then register the plugin with OpenCode:
 
-# Or install via npm
+```bash
 npm install -g @heidi-dang/flowdeck
-
-# Register the plugin with OpenCode
 flowdeck install
+flowdeck verify
+flowdeck doctor
 ```
 
-## Quick Start
-
-Start OpenCode normally. FlowDeck attaches automatically to the OpenCode runtime if the plugin is successfully registered.
+For a project-local OpenCode registration, run the installer from the project root:
 
 ```bash
-opencode run --agent heidi "Perform a security audit on the user authentication flow."
+flowdeck install --project
+flowdeck verify
 ```
 
-## Typical Workflows
+For a local checkout during development, use the explicit local-repository mode:
 
-1. **Bug Resolution:** Heidi investigates the stack trace using FDX, formulates a fix, applies the patch, and triggers a local test run.
-2. **Exploratory Research:** Heidi dispatches a small Code Mode task to fetch external MCP documentation, reviews the response, and integrates the findings.
-3. **Large Migrations:** Heidi spawns specialized background subagents to migrate independent modules in parallel, tracking checklist completion natively.
+```bash
+flowdeck install --local-repo
+flowdeck verify
+```
 
-## Architecture Ownership
-
-| Capability | Owner |
-| --- | --- |
-| Model execution | OpenCode |
-| Shell and native tools | OpenCode |
-| Session lifecycle | OpenCode |
-| Task/subagent lifecycle | OpenCode |
-| Code Mode runtime | OpenCode |
-| Permissions | OpenCode |
-| Heidi coordination policy | FlowDeck |
-| Task classification | FlowDeck |
-| Code Mode selection policy | FlowDeck |
-| FDX code intelligence | FlowDeck |
-| FlowDeck Doctor | FlowDeck |
-
-## OpenCode Compatibility
-
-FlowDeck requires OpenCode version **1.18.20** for exact qualification alignment and optimal capability mapping.
+The CLI also supports `flowdeck update`, `flowdeck config validate`, `flowdeck migrate`, `flowdeck rollback`, `flowdeck uninstall`, `flowdeck dry-run`, and `flowdeck clean-install --yes`. Run `flowdeck --help` for the complete local command reference.
 
 ## Configuration
 
-FlowDeck utilizes a `.flowdeck.json` or `.opencode/opencode.json` integration configuration within the project root. Configurations govern governance modes (strict, advisory, off) and FDX fallback preferences.
+Project configuration is loaded from `.flowdeck.jsonc` or `.flowdeck.json`; JSONC is supported. Configuration is optional. The following example uses supported schema keys and keeps routing explicit:
 
-<details>
-<summary>Example Configuration</summary>
-
-```json
+```jsonc
 {
-  "governance": "strict",
-  "mcp": {
-    "enabled": true
+  "routing": {
+    "enabled": true,
+    "mode": "enforce"
+  },
+  "maxDelegationDepth": 1,
+  "governance": {
+    "mode": "strict",
+    "verification": {
+      "enabled": true,
+      "requireVerificationBeforeComplete": true
+    },
+    "delegationBudget": {
+      "maxDelegations": 8,
+      "maxDepth": 1
+    }
   }
 }
 ```
 
-</details>
+`governance.mode` accepts `off`, `advisory`, or `strict`. Routing accepts `off`, `shadow`, or `enforce`. Per-agent model overrides are optional; when unset, specialists inherit the configured runtime model policy rather than receiving a Repo Master-selected model.
+
+After editing FlowDeck project configuration, run the repository diagnostics:
+
+```bash
+flowdeck doctor
+```
+
+`flowdeck config validate` validates OpenCode plugin registration JSON/JSONC. Use the project-local form when `.opencode/opencode.json` exists:
+
+```bash
+flowdeck config validate --project
+```
 
 ## Development
 
 ```bash
-# Clone the repository
 git clone https://github.com/heidi-dang/FlowDeck.git
 cd FlowDeck
-
-# Install dependencies
 npm ci
-
-# Build the project
-bun run build
+npm run build
+npm run typecheck
+npm run lint
 ```
 
-## Testing
-
-FlowDeck maintains a strict qualification pipeline:
+To build the optional native FDX binary in a Rust-enabled environment:
 
 ```bash
-# Run unit tests
-bun test
-
-# Validate documentation
-bun run validate:docs
-
-# Check coverage
-bun run test:coverage
-
-# Run Rust FDX checks
-cargo test --workspace --all-targets --all-features
+npm run build:fdx
+npm run check:fdx
 ```
 
-## Release & Package Information
+## Testing and qualification
 
-The FlowDeck distribution is compiled into a self-contained NPM package `@heidi-dang/flowdeck`. Version `v2.4.1` is a focused security and reliability patch release delivering strict filesystem jail containment across `.codebase` and FDX native/fallback paths, Git policy hardening, Code Mode selection boundary enforcement, truthful Doctor diagnostics, and dependency closure.
+Run the normal deterministic suite first, then use the focused qualification commands appropriate to the change:
 
-## Security and Trust Boundaries
+```bash
+npm test
+npm run typecheck
+npm run lint
+npm run test:fdx-parity
+npm run test:persistence
+npm run validate:docs
+npm run build
+```
 
-FlowDeck respects OpenCode's native permissions and Trust Boundaries.
-* Sensitive actions (`git push`, `npm publish`, cloud deployments) are explicitly tracked.
-* No credentials, caches, or session exports are included in the published NPM tarball.
-* FlowDeck relies strictly on the isolated `OPENCODE_EXPERIMENTAL_CODE_MODE` sandbox.
+Additional repository gates include `npm run test:coverage`, `npm run verify:orchestration:schema`, `npm run check:schema-generated`, `npm run verify:full`, and `npm run verify:clean-install`. Release candidates also use `npm run verify:release` on an approved release branch. These commands validate; they do not publish packages, create releases, or merge pull requests.
+
+## Security and trust boundaries
+
+FlowDeck is designed to preserve explicit authority and containment boundaries.
+
+- OpenCode retains sandbox, session, native-tool, and Task/subagent execution authority.
+- FlowDeck’s governance layer evaluates tool and delegation policy before runtime actions.
+- High-risk external operations remain subject to their applicable approval and permission controls.
+- Repo Master stores bounded metadata and routing evidence, not repository source copies, credentials, prompts, or model-selection state.
+- Generated Repo Master metadata is isolated under `.flowdeck`; user-managed repository files are never silently ignored as non-meaningful changes.
+- Doctor and verification commands provide diagnostic and evidence checks; they do not claim work is complete without the established completion policy.
+
+Report security issues through the repository’s maintainers rather than publishing sensitive details in a public issue.
 
 ## Contributing
 
-See the `AGENTS.md` and `CLAUDE.md` files for repository rules, ECC-aligned guidelines, and local agent constraints.
+Contributions should preserve FlowDeck’s authority boundaries and keep deterministic gates green. Start by reading the repository guidance, make focused changes with matching tests, and run the relevant commands from the testing section before opening a pull request. Do not introduce a parallel scheduler, execution engine, source index, model router, verification authority, or completion authority when extending orchestration behavior.
 
 ## License
 
-MIT License. See [LICENSE](LICENSE) for details.
+FlowDeck is released under the [MIT License](LICENSE).

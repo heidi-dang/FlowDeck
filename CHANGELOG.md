@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.5.0] - FlowDeck v2.5.0 — Bounded Repository Intelligence for Adaptive Orchestration
+
+### Added
+- **Advisory Repo Master**: Added bounded, deterministic repository intelligence that reuses the existing FDX workspace index and repository hot-context primitives. It produces compact scope, dependency, risk, test, and capability evidence without becoming an execution engine, model selector, scheduler, verifier, or completion authority.
+- **Adaptive Specialist Integration**: Non-direct Heidi routes may consult Repo Master according to deterministic policy. Advice is serialized only as bounded canonical routing evidence and can inform SpecialistPlan objectives and scope; Heidi routing and SpecialistPlan retain specialist, fan-out, deduplication, and model-policy authority.
+- **Freshness and Isolation**: Repository advice is bound to canonical root identity, HEAD, branch, dirty state, package manifests, and FlowDeck configuration. Shared Repo Master state contains metadata only; run-specific advice stays with its owning routing decision and cannot cross repository or run boundaries.
+- **Observability**: Added aggregate-only Repo Master cache, refresh, freshness, and latency metrics plus compact read-only snapshot diagnostics without repository path, prompt, model, or run labels.
+
+### Reliability and Qualification
+- **Fail-Closed Lifecycle Boundaries**: Required repository-significant consultations fail explicitly instead of inventing evidence. Dispatch revalidates required advice and cancellation, replacement, modification, and restart paths cannot resurrect superseded advice.
+- **Bounded Persistence**: State writes are atomic and uniquely staged, corruption is recovered fail-closed, and user-authored `.flowdeck` content remains a meaningful freshness signal while generated Repo Master metadata is ignored.
+- **Qualification Coverage**: Added production-path, restart, cancellation, replacement, malformed-state, multi-repository isolation, minimal/large fixture, direct/single/multi mode, cache/refresh, resource-bound, metrics, FDX-parity, schema, persistence, lint, build, and normal-suite coverage.
+
+
 ## [2.4.1] - FlowDeck v2.4.1 — Security Containment & Reliability Patch
 
 ### Security & Reliability
