@@ -4,6 +4,8 @@ import { VerificationStatus, OrchestrationError, ErrorCodes, OrchestrationEventT
 import { createEvent } from "../types/events";
 import type { IVerificationRepository, IEventBus, PaginatedResult } from "./ports";
 import type { PagePaginationRequest } from "../types/pagination";
+import type { FdxCapabilitySnapshot, FdxChangeIntelligence, FdxVerificationBlocker } from "../../services/fdx-vci-adapter";
+import { runFdxVerification, type FdxVerificationSession } from "../verification/fdx-verification-provider";
 
 export interface LiveVerificationRequest {
   runId: string;
@@ -75,6 +77,70 @@ export class VerificationService {
     }
 
     return saved;
+  }
+
+  /**
+   * Request authoritative FDX VCI verification through the full production pipeline:
+   * VerificationService -> FdxVerificationProvider -> FDX Adapter -> native FDX -> M8 evidence -> CompletionPolicy
+   */
+  async requestFdxVerification(
+    runId: string,
+    changeIntelligence: FdxChangeIntelligence,
+    capabilities: FdxCapabilitySnapshot,
+    options: {
+      correlationId?: string;
+      causationId?: string;
+      checkType?: string;
+      policyOverlay?: boolean;
+      failFast?: boolean;
+      signal?: AbortSignal;
+      timeoutMs?: number;
+    } = {}
+  ): Promise<{
+    result: VerificationResult;
+    session: FdxVerificationSession;
+    blockers: FdxVerificationBlocker[];
+  }> {
+    const checkType = options.checkType ?? "live_orchestration";
+    const correlationId = options.correlationId ?? randomUUID();
+    const liveReq: LiveVerificationRequest = {
+      runId,
+      stateVersion: changeIntelligence.stateVersion,
+      stateFingerprint: changeIntelligence.stateFingerprint,
+      checkType,
+      correlationId,
+      causationId: options.causationId,
+      targetSha: changeIntelligence.headSha,
+      evidenceIds: [],
+    };
+
+    const pendingResult = await this.requestLiveVerification(liveReq);
+
+    const { result, session, blockers } = await runFdxVerification(
+      runId,
+      changeIntelligence,
+      capabilities,
+      {
+        ...options,
+        correlationId,
+        causationId: options.causationId,
+        checkType,
+      }
+    );
+
+    const updated = await this.updateVerification(pendingResult.id, {
+      status: result.status,
+      result: result.result,
+      evidenceIds: result.evidenceIds,
+      failureReasons: result.failureReasons,
+      metadata: result.metadata,
+    });
+
+    return {
+      result: updated,
+      session,
+      blockers,
+    };
   }
 
   /**

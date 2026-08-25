@@ -74,6 +74,7 @@ export async function runFdxVerification(
   options: {
     correlationId?: string
     causationId?: string
+    checkType?: string
     policyOverlay?: boolean
     failFast?: boolean
     noPersist?: boolean
@@ -130,7 +131,7 @@ export async function runFdxVerification(
     const result: VerificationResult = {
       id: sessionId,
       runId,
-      checkType: "fdx_vci",
+      checkType: options.checkType ?? "fdx_vci",
       status: VerificationStatus.ERROR,
       correlationId,
       causationId: options.causationId,
@@ -178,7 +179,7 @@ export async function runFdxVerification(
   const result: VerificationResult = {
     id: sessionId,
     runId,
-    checkType: "fdx_vci",
+    checkType: options.checkType ?? "fdx_vci",
     status: passed ? VerificationStatus.PASSED : VerificationStatus.FAILED,
     correlationId,
     causationId: options.causationId,
