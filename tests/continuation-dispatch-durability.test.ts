@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { acquireProjectRuntime, disposeProjectRuntime, releaseProjectRuntime } from "../src/runtime/project-registry";
+import { acquireProjectRuntime, disposeProjectRuntime } from "../src/runtime/project-registry";
+import { closeConnection, openConnection } from "../src/orchestration/persistence/connection";
 import { ContinuationDispatcher, type ContinuationToken } from "../src/orchestration/services/continuation-policy";
 
 let testDir = "";
@@ -75,12 +76,13 @@ describe("Continuation dispatch durability", () => {
     expect(ctx.runtime.db.query("SELECT status FROM continuation_dispatches WHERE identity = ?").get(identity)).toEqual({ status: "outcome_unknown" });
   });
 
-  it("terminal release finalizes prepared statements instead of deferring database handles to garbage collection", async () => {
-    const ctx = acquireProjectRuntime(testDir);
-    const statement = ctx.runtime.db.prepare("SELECT 1 AS value");
+  it("terminal connection release finalizes prepared statements instead of deferring database handles to garbage collection", () => {
+    const dbPath = join(testDir, "terminal-close.db");
+    const db = openConnection({ path: dbPath });
+    const statement = db.prepare("SELECT 1 AS value");
     expect(statement.get()).toEqual({ value: 1 });
 
-    await releaseProjectRuntime(testDir);
+    closeConnection(dbPath);
 
     expect(() => statement.get()).toThrow("Database has closed");
   });
