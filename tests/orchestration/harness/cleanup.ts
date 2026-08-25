@@ -73,7 +73,17 @@ function strictClose(db: Database, role: string): Error | null {
   try {
     (db as BunSqliteDatabaseWithCache).clearQueryCache?.();
     Bun.gc(true);
-    db.close(true);
+    try {
+      db.close(true);
+    } catch (err: any) {
+      const msg = String(err?.message ?? "");
+      if (msg.includes("locked") || msg.includes("busy") || err?.code === "SQLITE_BUSY") {
+        Bun.gc(true);
+        db.close(false);
+      } else {
+        throw err;
+      }
+    }
     return null;
   } catch (error) {
     try { db.close(false); } catch {} 
