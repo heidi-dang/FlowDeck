@@ -257,17 +257,23 @@ function probeFdxBinary(): string | null {
     } catch { /* continue probing */ }
   }
   try {
-    execFileSync("fdx", ["--help"], { stdio: "ignore", shell: false, timeout: 2_000 })
-    const output = execFileSync("fdx", ["--version"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 2_000, maxBuffer: 1024 * 1024 }).trim()
-    return /^fdx\s+0\.1\./.test(output) ? "fdx" : null
+    if (isCompatibleFdx("fdx")) return "fdx"
+    return null
   } catch {
     return null
   }
 }
 
 function isCompatibleFdx(binary: string): boolean {
-  try { return /^fdx\s+0\.1\./.test(execFileSync(binary, ["--version"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 2_000, maxBuffer: 1024 * 1024 }).trim()) }
-  catch { return false }
+  try {
+    const version = execFileSync(binary, ["--version"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 2_000, maxBuffer: 1024 * 1024 }).trim()
+    if (!/^fdx\s+0\.1\./.test(version)) return false
+    const cap = execFileSync(binary, ["capabilities", "--format", "json"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 2_000, maxBuffer: 1024 * 1024 })
+    const parsed = JSON.parse(cap)
+    return parsed && typeof parsed === "object" && parsed.capability_contract_version !== undefined
+  } catch {
+    return false
+  }
 }
 
 export function invalidateFdxCache(): void {

@@ -12,6 +12,7 @@ import {
   evaluateCapabilities,
   fdxCapabilitiesArgs,
 } from "../../services/fdx-vci-contracts"
+import { resolveFdxBinaryPath } from "../../tools/fdx-shared"
 
 export async function runFdxChecks(directory: string): Promise<CheckResult[]> {
   const pkgDir = resolveFlowDeckPackageDir(directory)
@@ -22,6 +23,11 @@ export async function runFdxChecks(directory: string): Promise<CheckResult[]> {
 
   const binaryCandidates = [
     process.env["FDX_BINARY_PATH"],
+    join(pkgDir, "target", "release", binName),
+    join(pkgDir, "native", "fdx", platformArchDir, binName),
+    join(pkgDir, "native", binName),
+    join(pkgDir, "crates", "fdx", "target", "release", binName),
+    join(pkgDir, "crates", "fdx", "target", "debug", binName),
     join(directory, "target", "release", binName),
     join(directory, "native", "fdx", platformArchDir, binName),
     join(directory, "native", binName),
@@ -29,16 +35,18 @@ export async function runFdxChecks(directory: string): Promise<CheckResult[]> {
     join(directory, "crates", "fdx", "target", "debug", binName),
   ].filter(Boolean) as string[]
 
-  let nativeBinaryPath: string | null = null
-  for (const cand of binaryCandidates) {
-    if (existsSync(cand)) {
-      try {
-        if (statSync(cand).isFile()) {
-          nativeBinaryPath = cand
-          break
+  let nativeBinaryPath: string | null = resolveFdxBinaryPath()
+  if (!nativeBinaryPath) {
+    for (const cand of binaryCandidates) {
+      if (existsSync(cand)) {
+        try {
+          if (statSync(cand).isFile()) {
+            nativeBinaryPath = cand
+            break
+          }
+        } catch {
+          // ignore
         }
-      } catch {
-        // ignore
       }
     }
   }
@@ -53,16 +61,7 @@ export async function runFdxChecks(directory: string): Promise<CheckResult[]> {
       fdxVersion = out.trim()
     } catch {
       fdxRuns = false
-    }
-  } else {
-    // Try PATH fdx
-    try {
-      const out = execFileSync("fdx", ["--version"], { encoding: "utf-8", timeout: 3000 })
-      fdxRuns = true
-      fdxVersion = out.trim()
-      nativeBinaryPath = "fdx"
-    } catch {
-      fdxRuns = false
+      nativeBinaryPath = null
     }
   }
 
