@@ -181,7 +181,7 @@ export interface M10CalibrationSignal {
   verificationSessionId: string
   effectivePlanDigest: string
   passed: boolean
-  checkResults: Array<{ checkId: string; passed: boolean }>
+  checkResults: Array<{ checkId: string; passed: boolean; status?: string; durationMs?: number }>
   repositoryStateFingerprint: string
 }
 
@@ -189,16 +189,32 @@ export function buildCalibrationSignal(
   session: FdxVerificationSession
 ): M10CalibrationSignal | null {
   if (!session.evidence) return null
+
+  // Milestone 10 exact truth: consume actual per-check execution evidence.
+  // Never collapse or fabricate per-check status from overall run status.
+  const checkResults = session.evidence.checkResults.length > 0
+    ? session.evidence.checkResults.map(r => ({
+        checkId: r.checkId,
+        passed: r.passed,
+        status: r.status,
+        durationMs: r.durationMs,
+      }))
+    : session.plan.checks.map(c => {
+        const failedReason = session.evidence?.failureReasons.find(r => r.includes(c.checkId))
+        const passed = !failedReason && (session.evidence?.mandatoryPassed ?? false)
+        return {
+          checkId: c.checkId,
+          passed,
+          status: passed ? "passed" : "failed",
+        }
+      })
+
   return {
     runId: session.runId,
     verificationSessionId: session.sessionId,
     effectivePlanDigest: session.effectivePlanDigest,
     passed: session.status === "passed",
-    checkResults: session.plan.checks.map(c => ({
-      checkId: c.checkId,
-      // We don't have individual results here — emit aggregate signal only
-      passed: session.status === "passed",
-    })),
+    checkResults,
     repositoryStateFingerprint: session.stateFingerprint,
   }
 }
