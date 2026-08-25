@@ -1,80 +1,81 @@
-# M11 Corrective Qualification Report — External Release-Binary Policy Promotion (R33)
+# M11 Final Benchmark Qualification — Corrected Methodology (R34)
 
-**Status:** Qualified under the corrective acceptance contract  
+**Status:** **ACCEPTED / FROZEN**
 **Functional source (F31):** `d8f6c1ff4f1cfb34fe47661cba4b07aa934d8568`  
 **External release-binary SHA-256:** `5881aa11c5d7448cf2780bf3e6e80b6db51dd38ac449a593c67f61f8cb105d0b`  
-**H34 harness commit:** `b2a59e9e4c15886c3639cbd104cabebb18636452`  
-**M11 schema:** `10`  
-**Artifact record:** [`benchmark-fdx-vci-m11-policy-promotion.json`](benchmark-fdx-vci-m11-policy-promotion.json)
+**H35 harness commit:** `a1bd16ef930eb0f9b0d7fdc1caede6534b4b9bd0`
+**Schema version:** `10`
+**Machine-readable evidence:** [`benchmark-fdx-vci-m11-policy-promotion.json`](benchmark-fdx-vci-m11-policy-promotion.json)
 
-## Corrective qualification decision
+## Corrective acceptance decision
 
-This report supersedes **H33/R32 as the M11 final-acceptance evidence**. The historical F30, F31, D32, H33, and R32 commits remain preserved as immutable history, but H33 is not used as final evidence because it constructed and qualified a debug artifact, mixed generated evidence with the harness stage, included a developer-specific path assumption, and did not execute the required M11 performance suite. H34 and R33 correct those evidence defects without changing F31 production source.
+R33’s **semantic and provenance qualification remains valid**: it correctly demonstrated external exact-F31 release-binary provenance, fail-closed policy semantics, and the M11 safety contract. This R34 report supersedes R33 **only for M11 performance and benchmark-methodology acceptance**. R33’s earlier benchmark labels implied base-plan cardinalities and narrower operation boundaries that its fixture construction did not establish. H35 corrects those measurements without altering F31 production code.
 
-> **Qualification boundary.** H34 accepts only a caller-supplied binary when all three required inputs are present: exact F31 source SHA, binary path, and independently supplied binary SHA-256. It recomputes the binary digest, rejects debug paths, rejects incorrect source or digest inputs, forbids binary construction, and writes only the untracked R33 JSON artifact after a clean H34 checkout has been verified.
+> **Freeze decision.** H35 passed 74 meaningful preflights against an externally supplied exact-F31 release binary. It records no F31-to-H35 FDX production diff, uses no binary auto-build path, recomputes the supplied SHA-256, rejects debug/wrong-SHA/wrong-functional-source inputs, and separates fixture setup from every operation metric. M11 is therefore accepted and frozen at the conclusion of R34.
 
-| Provenance property | Corrective result |
+| Corrected property | H35 result |
 |---|---|
-| Functional source | Exact F31, `d8f6c1ff4f1cfb34fe47661cba4b07aa934d8568` |
-| Binary profile | Release, enforced and tested by negative debug-path rejection |
-| Binary identity | SHA-256 recomputed and equal to `5881aa11c5d7448cf2780bf3e6e80b6db51dd38ac449a593c67f61f8cb105d0b` |
-| Harness ownership | `HEAD == H34` at `b2a59e9e4c15886c3639cbd104cabebb18636452` |
-| Production source after F31 | No diff under `crates/fdx/src`, `crates/fdx/Cargo.toml`, or `Cargo.lock` |
-| Path privacy | H34/R33 contain no developer-specific absolute path |
-| Report sequencing | H34 script only; R33 JSON and Markdown committed separately afterward |
+| Functional source | Exact F31 `d8f6c1ff4f1cfb34fe47661cba4b07aa934d8568` |
+| Release artifact | External only; 17,798,824 bytes; SHA-256 `5881aa11c5d7448cf2780bf3e6e80b6db51dd38ac449a593c67f61f8cb105d0b` |
+| Harness ownership | H35 `a1bd16ef930eb0f9b0d7fdc1caede6534b4b9bd0` from a clean checkout |
+| Production diff after F31 | Empty for `crates/fdx/src`, `crates/fdx/Cargo.toml`, and `Cargo.lock` |
+| External contract | Requires `FDX_BENCHMARK_FUNCTIONAL_SHA`, `FDX_BINARY_PATH`, and `FDX_BINARY_SHA256`; no fallback build |
+| Semantic preflights | 74 passed, including a timer-boundary assertion and all prior M6–M11 isolation preflights |
+| Sample quality | 15 samples for low-latency operations; 7 samples for the 1,000-run candidate scenario |
 
-## Semantic qualification
+## Corrected methodology
 
-H34 passed **73 named, real preflights**. The inventory covers external release-binary provenance, negative rejection paths, schema v10 migration preservation, candidate qualification, anti-self-reinforcement, explicit promotion, provenance-template integrity, concurrency, cap enforcement, revocation, base-plan monotonicity, default-path isolation, application determinism, CLI lifecycle behavior, and M6–M10 frozen-boundary contracts. Every entry records its exact test or command in the JSON evidence artifact.
+Each H35 sample first creates the disposable repository, initializes SQLite, and seeds its qualified calibration or active-policy fixture. H35 records that duration under `setup_ms`. Only after this preparation ends does it begin `operation_ms`; repository deletion happens after the operation timer stops. An in-process preflight injects a setup-only delay and fails if that delay leaks into the target operation timing.
 
-| Preflight group | Result | Representative checks |
-|---|---:|---|
-| External provenance and ownership | 15 passed | Release-only binary, SHA recomputation, debug/wrong-SHA/wrong-source rejection, F31 ancestry, clean H34 ownership |
-| M11 candidate and promotion integrity | 13 passed | Qualified M10-only inputs, run-bounded lookback, policy-selected evidence exclusion, self-reinforcement exclusion, 20-connection promotion, cap conflict |
-| M11 persisted overlay safety | 5 passed | Exact-template persistence, corrupt-store failure, base-plan preservation, no-op determinism, duplicate-policy deduplication and immutable captured snapshot |
-| M11 CLI lifecycle | 1 passed | Explicit promotion, default-plan isolation, verify application persistence, revocation history preservation |
-| M6–M10 frozen-boundary regression | 35 passed | Planner, verification, runtime, predicate v1, calibration, protocol, privacy, and transactionality checks |
-| **Total** | **73 passed** | Full named inventory in the JSON artifact |
+Candidate and active-policy figures are explicitly named **CLI end-to-end** timings because they include process launch and command execution. The former `policy_application_persistence_ms` claim is removed: its replacement is `verify_overlay_e2e_with_application_persistence`, whose fixture explicitly records that verification execution is included. No metric is presented as isolated persistence latency.
 
-The verification proves M11 remains an **additive-only `ADD_CHECK` overlay**. Candidate generation has no planner authority; qualified M10 evidence is measurement-only; policy-selected future evidence cannot increase its own promotion support; immutable templates and their source provenance fail closed on corruption; and the M6 plan’s selected base checks, assurance, and unresolved obligations are preserved. M12 production work did not begin.
+| Metric family | Actual timed operation | Setup excluded? | Boundary label |
+|---|---|---:|---|
+| Candidate generation | `fdx policy generate-candidates --format json` | Yes | `candidate_generation_cli_e2e` |
+| Active policy list | `fdx policy list-active --format json` | Yes | `active_policy_list_cli_e2e` |
+| Base/effective planning | `fdx plan … --format json`, with optional `--policy-overlay` | Yes | `overlay_planning_cli_e2e` |
+| Promotion | `fdx policy promote-candidate …` | Yes | `promotion_cli_e2e_with_provenance_revalidation` |
+| Verification/application record | `fdx verify --policy-overlay …` | Yes | `verify_overlay_e2e_with_application_persistence` |
+| Reopen/list | New CLI process and active-policy query | Yes | `connection_reopen_plus_active_policy_list_cli_e2e` |
 
-## Performance evidence
+## Real plan and policy cardinalities
 
-All values below are measured by the external release binary on Linux x86_64 using five samples per scenario. They describe this qualification environment, not a cross-machine service-level objective. M10 has a separate workload and is intentionally not used for a direct improvement claim.
+H35 constructs actual distinct discovered test checks for its base plans and one distinct exact persisted template, qualified provenance record, candidate, and active `ADD_CHECK` policy for every policy row. The harness reads the actual plan result and fails if any advertised cardinality differs.
 
-| Scenario | Samples | Median ms | P95 ms | Mean ms |
-|---|---:|---:|---:|---:|
-| Candidate generation, 10 qualified M10 runs | 5 | 56.08 | 70.46 | 59.25 |
-| Candidate generation, 100 qualified M10 runs | 5 | 138.04 | 144.37 | 137.83 |
-| Candidate generation, 1,000 qualified M10 runs | 5 | 1,063.13 | 1,086.03 | 1,065.82 |
-| Active policy snapshot, 0 policies | 5 | 47.52 | 50.37 | 47.67 |
-| Active policy snapshot, 10 policies | 5 | 61.91 | 72.36 | 63.42 |
-| Active policy snapshot, 100 policies | 5 | 141.35 | 153.16 | 142.78 |
-| M6-equivalent base plan, 10 base checks | 5 | 62.97 | 63.87 | 62.70 |
-| Empty overlay, 0 active policies | 5 | 65.82 | 67.96 | 64.63 |
-| Overlay, 10 base checks and 10 active policies | 5 | 77.39 | 79.70 | 77.74 |
-| Overlay, 100 base checks and 100 active policies | 5 | 163.64 | 172.91 | 163.70 |
-| Explicit promotion with provenance revalidation | 5 | 59.14 | 60.22 | 59.33 |
-| Verify-overlay policy-application persistence | 5 | 517.28 | 536.51 | 521.04 |
-| Candidate list query | 5 | 4.79 | 4.86 | 4.76 |
-| Candidate show query | 5 | 4.65 | 4.89 | 4.66 |
-| Active-policy list query | 5 | 4.82 | 4.87 | 4.71 |
-| Explicit revocation | 5 | 64.47 | 68.87 | 65.32 |
-| Reopened active-policy snapshot | 5 | 57.96 | 59.68 | 58.09 |
+| Scenario | Base selected checks | Active policies | Distinct policy checks | Effective selected checks | Added checks | Samples | Operation median ms | Setup median ms |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `base_10_checks` | 10 | 0 | 0 | 10 | 0 | 15 | 41.11 | 48.05 |
+| `overlay_10_base_plus_10_policy_checks` | 10 | 10 | 10 | 20 | 10 | 15 | 43.93 | 101.46 |
+| `base_100_checks` | 100 | 0 | 0 | 100 | 0 | 15 | 199.59 | 52.19 |
+| `overlay_100_base_plus_100_policy_checks` | 100 | 100 | 100 | 200 | 100 | 15 | 212.09 | 568.48 |
 
-The empty-overlay median overhead over the M6-equivalent baseline was **2.85 ms (4.53%)**. The 10-active-policy and 100-active-policy overlay medians added **14.42 ms (22.90%)** and **100.67 ms (159.87%)**, respectively. These are reported as observed qualification results without presenting them as universal bounds.
+The `100`-check overlay therefore denotes a real 100-check M6 base plan plus 100 distinct active policy additions, not 100 duplicate rows that collapse into a smaller effective plan.
 
-## Regression, reproducibility, and toolchain evidence
+## Operation metrics
 
-The main working tree completed three consecutive `node scripts/pre-push.mjs --full` passes after H34. The broader corrective suite also passed: canonical-toolchain Rust formatting, all-feature clippy, and all FDX tests; VCI contracts; FDX parity; TypeScript type checking and linting; documentation validation; fast verification; and the standard pre-push gate.
+These observed figures describe the qualification environment—Linux x86_64, Cargo/Rustc 1.98.0—and are not universal service-level bounds. M10 benchmarks remain separately qualified under a different workload; no cross-milestone performance comparison is claimed.
 
-A hostile-PATH verifier placed a simulated incompatible Cargo shim before the normal path. The repository resolver still selected Cargo `1.98.0` and Rustc `1.98.0`, demonstrating that qualification uses the configured paired toolchain rather than the hostile shim.
+| Operation | Fixture cardinality | Samples | Operation median ms | P95 ms | Setup median ms |
+|---|---|---:|---:|---:|---:|
+| Candidate generation CLI E2E | 10 qualified runs | 15 | 9.13 | 9.82 | 59.27 |
+| Candidate generation CLI E2E | 100 qualified runs | 15 | 15.41 | 16.08 | 136.76 |
+| Candidate generation CLI E2E | 1,000 qualified runs | 7 | 711.97 | 751.63 | 524.91 |
+| Active policy list CLI E2E | 0 active policies | 15 | 6.42 | 7.59 | 49.71 |
+| Active policy list CLI E2E | 10 active policies | 15 | 7.08 | 7.54 | 96.35 |
+| Active policy list CLI E2E | 100 active policies | 15 | 9.12 | 11.33 | 560.18 |
+| Promotion CLI E2E with provenance revalidation | Exact template-bound candidate | 15 | 9.79 | 10.66 | 58.90 |
+| Verify overlay E2E with application persistence | One persisted application; verification included | 15 | 279.08 | 338.29 | 70.37 |
+| Connection reopen plus active-policy list CLI E2E | 10 active policies | 15 | 7.30 | 8.46 | 99.39 |
 
-An independent detached clean worktree at H34 was also qualified successfully with the same complete gate after installing ignored dependencies and producing the ordinary ignored build artifact required by the repository’s packed-layout doctor tests. A first fresh-layout attempt exposed that prerequisite; a second attempt encountered a linker bus error while the shared filesystem had only 44 MiB free. Generated target artifacts were removed, restoring 34 GiB free, and the clean worktree was rebuilt serially with `CARGO_BUILD_JOBS=1`; the complete gate then passed and the source status remained clean. This operational recovery did not modify source or qualify a different revision.
+## Safety and frozen-boundary confirmation
+
+The H35 preflight inventory retains the M11 safety evidence: only qualified non-policy M10 observed shadow misses can support candidates; policy-selected future observations cannot self-reinforce support; promotion binds a canonical exact template and provenance; active snapshots and corrupted bindings fail closed; duplicate policy additions deduplicate; revocation prevents future additions while preserving historical evidence and applications; base M6 checks remain present; assurance never increases; and unresolved obligations remain preserved.
+
+The historical F30, F31, D32, H33, R32, T34, H34, and R33 commits remain unmodified. H35 changes **only** benchmark methodology in `scripts/benchmark-fdx-vci-m11-policy-promotion.mjs`; R34 changes **only** this report pair. M10 remains measurement-only. M11 remains explicit `ADD_CHECK` only. M12 production authority begins only after this R34 freeze point.
 
 ## Reproduction
 
-The following invocation requires a previously built, independently verified exact-F31 **release** binary. It intentionally has no binary-build fallback.
+H35 requires an independently built exact-F31 **release** binary. It will not build or select one automatically.
 
 ```bash
 FDX_BENCHMARK_FUNCTIONAL_SHA=d8f6c1ff4f1cfb34fe47661cba4b07aa934d8568 \
@@ -83,11 +84,11 @@ FDX_BINARY_SHA256=5881aa11c5d7448cf2780bf3e6e80b6db51dd38ac449a593c67f61f8cb105d
 node scripts/benchmark-fdx-vci-m11-policy-promotion.mjs
 ```
 
-The harness must run at its owning clean H34 checkout. It refuses an incorrect source SHA, a missing artifact, a mismatched binary digest, or a debug-profile path.
+The harness requires a clean checkout at its owning H35 commit, rejects a debug path or mismatched SHA/source, and emits only the untracked R34 JSON artifact.
 
 ## References
 
-[1]: ../scripts/benchmark-fdx-vci-m11-policy-promotion.mjs "H34 external release-binary M11 qualification harness"
-[2]: benchmark-fdx-vci-m11-policy-promotion.json "R33 machine-readable M11 qualification evidence"
-[3]: ../docs/architecture/fdx-m11-learned-policy-overlay.md "D32 M11 learned-policy overlay contract"
-[4]: benchmark-fdx-vci-m11-repro.md "Historical R32 report retained for lineage only"
+[1]: ../scripts/benchmark-fdx-vci-m11-policy-promotion.mjs "H35 corrected external release-binary benchmark harness"
+[2]: benchmark-fdx-vci-m11-policy-promotion.json "R34 machine-readable M11 benchmark evidence"
+[3]: ../docs/architecture/fdx-m11-learned-policy-overlay.md "M11 learned-policy overlay contract"
+[4]: benchmark-fdx-vci-m11-repro.md "Historical R32 qualification report"
