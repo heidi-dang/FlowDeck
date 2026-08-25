@@ -75,16 +75,192 @@ describe("Native FDX Authority — Real Binary Operations", () => {
     expect(caps.policyContractVersions).toContain(1)
   })
 
-  it("M6: native FDX generates plan via real CLI invocation", async () => {
+  it("M6: native FDX generates plan with exact native digest passthrough (raw CLI == FlowDeck consumed)", async () => {
     if (!existsSync(NATIVE_BIN)) return
     process.env.FDX_BINARY_PATH = NATIVE_BIN
     const caps = await queryFdxCapabilities(tmpRepo, true)
     const intel = await deriveChangeIntelligence("run-m6", tmpRepo, caps)
     const plan = await generateVerificationPlan(intel, caps)
+
+    // 1. Invoke raw native CLI independently
+    const cliRaw = execFileSync(NATIVE_BIN, ["plan", "--format", "json"], {
+      cwd: tmpRepo,
+      encoding: "utf8",
+    })
+    const parsedCli = JSON.parse(cliRaw)
+
+    // 2. Assert exact origin and authority
     expect(plan.providerState).toBe("native_vci_full")
-    expect(plan.basePlanDigest).toBeDefined()
-    expect(typeof plan.basePlanDigest).toBe("string")
-    expect(plan.effectivePlanDigest).toBeDefined()
+    expect(plan.digestAuthority).toBe("fdx_native")
+    expect(plan.basePlanDigest).toBe(parsedCli.base_plan_digest)
+    expect(plan.effectivePlanDigest).toBe(parsedCli.effective_plan_digest)
+    expect(plan.basePlanDigest.length).toBe(64)
+    expect(plan.effectivePlanDigest.length).toBe(64)
+  })
+
+  it("M11: policy overlay passes through exact native application and snapshot digests", async () => {
+    if (!existsSync(NATIVE_BIN)) return
+    process.env.FDX_BINARY_PATH = NATIVE_BIN
+    execFileSync(NATIVE_BIN, ["index"], { cwd: tmpRepo, stdio: "ignore" })
+    const caps = await queryFdxCapabilities(tmpRepo, true)
+    const intel = await deriveChangeIntelligence("run-m11", tmpRepo, caps)
+    const plan = await generateVerificationPlan(intel, caps, { policyOverlay: true })
+
+    const cliRaw = execFileSync(NATIVE_BIN, ["plan", "--policy-overlay", "--format", "json"], {
+      cwd: tmpRepo,
+      encoding: "utf8",
+    })
+    const parsedCli = JSON.parse(cliRaw)
+    const app = parsedCli.application ?? parsedCli
+
+    expect(plan.providerState).toBe("native_vci_full")
+    expect(plan.digestAuthority).toBe("fdx_native")
+    expect(plan.basePlanDigest).toBe(app.base_plan_digest)
+    expect(plan.effectivePlanDigest).toBe(app.effective_plan_digest)
+    expect(plan.policySnapshotDigest).toBe(app.policy_snapshot_digest)
+    expect(plan.policyApplicationDigest).toBe(app.application_digest ?? app.policy_application_digest)
+  })
+
+  it("Hostile Test 1: missing base_plan_digest in native plan response fails closed (UNVERIFIED)", () => {
+    const caps: FdxCapabilitySnapshot = {
+      snapshotId: "s-h1",
+      capturedAt: new Date().toISOString(),
+      providerState: "native_vci_full",
+      verificationPredicateVersions: ["v1", "v2"],
+      calibrationContractVersions: [2],
+      policyContractVersions: [1],
+      assuranceLevels: ["EXACT"],
+      networkAccess: false,
+      telemetry: false,
+      platformLimitations: [],
+      missingCapabilities: [],
+    }
+
+    const mockEvidence = {
+      runId: "r-h1",
+      verificationRunId: "vr-h1",
+      stateFingerprint: "fp-h1",
+      outcome: "passed" as const,
+      assurance: "EXACT",
+      checksPassed: 0,
+      checksFailed: 0,
+      checksSkipped: 0,
+      mandatoryPassed: true,
+      mandatoryFailed: false,
+      failureReasons: [],
+      evidenceDigest: "ev-h1",
+      persistenceFailed: false,
+      checkResults: [],
+      unresolvedObligations: [],
+      providerState: "native_vci_full" as const,
+    }
+
+    const planWithoutDigest = {
+      planId: "p-h1",
+      runId: "r-h1",
+      basePlanDigest: "",
+      effectivePlanDigest: "",
+      digestAuthority: "fdx_native" as const,
+      checks: [],
+      m11OverlayApplied: false,
+      m11CandidatesAvailable: [],
+      providerState: "native_vci_full" as const,
+      assurance: "UNVERIFIED",
+    }
+
+    const blockers = classifyVerificationFailures(mockEvidence, planWithoutDigest, caps)
+    expect(blockers.some(b => b.kind === "missing_native_plan_digest")).toBe(true)
+  })
+
+  it("Hostile Test 2: FlowDeck consumes exact native digest and never uses locally computed hash", async () => {
+    if (!existsSync(NATIVE_BIN)) return
+    process.env.FDX_BINARY_PATH = NATIVE_BIN
+    const caps = await queryFdxCapabilities(tmpRepo, true)
+    const intel = await deriveChangeIntelligence("run-h2", tmpRepo, caps)
+    const plan = await generateVerificationPlan(intel, caps)
+
+    // A local JSON.stringify(plan.checks) or custom SHA calculation would NOT match the canonical native digest
+    expect(plan.digestAuthority).toBe("fdx_native")
+    expect(plan.basePlanDigest.length).toBe(64)
+    // The native digest is an authoritative JCS SHA-256 produced by FDX
+    const cliRaw = execFileSync(NATIVE_BIN, ["plan", "--format", "json"], { cwd: tmpRepo, encoding: "utf8" })
+    const parsedCli = JSON.parse(cliRaw)
+    expect(plan.basePlanDigest).toBe(parsedCli.base_plan_digest)
+  })
+
+  it("Hostile Test 3: policy overlay without complete provenance fails closed", () => {
+    const caps: FdxCapabilitySnapshot = {
+      snapshotId: "s-h3",
+      capturedAt: new Date().toISOString(),
+      providerState: "native_vci_full",
+      verificationPredicateVersions: ["v1", "v2"],
+      calibrationContractVersions: [2],
+      policyContractVersions: [1],
+      assuranceLevels: ["EXACT"],
+      networkAccess: false,
+      telemetry: false,
+      platformLimitations: [],
+      missingCapabilities: [],
+    }
+
+    const incompleteOverlayPlan = {
+      planId: "p-h3",
+      runId: "r-h3",
+      basePlanDigest: "base-digest-123",
+      effectivePlanDigest: "eff-digest-123",
+      digestAuthority: "fdx_native" as const,
+      checks: [],
+      m11OverlayApplied: true,
+      policySnapshotDigest: "snap-123",
+      // policyApplicationDigest is missing!
+      m11CandidatesAvailable: [],
+      providerState: "native_vci_full" as const,
+      assurance: "EXACT",
+    }
+
+    const mockEvidence = {
+      runId: "r-h3",
+      verificationRunId: "vr-h3",
+      stateFingerprint: "fp-h3",
+      outcome: "passed" as const,
+      assurance: "EXACT",
+      checksPassed: 0,
+      checksFailed: 0,
+      checksSkipped: 0,
+      mandatoryPassed: true,
+      mandatoryFailed: false,
+      failureReasons: [],
+      evidenceDigest: "ev-h3",
+      persistenceFailed: false,
+      checkResults: [],
+      unresolvedObligations: [],
+      providerState: "native_vci_full" as const,
+    }
+
+    const blockers = classifyVerificationFailures(mockEvidence, incompleteOverlayPlan, caps)
+    expect(blockers.some(b => b.kind === "policy_integrity_failure")).toBe(true)
+  })
+
+  it("Fallback path: TypeScript fallback is explicitly typed as typescript_fallback", async () => {
+    const fallbackCaps: FdxCapabilitySnapshot = {
+      snapshotId: "s-fb",
+      capturedAt: new Date().toISOString(),
+      providerState: "typescript_fallback",
+      verificationPredicateVersions: [],
+      calibrationContractVersions: [],
+      policyContractVersions: [],
+      assuranceLevels: ["DEGRADED"],
+      networkAccess: false,
+      telemetry: false,
+      platformLimitations: ["fallback"],
+      missingCapabilities: ["fdx_binary"],
+    }
+    const intel = await deriveChangeIntelligence("run-fb", tmpRepo, fallbackCaps)
+    const plan = await generateVerificationPlan(intel, fallbackCaps)
+
+    expect(plan.digestAuthority).toBe("typescript_fallback")
+    expect(plan.providerState).toBe("typescript_fallback")
+    expect(plan.assurance).toBe("DEGRADED")
   })
 
   it("M7 + M8: native FDX executes verification directly (not Node execFile)", async () => {

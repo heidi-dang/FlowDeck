@@ -138,6 +138,8 @@ export interface FdxVerificationCheck {
   policyId?: string
 }
 
+export type FdxDigestAuthority = "fdx_native" | "typescript_fallback"
+
 export interface FdxVerificationPlan {
   planId: string
   runId: string
@@ -145,6 +147,7 @@ export interface FdxVerificationPlan {
   effectivePlanDigest: string
   policySnapshotDigest?: string
   policyApplicationDigest?: string
+  digestAuthority?: FdxDigestAuthority
   checks: FdxVerificationCheck[]
   m11OverlayApplied: boolean
   m11CandidatesAvailable: string[]
@@ -229,6 +232,7 @@ export type FdxFailureKind =
   | "persistence_failure"
   | "corrupt_state"
   | "incompatible_capabilities"
+  | "missing_native_plan_digest"
 
 export interface FdxVerificationBlocker {
   kind: FdxFailureKind
@@ -755,6 +759,7 @@ export async function generateVerificationPlan(
       runId: changeIntelligence.runId,
       basePlanDigest,
       effectivePlanDigest,
+      digestAuthority: "typescript_fallback",
       checks,
       m11OverlayApplied: false,
       m11CandidatesAvailable: [],
@@ -782,13 +787,16 @@ export async function generateVerificationPlan(
     execRes = await runFdxAsync(binary, planArgs, QUERY_TIMEOUT_MS, changeIntelligence.repositoryRoot)
   }
 
+  const isNative = capabilities.providerState === "native_vci_full" || capabilities.providerState === "native_vci_partial"
+
   if (execRes.exitCode !== 0 || !execRes.stdout) {
-    if (capabilities.providerState === "native_vci_full") {
+    if (isNative) {
       return {
         planId,
         runId: changeIntelligence.runId,
         basePlanDigest: "",
         effectivePlanDigest: "",
+        digestAuthority: "fdx_native",
         checks: [],
         m11OverlayApplied: false,
         m11CandidatesAvailable: [],
@@ -804,6 +812,7 @@ export async function generateVerificationPlan(
       runId: changeIntelligence.runId,
       basePlanDigest,
       effectivePlanDigest,
+      digestAuthority: "typescript_fallback",
       checks,
       m11OverlayApplied: false,
       m11CandidatesAvailable: [],
@@ -821,25 +830,31 @@ export async function generateVerificationPlan(
 
     const checks: FdxVerificationCheck[] = parsePlannedChecks(selectedChecksRaw)
 
-    const basePlanDigest = typeof parsed["base_plan_digest"] === "string"
+    const basePlanDigest = typeof parsed["base_plan_digest"] === "string" && parsed["base_plan_digest"].length > 0
       ? (parsed["base_plan_digest"] as string)
-      : typeof application?.["base_plan_digest"] === "string"
+      : typeof application?.["base_plan_digest"] === "string" && (application["base_plan_digest"] as string).length > 0
       ? (application["base_plan_digest"] as string)
-      : capabilities.providerState === "native_vci_full"
-      ? createHash("sha256").update(JSON.stringify(planObj)).digest("hex")
-      : computeDigest(JSON.stringify(planObj))
+      : typeof planObj["base_plan_digest"] === "string" && (planObj["base_plan_digest"] as string).length > 0
+      ? (planObj["base_plan_digest"] as string)
+      : ""
 
-    const effectivePlanDigest = typeof parsed["effective_plan_digest"] === "string"
+    const policySnapshotDigest = (typeof parsed["policy_snapshot_digest"] === "string" && parsed["policy_snapshot_digest"].length > 0 ? (parsed["policy_snapshot_digest"] as string) : undefined)
+      ?? (typeof application?.["policy_snapshot_digest"] === "string" && (application["policy_snapshot_digest"] as string).length > 0 ? (application["policy_snapshot_digest"] as string) : undefined)
+      ?? (typeof planObj["policy_snapshot_digest"] === "string" && (planObj["policy_snapshot_digest"] as string).length > 0 ? (planObj["policy_snapshot_digest"] as string) : undefined)
+
+    const policyApplicationDigest = (typeof parsed["policy_application_digest"] === "string" && parsed["policy_application_digest"].length > 0 ? (parsed["policy_application_digest"] as string) : undefined)
+      ?? (typeof parsed["application_digest"] === "string" && parsed["application_digest"].length > 0 ? (parsed["application_digest"] as string) : undefined)
+      ?? (typeof application?.["policy_application_digest"] === "string" && (application["policy_application_digest"] as string).length > 0 ? (application["policy_application_digest"] as string) : undefined)
+      ?? (typeof application?.["application_digest"] === "string" && (application["application_digest"] as string).length > 0 ? (application["application_digest"] as string) : undefined)
+      ?? (typeof planObj["policy_application_digest"] === "string" && (planObj["policy_application_digest"] as string).length > 0 ? (planObj["policy_application_digest"] as string) : undefined)
+
+    const effectivePlanDigest = typeof parsed["effective_plan_digest"] === "string" && parsed["effective_plan_digest"].length > 0
       ? (parsed["effective_plan_digest"] as string)
-      : typeof application?.["effective_plan_digest"] === "string"
+      : typeof application?.["effective_plan_digest"] === "string" && (application["effective_plan_digest"] as string).length > 0
       ? (application["effective_plan_digest"] as string)
-      : basePlanDigest
-
-    const policySnapshotDigest = (parsed["policy_snapshot_digest"] as string | undefined)
-      ?? (application?.["policy_snapshot_digest"] as string | undefined)
-
-    const policyApplicationDigest = (parsed["policy_application_digest"] as string | undefined)
-      ?? (application?.["policy_application_digest"] as string | undefined)
+      : typeof planObj["effective_plan_digest"] === "string" && (planObj["effective_plan_digest"] as string).length > 0
+      ? (planObj["effective_plan_digest"] as string)
+      : (!options.policyOverlay && !policyApplicationDigest && basePlanDigest ? basePlanDigest : "")
 
     const addedCheckIds = Array.isArray(parsed["added_check_ids"])
       ? (parsed["added_check_ids"] as string[])
@@ -849,6 +864,37 @@ export async function generateVerificationPlan(
 
     const m11OverlayApplied = addedCheckIds.length > 0 || !!policyApplicationDigest
 
+    if (isNative) {
+      if (!basePlanDigest || !effectivePlanDigest) {
+        return {
+          planId,
+          runId: changeIntelligence.runId,
+          basePlanDigest: "",
+          effectivePlanDigest: "",
+          digestAuthority: "fdx_native",
+          checks: [],
+          m11OverlayApplied: false,
+          m11CandidatesAvailable: [],
+          providerState: capabilities.providerState,
+          assurance: "UNVERIFIED",
+        }
+      }
+      if (m11OverlayApplied && (!policySnapshotDigest || !policyApplicationDigest)) {
+        return {
+          planId,
+          runId: changeIntelligence.runId,
+          basePlanDigest: "",
+          effectivePlanDigest: "",
+          digestAuthority: "fdx_native",
+          checks: [],
+          m11OverlayApplied: false,
+          m11CandidatesAvailable: [],
+          providerState: capabilities.providerState,
+          assurance: "UNVERIFIED",
+        }
+      }
+    }
+
     return {
       planId,
       runId: changeIntelligence.runId,
@@ -856,6 +902,7 @@ export async function generateVerificationPlan(
       effectivePlanDigest,
       policySnapshotDigest,
       policyApplicationDigest,
+      digestAuthority: isNative ? "fdx_native" : "typescript_fallback",
       checks,
       m11OverlayApplied,
       m11CandidatesAvailable: (parsed["candidate_policy_ids"] as string[]) ?? [],
@@ -863,12 +910,13 @@ export async function generateVerificationPlan(
       assurance: String(planObj["assurance"] ?? parsed["assurance"] ?? "EXACT"),
     }
   } catch {
-    if (capabilities.providerState === "native_vci_full") {
+    if (isNative) {
       return {
         planId,
         runId: changeIntelligence.runId,
         basePlanDigest: "",
         effectivePlanDigest: "",
+        digestAuthority: "fdx_native",
         checks: [],
         m11OverlayApplied: false,
         m11CandidatesAvailable: [],
@@ -884,6 +932,7 @@ export async function generateVerificationPlan(
       runId: changeIntelligence.runId,
       basePlanDigest,
       effectivePlanDigest,
+      digestAuthority: "typescript_fallback",
       checks,
       m11OverlayApplied: false,
       m11CandidatesAvailable: [],
@@ -1027,23 +1076,78 @@ export async function executeNativeVerification(
       const checksRaw = (planObj["selected_checks"] as unknown[]) ?? []
       const parsedChecks = parsePlannedChecks(checksRaw)
 
-      const basePlanDigest = typeof rawRun["base_plan_digest"] === "string"
+      const basePlanDigest = typeof rawRun["base_plan_digest"] === "string" && rawRun["base_plan_digest"].length > 0
         ? (rawRun["base_plan_digest"] as string)
-        : createHash("sha256").update(JSON.stringify(planObj)).digest("hex")
+        : typeof planObj["base_plan_digest"] === "string" && planObj["base_plan_digest"].length > 0
+        ? (planObj["base_plan_digest"] as string)
+        : ""
 
-      const effectivePlanDigest = typeof rawRun["effective_plan_digest"] === "string"
+      const effectivePlanDigest = typeof rawRun["effective_plan_digest"] === "string" && rawRun["effective_plan_digest"].length > 0
         ? (rawRun["effective_plan_digest"] as string)
-        : basePlanDigest
+        : typeof planObj["effective_plan_digest"] === "string" && planObj["effective_plan_digest"].length > 0
+        ? (planObj["effective_plan_digest"] as string)
+        : (basePlanDigest && !options.policyOverlay ? basePlanDigest : "")
+
+      const policySnapshotDigest = (typeof rawRun["policy_snapshot_digest"] === "string" && rawRun["policy_snapshot_digest"].length > 0 ? rawRun["policy_snapshot_digest"] as string : undefined)
+        ?? (typeof planObj["policy_snapshot_digest"] === "string" && planObj["policy_snapshot_digest"].length > 0 ? planObj["policy_snapshot_digest"] as string : undefined)
+
+      const policyApplicationDigest = (typeof rawRun["policy_application_digest"] === "string" && rawRun["policy_application_digest"].length > 0 ? rawRun["policy_application_digest"] as string : undefined)
+        ?? (typeof rawRun["application_digest"] === "string" && rawRun["application_digest"].length > 0 ? rawRun["application_digest"] as string : undefined)
+        ?? (typeof planObj["policy_application_digest"] === "string" && planObj["policy_application_digest"].length > 0 ? planObj["policy_application_digest"] as string : undefined)
+
+      const addedCheckIds = Array.isArray(rawRun["added_check_ids"])
+        ? (rawRun["added_check_ids"] as string[])
+        : []
+      const m11OverlayApplied = addedCheckIds.length > 0 || !!policyApplicationDigest
+
+      const isNative = capabilities.providerState === "native_vci_full" || capabilities.providerState === "native_vci_partial"
+      const missingNativeDigest = isNative && (!basePlanDigest || !effectivePlanDigest || (options.policyOverlay && (!policySnapshotDigest || !policyApplicationDigest)))
+
+      if (missingNativeDigest) {
+        const plan: FdxVerificationPlan = {
+          planId: String(rawRun["run_id"] ?? randomUUID()),
+          runId: String(rawRun["run_id"] ?? changeIntelligence.runId),
+          basePlanDigest: "",
+          effectivePlanDigest: "",
+          digestAuthority: "fdx_native",
+          checks: [],
+          m11OverlayApplied: false,
+          m11CandidatesAvailable: [],
+          providerState: capabilities.providerState,
+          assurance: "UNVERIFIED",
+        }
+        const evidence: FdxRuntimeEvidence = {
+          runId: changeIntelligence.runId,
+          verificationRunId: String(rawRun["run_id"] ?? randomUUID()),
+          stateFingerprint: changeIntelligence.stateFingerprint,
+          outcome: "incomplete",
+          assurance: "UNVERIFIED",
+          checksPassed: 0,
+          checksFailed: parsedChecks.length,
+          checksSkipped: 0,
+          mandatoryPassed: false,
+          mandatoryFailed: true,
+          failureReasons: ["missing_native_plan_digest: FDX native plan digest or policy overlay provenance missing"],
+          evidenceDigest: computeDigest("missing_native_digest"),
+          persistenceFailed: true,
+          persistenceError: "Missing native authoritative plan digest",
+          checkResults: [],
+          unresolvedObligations: ["missing_native_plan_digest"],
+          providerState: capabilities.providerState,
+        }
+        return { plan, evidence, rawRun }
+      }
 
       const plan: FdxVerificationPlan = {
         planId: String(rawRun["run_id"] ?? randomUUID()),
         runId: String(rawRun["run_id"] ?? changeIntelligence.runId),
         basePlanDigest,
         effectivePlanDigest,
-        policySnapshotDigest: rawRun["policy_snapshot_digest"] as string | undefined,
-        policyApplicationDigest: rawRun["policy_application_digest"] as string | undefined,
+        policySnapshotDigest,
+        policyApplicationDigest,
+        digestAuthority: isNative ? "fdx_native" : "typescript_fallback",
         checks: parsedChecks,
-        m11OverlayApplied: Array.isArray(rawRun["added_check_ids"]) && (rawRun["added_check_ids"] as string[]).length > 0,
+        m11OverlayApplied,
         m11CandidatesAvailable: (rawRun["candidate_policy_ids"] as string[]) ?? [],
         providerState: capabilities.providerState,
         assurance: String(rawRun["assurance"] ?? "EXACT"),
@@ -1502,6 +1606,25 @@ export function classifyVerificationFailures(
       heidiCanRepairDirectly: false,
       providerState: capabilities.providerState,
     })
+  }
+
+  if (capabilities.providerState === "native_vci_full" || capabilities.providerState === "native_vci_partial") {
+    if (!plan.basePlanDigest || !plan.effectivePlanDigest || plan.digestAuthority !== "fdx_native" || plan.assurance === "UNVERIFIED") {
+      blockers.push({
+        kind: "missing_native_plan_digest",
+        message: "Missing or non-native authoritative plan digest from FDX",
+        heidiCanRepairDirectly: false,
+        providerState: capabilities.providerState,
+      })
+    }
+    if (plan.m11OverlayApplied && (!plan.policySnapshotDigest || !plan.policyApplicationDigest)) {
+      blockers.push({
+        kind: "policy_integrity_failure",
+        message: "Policy overlay applied without complete native provenance (snapshot or application digest missing)",
+        heidiCanRepairDirectly: false,
+        providerState: capabilities.providerState,
+      })
+    }
   }
 
   for (const checkResult of (evidence.checkResults ?? [])) {

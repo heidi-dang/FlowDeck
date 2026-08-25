@@ -1811,7 +1811,40 @@ fn main() {
                 ) {
                     Ok(effective) => match format {
                         OutputFormat::Json => {
-                            if let Ok(json_str) = serde_json::to_string_pretty(&effective) {
+                            let mut val = match serde_json::to_value(&effective) {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    eprintln!("Error serializing effective plan: {e}");
+                                    process::exit(1);
+                                }
+                            };
+                            if let Some(obj) = val.as_object_mut() {
+                                obj.insert(
+                                    "base_plan_digest".to_string(),
+                                    serde_json::Value::String(
+                                        effective.application.base_plan_digest.clone(),
+                                    ),
+                                );
+                                obj.insert(
+                                    "effective_plan_digest".to_string(),
+                                    serde_json::Value::String(
+                                        effective.application.effective_plan_digest.clone(),
+                                    ),
+                                );
+                                obj.insert(
+                                    "policy_snapshot_digest".to_string(),
+                                    serde_json::Value::String(
+                                        effective.application.policy_snapshot_digest.clone(),
+                                    ),
+                                );
+                                obj.insert(
+                                    "policy_application_digest".to_string(),
+                                    serde_json::Value::String(
+                                        effective.application.application_digest.clone(),
+                                    ),
+                                );
+                            }
+                            if let Ok(json_str) = serde_json::to_string_pretty(&val) {
                                 println!("{}", json_str);
                             }
                         }
@@ -1841,20 +1874,46 @@ fn main() {
                     head.as_deref(),
                     None,
                 ) {
-                    Ok(plan) => match format {
-                        OutputFormat::Json => {
-                            if let Ok(json_str) = serde_json::to_string_pretty(&plan) {
-                                println!("{}", json_str);
+                    Ok(plan) => {
+                        match format {
+                            OutputFormat::Json => {
+                                let base_plan_digest = match fdx::intelligence::policy::compute_verification_plan_digest(&plan) {
+                                Ok(d) => d,
+                                Err(e) => {
+                                    eprintln!("Error computing verification plan digest: {e}");
+                                    process::exit(1);
+                                }
+                            };
+                                let mut val = match serde_json::to_value(&plan) {
+                                    Ok(v) => v,
+                                    Err(e) => {
+                                        eprintln!("Error serializing verification plan: {e}");
+                                        process::exit(1);
+                                    }
+                                };
+                                if let Some(obj) = val.as_object_mut() {
+                                    obj.insert(
+                                        "base_plan_digest".to_string(),
+                                        serde_json::Value::String(base_plan_digest.clone()),
+                                    );
+                                    obj.insert(
+                                        "effective_plan_digest".to_string(),
+                                        serde_json::Value::String(base_plan_digest),
+                                    );
+                                }
+                                if let Ok(json_str) = serde_json::to_string_pretty(&val) {
+                                    println!("{}", json_str);
+                                }
                             }
-                        }
-                        OutputFormat::Text => {
-                            let text =
+                            OutputFormat::Text => {
+                                let text =
                                 fdx::intelligence::testplan::explain::format_verification_plan_text(
                                     &plan,
                                 );
-                            print!("{}", text);
+                                print!("{}", text);
+                            }
                         }
-                    },
+                    }
                     Err(e) => {
                         eprintln!("Error creating verification plan: {}", e);
                         process::exit(1);
@@ -1875,7 +1934,7 @@ fn main() {
             let repo_root = fdx::paths::find_repository_root(&cwd).unwrap_or(cwd);
             let format = parse_format(&format);
 
-            let plan = if policy_overlay {
+            let (plan, maybe_effective_application) = if policy_overlay {
                 let db = match fdx::intelligence::db::EvidenceDatabase::open(
                     &repo_root,
                     fdx::intelligence::db::DatabaseOpenMode::ReadWrite,
@@ -1912,9 +1971,9 @@ fn main() {
                         process::exit(1);
                     }
                 }
-                effective.plan
+                (effective.plan, Some(effective.application))
             } else {
-                match fdx::intelligence::testplan::planner::plan_verification(
+                let p = match fdx::intelligence::testplan::planner::plan_verification(
                     &repo_root,
                     base.as_deref(),
                     head.as_deref(),
@@ -1925,7 +1984,8 @@ fn main() {
                         eprintln!("Error creating verification plan: {}", e);
                         process::exit(1);
                     }
-                }
+                };
+                (p, None)
             };
 
             let options = fdx::intelligence::verify::VerificationExecutorOptions {
@@ -1941,7 +2001,56 @@ fn main() {
                 Ok(run) => {
                     match format {
                         OutputFormat::Json => {
-                            if let Ok(json_str) = serde_json::to_string_pretty(&run) {
+                            let mut val = match serde_json::to_value(&run) {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    eprintln!("Error serializing verification run: {e}");
+                                    process::exit(1);
+                                }
+                            };
+                            if let Some(obj) = val.as_object_mut() {
+                                if let Some(ref app) = maybe_effective_application {
+                                    obj.insert(
+                                        "base_plan_digest".to_string(),
+                                        serde_json::Value::String(app.base_plan_digest.clone()),
+                                    );
+                                    obj.insert(
+                                        "effective_plan_digest".to_string(),
+                                        serde_json::Value::String(
+                                            app.effective_plan_digest.clone(),
+                                        ),
+                                    );
+                                    obj.insert(
+                                        "policy_snapshot_digest".to_string(),
+                                        serde_json::Value::String(
+                                            app.policy_snapshot_digest.clone(),
+                                        ),
+                                    );
+                                    obj.insert(
+                                        "policy_application_digest".to_string(),
+                                        serde_json::Value::String(app.application_digest.clone()),
+                                    );
+                                    obj.insert(
+                                        "added_check_ids".to_string(),
+                                        serde_json::to_value(&app.added_check_ids)
+                                            .unwrap_or_default(),
+                                    );
+                                } else if let Ok(digest) =
+                                    fdx::intelligence::policy::compute_verification_plan_digest(
+                                        &plan,
+                                    )
+                                {
+                                    obj.insert(
+                                        "base_plan_digest".to_string(),
+                                        serde_json::Value::String(digest.clone()),
+                                    );
+                                    obj.insert(
+                                        "effective_plan_digest".to_string(),
+                                        serde_json::Value::String(digest),
+                                    );
+                                }
+                            }
+                            if let Ok(json_str) = serde_json::to_string_pretty(&val) {
                                 println!("{}", json_str);
                             }
                         }

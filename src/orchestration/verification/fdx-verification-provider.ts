@@ -167,11 +167,24 @@ export async function runFdxVerification(
   //   2. evidence.mandatoryPassed === true
   //   3. evidence.persistenceFailed === false (M8 fail closed)
   //   4. evidence.failureReasons.length === 0
+  //   5. native provenance valid & unmanipulated
+  //   6. neither plan nor evidence is UNVERIFIED
+  const isNative = capabilities.providerState === "native_vci_full" || capabilities.providerState === "native_vci_partial"
+  const nativeProvenanceValid = !isNative || (
+    plan.digestAuthority === "fdx_native" &&
+    plan.basePlanDigest.length > 0 &&
+    plan.effectivePlanDigest.length > 0 &&
+    (!plan.m11OverlayApplied || (!!plan.policySnapshotDigest && !!plan.policyApplicationDigest))
+  )
+
   const passed =
     evidence.outcome === "passed" &&
     evidence.mandatoryPassed &&
     !evidence.persistenceFailed &&
-    evidence.failureReasons.length === 0
+    evidence.failureReasons.length === 0 &&
+    nativeProvenanceValid &&
+    plan.assurance !== "UNVERIFIED" &&
+    evidence.assurance !== "UNVERIFIED"
 
   session.status = passed ? "passed" : "failed"
   session.completedAt = new Date().toISOString()
@@ -196,6 +209,7 @@ export async function runFdxVerification(
       effectivePlanDigest: plan.effectivePlanDigest,
       policySnapshotDigest: plan.policySnapshotDigest,
       policyApplicationDigest: plan.policyApplicationDigest,
+      digestAuthority: plan.digestAuthority,
       attestationPredicate: attestation.predicate,
       attestationId: attestation.attestationId,
       attestationVerified: attestation.verified,
