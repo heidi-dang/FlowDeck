@@ -77,16 +77,17 @@ describe("Continuation dispatch durability", () => {
   });
 
   it("terminal connection release evicts the registry even when Bun defers a held prepared statement", () => {
+    const initialCount = getConnectionCount();
     const dbPath = join(testDir, "terminal-close.db");
     const db = openConnection({ path: dbPath });
     const statement = db.prepare("SELECT 1 AS value");
     expect(statement.get()).toEqual({ value: 1 });
-    expect(getConnectionCount()).toBe(1);
+    expect(getConnectionCount()).toBe(initialCount + 1);
 
     closeConnection(dbPath);
 
     // Bun may defer physical close while callers retain a statement. The
     // project-level guarantee is that no stale connection remains cached.
-    expect(getConnectionCount()).toBe(0);
+    expect(getConnectionCount()).toBe(initialCount);
   });
 });

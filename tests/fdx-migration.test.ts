@@ -19,8 +19,11 @@ import { resolveFdxBinaryPath } from "../src/tools/fdx"
 
 function getFdxBin(): string | null {
   const candidateBins = [
+    process.env["FDX_BINARY_PATH"],
     resolveFdxBinaryPath(),
+    join(__dirname, "../target/release/fdx"),
     join(__dirname, "../target/debug/fdx"),
+    join(__dirname, "../crates/fdx/target/release/fdx"),
     join(__dirname, "../crates/fdx/target/debug/fdx"),
   ].filter(Boolean) as string[]
   return candidateBins.find(b => existsSync(b)) || null
@@ -31,16 +34,18 @@ describe("FDX Transactional Migration Integration", () => {
     const bin = getFdxBin()
     if (!bin) return
     const home = mkdtempSync(join(tmpdir(), "fdx-mig-test-"))
+    const workdir = join(home, "my-test-proj")
+    mkdirSync(workdir, { recursive: true })
     try {
       const root = join(home, ".fd-plan")
-      const legacy = join(root, "tests")
+      const legacy = join(root, "my-test-proj")
       const nested = join(legacy, "topic-1")
       mkdirSync(nested, { recursive: true })
       writeFileSync(join(legacy, "STATE.md"), "# State\n")
       writeFileSync(join(nested, "context.md"), "# Context\n")
 
       const out = execFileSync(bin, ["context", "--action", "append", "--topic", "topic-1", "--agent", "migration-test", "--stage", "verify", "--summary", "test"], {
-        cwd: __dirname,
+        cwd: workdir,
         env: { ...process.env, HOME: home, FDX_DISABLE_FALLBACK: "1" },
         encoding: "utf-8",
       })
@@ -48,7 +53,7 @@ describe("FDX Transactional Migration Integration", () => {
       expect(out).toBeDefined()
 
       const entries = readdirSync(root)
-      const backups = entries.filter(e => e.startsWith("tests.bak."))
+      const backups = entries.filter(e => e.startsWith("my-test-proj.bak."))
       expect(backups.length).toBe(1)
     } finally {
       try { rmSync(home, { recursive: true, force: true }) } catch {}
@@ -59,15 +64,17 @@ describe("FDX Transactional Migration Integration", () => {
     const bin = getFdxBin()
     if (!bin) return
     const home = mkdtempSync(join(tmpdir(), "fdx-mig-fail-"))
+    const workdir = join(home, "my-test-proj-fail")
+    mkdirSync(workdir, { recursive: true })
     try {
       const root = join(home, ".fd-plan")
-      const legacy = join(root, "tests")
+      const legacy = join(root, "my-test-proj-fail")
       mkdirSync(legacy, { recursive: true })
       writeFileSync(join(legacy, "junk.txt"), "no state file")
 
       expect(() => {
         execFileSync(bin, ["context", "--action", "append", "--topic", "topic-1", "--agent", "migration-test", "--stage", "verify", "--summary", "test"], {
-          cwd: __dirname,
+          cwd: workdir,
           env: { ...process.env, HOME: home, FDX_DISABLE_FALLBACK: "1" },
           encoding: "utf-8",
           stdio: "pipe",

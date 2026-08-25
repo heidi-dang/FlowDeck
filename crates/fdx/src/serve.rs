@@ -655,7 +655,7 @@ fn handle_semantic_status_v1(
         }),
     )
 }
-fn process_request(req: ServeRequest, cache: &AstCache) -> Option<String> {
+fn process_request(req: ServeRequest, cache: &AstCache, root: &Path) -> Option<String> {
     match req.op.as_str() {
         "version" => format_ok(
             &req.id,
@@ -687,10 +687,10 @@ fn process_request(req: ServeRequest, cache: &AstCache) -> Option<String> {
                 Err(e) => format_err(&req.id, format!("capabilities serialization error: {}", e)),
             }
         }
-        "read" => handle_read(&req.id, &req.args, cache),
-        "search" => handle_search(&req.id, &req.args, cache),
-        "outline" => handle_outline(&req.id, &req.args, cache),
-        "impact" => handle_impact(&req.id, &req.args, cache),
+        "read" => handle_read(&req.id, &req.args, cache, root),
+        "search" => handle_search(&req.id, &req.args, cache, root),
+        "outline" => handle_outline(&req.id, &req.args, cache, root),
+        "impact" => handle_impact(&req.id, &req.args, cache, root),
         "evidence-graph-v1" => handle_evidence_graph_v1(&req.id, &req.args, cache),
         "semantic-status-v1" => handle_semantic_status_v1(&req.id, &req.args, cache),
         "build-status-v1" | "build-status" => handle_build_status_v1(&req.id, &req.args, cache),
