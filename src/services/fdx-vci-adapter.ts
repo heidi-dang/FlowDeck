@@ -783,6 +783,19 @@ export async function generateVerificationPlan(
   }
 
   if (execRes.exitCode !== 0 || !execRes.stdout) {
+    if (capabilities.providerState === "native_vci_full") {
+      return {
+        planId,
+        runId: changeIntelligence.runId,
+        basePlanDigest: "",
+        effectivePlanDigest: "",
+        checks: [],
+        m11OverlayApplied: false,
+        m11CandidatesAvailable: [],
+        providerState: capabilities.providerState,
+        assurance: "UNVERIFIED",
+      }
+    }
     const checks = buildFallbackPlan(changeIntelligence)
     const basePlanDigest = computeDigest(JSON.stringify({ impacted: changeIntelligence.impactedFiles }))
     const effectivePlanDigest = computeDigest(JSON.stringify(checks.map(c => c.checkId)))
@@ -803,31 +816,46 @@ export async function generateVerificationPlan(
     const parsed = JSON.parse(execRes.stdout) as Record<string, unknown>
     // Handle both M6 direct VerificationPlan and M11 EffectiveVerificationPlan
     const planObj = (parsed["plan"] as Record<string, unknown>) ?? parsed
+    const application = parsed["application"] as Record<string, unknown> | undefined
     const selectedChecksRaw = (planObj["selected_checks"] as unknown[]) ?? (parsed["checks"] as unknown[]) ?? []
 
     const checks: FdxVerificationCheck[] = parsePlannedChecks(selectedChecksRaw)
 
     const basePlanDigest = typeof parsed["base_plan_digest"] === "string"
       ? (parsed["base_plan_digest"] as string)
+      : typeof application?.["base_plan_digest"] === "string"
+      ? (application["base_plan_digest"] as string)
+      : capabilities.providerState === "native_vci_full"
+      ? createHash("sha256").update(JSON.stringify(planObj)).digest("hex")
       : computeDigest(JSON.stringify(planObj))
 
     const effectivePlanDigest = typeof parsed["effective_plan_digest"] === "string"
       ? (parsed["effective_plan_digest"] as string)
+      : typeof application?.["effective_plan_digest"] === "string"
+      ? (application["effective_plan_digest"] as string)
       : basePlanDigest
+
+    const policySnapshotDigest = (parsed["policy_snapshot_digest"] as string | undefined)
+      ?? (application?.["policy_snapshot_digest"] as string | undefined)
+
+    const policyApplicationDigest = (parsed["policy_application_digest"] as string | undefined)
+      ?? (application?.["policy_application_digest"] as string | undefined)
 
     const addedCheckIds = Array.isArray(parsed["added_check_ids"])
       ? (parsed["added_check_ids"] as string[])
+      : Array.isArray(application?.["added_check_ids"])
+      ? (application["added_check_ids"] as string[])
       : []
 
-    const m11OverlayApplied = addedCheckIds.length > 0
+    const m11OverlayApplied = addedCheckIds.length > 0 || !!policyApplicationDigest
 
     return {
       planId,
       runId: changeIntelligence.runId,
       basePlanDigest,
       effectivePlanDigest,
-      policySnapshotDigest: parsed["policy_snapshot_digest"] as string | undefined,
-      policyApplicationDigest: parsed["policy_application_digest"] as string | undefined,
+      policySnapshotDigest,
+      policyApplicationDigest,
       checks,
       m11OverlayApplied,
       m11CandidatesAvailable: (parsed["candidate_policy_ids"] as string[]) ?? [],
@@ -835,6 +863,19 @@ export async function generateVerificationPlan(
       assurance: String(planObj["assurance"] ?? parsed["assurance"] ?? "EXACT"),
     }
   } catch {
+    if (capabilities.providerState === "native_vci_full") {
+      return {
+        planId,
+        runId: changeIntelligence.runId,
+        basePlanDigest: "",
+        effectivePlanDigest: "",
+        checks: [],
+        m11OverlayApplied: false,
+        m11CandidatesAvailable: [],
+        providerState: capabilities.providerState,
+        assurance: "UNVERIFIED",
+      }
+    }
     const checks = buildFallbackPlan(changeIntelligence)
     const basePlanDigest = computeDigest(JSON.stringify({ impacted: changeIntelligence.impactedFiles }))
     const effectivePlanDigest = computeDigest(JSON.stringify(checks.map(c => c.checkId)))
@@ -863,6 +904,12 @@ export interface ExecuteVerificationOptions {
   onProgress?: (msg: string) => void
 }
 
+const inFlightExecutions = new Map<string, Promise<{
+  plan: FdxVerificationPlan
+  evidence: FdxRuntimeEvidence
+  rawRun?: Record<string, unknown>
+}>>()
+
 /**
  * Execute verification through native FDX (Milestone 7).
  *
@@ -882,224 +929,253 @@ export async function executeNativeVerification(
   evidence: FdxRuntimeEvidence
   rawRun?: Record<string, unknown>
 }> {
-  const emit = options.onProgress ?? (() => undefined)
+  const flightKey = `${changeIntelligence.repositoryRoot}:${changeIntelligence.stateFingerprint}:${options.policyOverlay ? "1" : "0"}:${options.failFast ? "1" : "0"}:${options.noPersist ? "1" : "0"}`
 
-  // In fallback mode, execute fallback checks separately
-  if (
-    capabilities.providerState === "typescript_fallback" ||
-    capabilities.providerState === "unavailable" ||
-    capabilities.providerState === "incompatible" ||
-    !capabilities.binaryPath
-  ) {
-    emit("[FDX Fallback] Executing TypeScript fallback verification...")
-    const plan = await generateVerificationPlan(changeIntelligence, capabilities, {
-      policyOverlay: options.policyOverlay,
+  if (!options.signal?.aborted && inFlightExecutions.has(flightKey)) {
+    return inFlightExecutions.get(flightKey)!
+  }
+
+  const executionPromise = (async () => {
+    const emit = options.onProgress ?? (() => undefined)
+
+    // In fallback mode, execute fallback checks separately
+    if (
+      capabilities.providerState === "typescript_fallback" ||
+      capabilities.providerState === "unavailable" ||
+      capabilities.providerState === "incompatible" ||
+      !capabilities.binaryPath
+    ) {
+      emit("[FDX Fallback] Executing TypeScript fallback verification...")
+      const plan = await generateVerificationPlan(changeIntelligence, capabilities, {
+        policyOverlay: options.policyOverlay,
+      })
+      const evidence = await executeFallbackVerification(plan, changeIntelligence.repositoryRoot, options.signal)
+      return { plan, evidence }
+    }
+
+    const binary = capabilities.binaryPath
+    const verifyArgs = fdxVerifyArgs({
+      base: changeIntelligence.baseSha,
+      head: changeIntelligence.headSha,
+      policyOverlay: options.policyOverlay ?? (capabilities.policyContractVersions.length > 0),
+      failFast: options.failFast,
+      noPersist: options.noPersist,
     })
-    const evidence = await executeFallbackVerification(plan, changeIntelligence.repositoryRoot, options.signal)
-    return { plan, evidence }
-  }
 
-  const binary = capabilities.binaryPath
-  const verifyArgs = fdxVerifyArgs({
-    base: changeIntelligence.baseSha,
-    head: changeIntelligence.headSha,
-    policyOverlay: options.policyOverlay ?? (capabilities.policyContractVersions.length > 0),
-    failFast: options.failFast,
-    noPersist: options.noPersist,
-  })
+    emit("[FDX Native] Executing native FDX verification (Milestone 7)...")
+    const timeoutMs = options.timeoutMs ?? VERIFY_TIMEOUT_MS
+    const execRes = await runFdxAsync(
+      binary,
+      verifyArgs,
+      timeoutMs,
+      changeIntelligence.repositoryRoot,
+      options.signal
+    )
 
-  emit("[FDX Native] Executing native FDX verification (Milestone 7)...")
-  const timeoutMs = options.timeoutMs ?? VERIFY_TIMEOUT_MS
-  const execRes = await runFdxAsync(
-    binary,
-    verifyArgs,
-    timeoutMs,
-    changeIntelligence.repositoryRoot,
-    options.signal
-  )
-
-  if (options.signal?.aborted) {
-    emit("[FDX Native] Verification cancelled by user.")
-    const plan = await generateVerificationPlan(changeIntelligence, capabilities)
-    const evidence: FdxRuntimeEvidence = {
-      runId: changeIntelligence.runId,
-      verificationRunId: randomUUID(),
-      stateFingerprint: changeIntelligence.stateFingerprint,
-      outcome: "incomplete",
-      assurance: "UNVERIFIED",
-      checksPassed: 0,
-      checksFailed: 0,
-      checksSkipped: plan.checks.length,
-      mandatoryPassed: false,
-      mandatoryFailed: false,
-      failureReasons: ["CANCELLED: verification aborted by signal"],
-      evidenceDigest: computeDigest("cancelled"),
-      persistenceFailed: false,
-      checkResults: [],
-      unresolvedObligations: ["CANCELLED"],
-      providerState: capabilities.providerState,
+    if (options.signal?.aborted) {
+      emit("[FDX Native] Verification cancelled by user.")
+      const plan = await generateVerificationPlan(changeIntelligence, capabilities)
+      const evidence: FdxRuntimeEvidence = {
+        runId: changeIntelligence.runId,
+        verificationRunId: randomUUID(),
+        stateFingerprint: changeIntelligence.stateFingerprint,
+        outcome: "incomplete",
+        assurance: "UNVERIFIED",
+        checksPassed: 0,
+        checksFailed: 0,
+        checksSkipped: plan.checks.length,
+        mandatoryPassed: false,
+        mandatoryFailed: false,
+        failureReasons: ["CANCELLED: verification aborted by signal"],
+        evidenceDigest: computeDigest("cancelled"),
+        persistenceFailed: false,
+        checkResults: [],
+        unresolvedObligations: ["CANCELLED"],
+        providerState: capabilities.providerState,
+      }
+      return { plan, evidence }
     }
-    return { plan, evidence }
-  }
 
-  if (!execRes.stdout) {
-    emit(`[FDX Native] Verification execution failed: ${execRes.error?.message ?? "empty output"}`)
-    const plan = await generateVerificationPlan(changeIntelligence, capabilities)
-    const evidence: FdxRuntimeEvidence = {
-      runId: changeIntelligence.runId,
-      verificationRunId: randomUUID(),
-      stateFingerprint: changeIntelligence.stateFingerprint,
-      outcome: "failed",
-      assurance: "UNVERIFIED",
-      checksPassed: 0,
-      checksFailed: plan.checks.length,
-      checksSkipped: 0,
-      mandatoryPassed: false,
-      mandatoryFailed: true,
-      failureReasons: [`FDX execution error: ${execRes.error?.message ?? "native process failed"}`],
-      evidenceDigest: computeDigest("exec_error"),
-      persistenceFailed: true,
-      persistenceError: "FDX process execution failed",
-      checkResults: [],
-      unresolvedObligations: plan.checks.map(c => c.checkId),
-      providerState: capabilities.providerState,
+    if (!execRes.stdout) {
+      emit(`[FDX Native] Verification execution failed: ${execRes.error?.message ?? "empty output"}`)
+      const plan = await generateVerificationPlan(changeIntelligence, capabilities)
+      const evidence: FdxRuntimeEvidence = {
+        runId: changeIntelligence.runId,
+        verificationRunId: randomUUID(),
+        stateFingerprint: changeIntelligence.stateFingerprint,
+        outcome: "incomplete",
+        assurance: "UNVERIFIED",
+        checksPassed: 0,
+        checksFailed: plan.checks.length,
+        checksSkipped: 0,
+        mandatoryPassed: false,
+        mandatoryFailed: true,
+        failureReasons: [`FDX execution error: ${execRes.error?.message ?? "native process failed"}`],
+        evidenceDigest: computeDigest("exec_error"),
+        persistenceFailed: true,
+        persistenceError: "FDX process execution failed",
+        checkResults: [],
+        unresolvedObligations: plan.checks.map(c => c.checkId),
+        providerState: capabilities.providerState,
+      }
+      return { plan, evidence }
     }
-    return { plan, evidence }
-  }
 
+    try {
+      const rawRun = JSON.parse(execRes.stdout) as Record<string, unknown>
+      const planObj = (rawRun["plan"] as Record<string, unknown>) ?? {}
+      const checksRaw = (planObj["selected_checks"] as unknown[]) ?? []
+      const parsedChecks = parsePlannedChecks(checksRaw)
+
+      const basePlanDigest = typeof rawRun["base_plan_digest"] === "string"
+        ? (rawRun["base_plan_digest"] as string)
+        : createHash("sha256").update(JSON.stringify(planObj)).digest("hex")
+
+      const effectivePlanDigest = typeof rawRun["effective_plan_digest"] === "string"
+        ? (rawRun["effective_plan_digest"] as string)
+        : basePlanDigest
+
+      const plan: FdxVerificationPlan = {
+        planId: String(rawRun["run_id"] ?? randomUUID()),
+        runId: String(rawRun["run_id"] ?? changeIntelligence.runId),
+        basePlanDigest,
+        effectivePlanDigest,
+        policySnapshotDigest: rawRun["policy_snapshot_digest"] as string | undefined,
+        policyApplicationDigest: rawRun["policy_application_digest"] as string | undefined,
+        checks: parsedChecks,
+        m11OverlayApplied: Array.isArray(rawRun["added_check_ids"]) && (rawRun["added_check_ids"] as string[]).length > 0,
+        m11CandidatesAvailable: (rawRun["candidate_policy_ids"] as string[]) ?? [],
+        providerState: capabilities.providerState,
+        assurance: String(rawRun["assurance"] ?? "EXACT"),
+      }
+
+      // Parse executed checks from VerificationRun.checks
+      const executedChecksRaw = (rawRun["checks"] as Array<Record<string, unknown>>) ?? []
+      const checkResults: FdxCheckExecutionResult[] = executedChecksRaw.map(c => {
+        const status = String(c["status"] ?? "pending") as FdxCheckExecutionResult["status"]
+        const passed = status === "passed"
+        return {
+          checkId: String(c["check_id"] ?? ""),
+          kind: c["kind"] as string | undefined,
+          status,
+          executionId: c["execution_id"] as string | undefined,
+          reusedExecution: c["reused_execution"] === true,
+          command: Array.isArray(c["command"]) ? (c["command"] as string[]) : [],
+          cwd: c["cwd"] as string | undefined,
+          exitCode: typeof c["exit_code"] === "number" ? c["exit_code"] : null,
+          signal: c["signal"] as string | null | undefined,
+          durationMs: typeof c["duration_ms"] === "number" ? c["duration_ms"] : 0,
+          stdoutDigest: c["stdout_digest"] as string | null | undefined,
+          stderrDigest: c["stderr_digest"] as string | null | undefined,
+          stdoutExcerpt: c["stdout_excerpt"] as string | undefined,
+          stderrExcerpt: c["stderr_excerpt"] as string | undefined,
+          outputTruncated: c["output_truncated"] === true,
+          reason: c["reason"] as string | null | undefined,
+          passed,
+        }
+      })
+
+      const passedCount = checkResults.filter(c => c.passed).length
+      const failedCount = checkResults.filter(c => !c.passed && c.status === "failed").length
+      const skippedCount = checkResults.filter(c => c.status === "skipped").length
+
+      const mandatoryIds = new Set(plan.checks.filter(c => c.mandatory).map(c => c.checkId))
+      const mandatoryFailedList = checkResults.filter(c => mandatoryIds.has(c.checkId) && !c.passed)
+      const mandatoryPassed = mandatoryIds.size === 0 || (mandatoryFailedList.length === 0 && passedCount >= mandatoryIds.size)
+
+      // Check persistence status (M8 fail closed)
+      const persistenceStatus = rawRun["persistence_status"] as Record<string, unknown> | undefined
+      let persistenceFailed = persistenceStatus?.["status"] === "failed"
+      let persistenceError = persistenceFailed ? String(persistenceStatus?.["reason"] ?? "M8 persistence failed") : undefined
+      const persistedPath = persistenceStatus?.["status"] === "persisted" ? String(persistenceStatus["path"]) : undefined
+
+      // Reopen and query exact persisted artifact bytes
+      let evidenceDigest = ""
+      if (persistedPath && existsSync(persistedPath)) {
+        try {
+          const rawBytes = readFileSync(persistedPath)
+          evidenceDigest = createHash("sha256").update(rawBytes).digest("hex")
+        } catch {
+          evidenceDigest = ""
+        }
+      }
+
+      if (capabilities.providerState === "native_vci_full" && !evidenceDigest && !options.noPersist) {
+        persistenceFailed = true
+        persistenceError = "M8 persisted artifact missing or unreadable on disk"
+      }
+
+      if (!evidenceDigest) {
+        evidenceDigest = computeDigest(JSON.stringify(rawRun))
+      }
+
+      const outcome = (persistenceFailed ? "incomplete" : String(rawRun["outcome"] ?? (failedCount > 0 ? "failed" : "passed"))) as "passed" | "failed" | "incomplete"
+
+      const failureReasons: string[] = []
+      for (const c of checkResults) {
+        if (!c.passed) {
+          failureReasons.push(c.reason ? `${c.checkId}: ${c.reason}` : `check ${c.checkId} failed`)
+        }
+      }
+      if (persistenceFailed) {
+        failureReasons.push(`PERSISTENCE_FAILED: ${persistenceError ?? "M8 persistence failed"}`)
+      }
+
+      const evidence: FdxRuntimeEvidence = {
+        runId: plan.runId,
+        verificationRunId: String(rawRun["run_id"] ?? randomUUID()),
+        stateFingerprint: changeIntelligence.stateFingerprint,
+        outcome,
+        assurance: String(rawRun["assurance"] ?? "EXACT"),
+        checksPassed: passedCount,
+        checksFailed: failedCount,
+        checksSkipped: skippedCount,
+        mandatoryPassed: !persistenceFailed && mandatoryPassed,
+        mandatoryFailed: persistenceFailed || mandatoryFailedList.length > 0,
+        failureReasons,
+        evidenceDigest,
+        persistedArtifactPath: persistedPath,
+        persistenceFailed,
+        persistenceError,
+        checkResults,
+        unresolvedObligations: Array.isArray(rawRun["unresolved_obligations"])
+          ? (rawRun["unresolved_obligations"] as Array<Record<string, unknown>>).map(o => String(o["check_id"] ?? o["scope"] ?? "obligation"))
+          : [],
+        providerState: capabilities.providerState,
+      }
+
+      return { plan, evidence, rawRun }
+    } catch (e: unknown) {
+      emit(`[FDX Native] Failed to parse verification output: ${e instanceof Error ? e.message : String(e)}`)
+      const plan = await generateVerificationPlan(changeIntelligence, capabilities)
+      const evidence: FdxRuntimeEvidence = {
+        runId: changeIntelligence.runId,
+        verificationRunId: randomUUID(),
+        stateFingerprint: changeIntelligence.stateFingerprint,
+        outcome: "incomplete",
+        assurance: "UNVERIFIED",
+        checksPassed: 0,
+        checksFailed: plan.checks.length,
+        checksSkipped: 0,
+        mandatoryPassed: false,
+        mandatoryFailed: true,
+        failureReasons: [`JSON parse error: ${e instanceof Error ? e.message : String(e)}`],
+        evidenceDigest: computeDigest("parse_error"),
+        persistenceFailed: true,
+        persistenceError: "Could not parse VerificationRun output",
+        checkResults: [],
+        unresolvedObligations: plan.checks.map(c => c.checkId),
+        providerState: capabilities.providerState,
+      }
+      return { plan, evidence }
+    }
+  })()
+
+  inFlightExecutions.set(flightKey, executionPromise)
   try {
-    const rawRun = JSON.parse(execRes.stdout) as Record<string, unknown>
-    const planObj = (rawRun["plan"] as Record<string, unknown>) ?? {}
-    const checksRaw = (planObj["selected_checks"] as unknown[]) ?? []
-    const parsedChecks = parsePlannedChecks(checksRaw)
-
-    const basePlanDigest = typeof rawRun["base_plan_digest"] === "string"
-      ? (rawRun["base_plan_digest"] as string)
-      : computeDigest(JSON.stringify(planObj))
-
-    const effectivePlanDigest = typeof rawRun["effective_plan_digest"] === "string"
-      ? (rawRun["effective_plan_digest"] as string)
-      : basePlanDigest
-
-    const plan: FdxVerificationPlan = {
-      planId: String(rawRun["run_id"] ?? randomUUID()),
-      runId: String(rawRun["run_id"] ?? changeIntelligence.runId),
-      basePlanDigest,
-      effectivePlanDigest,
-      policySnapshotDigest: rawRun["policy_snapshot_digest"] as string | undefined,
-      policyApplicationDigest: rawRun["policy_application_digest"] as string | undefined,
-      checks: parsedChecks,
-      m11OverlayApplied: Array.isArray(rawRun["added_check_ids"]) && (rawRun["added_check_ids"] as string[]).length > 0,
-      m11CandidatesAvailable: (rawRun["candidate_policy_ids"] as string[]) ?? [],
-      providerState: capabilities.providerState,
-      assurance: String(rawRun["assurance"] ?? "EXACT"),
-    }
-
-    // Parse executed checks from VerificationRun.checks
-    const executedChecksRaw = (rawRun["checks"] as Array<Record<string, unknown>>) ?? []
-    const checkResults: FdxCheckExecutionResult[] = executedChecksRaw.map(c => {
-      const status = String(c["status"] ?? "pending") as FdxCheckExecutionResult["status"]
-      const passed = status === "passed"
-      return {
-        checkId: String(c["check_id"] ?? ""),
-        kind: c["kind"] as string | undefined,
-        status,
-        executionId: c["execution_id"] as string | undefined,
-        reusedExecution: c["reused_execution"] === true,
-        command: Array.isArray(c["command"]) ? (c["command"] as string[]) : [],
-        cwd: c["cwd"] as string | undefined,
-        exitCode: typeof c["exit_code"] === "number" ? c["exit_code"] : null,
-        signal: c["signal"] as string | null | undefined,
-        durationMs: typeof c["duration_ms"] === "number" ? c["duration_ms"] : 0,
-        stdoutDigest: c["stdout_digest"] as string | null | undefined,
-        stderrDigest: c["stderr_digest"] as string | null | undefined,
-        stdoutExcerpt: c["stdout_excerpt"] as string | undefined,
-        stderrExcerpt: c["stderr_excerpt"] as string | undefined,
-        outputTruncated: c["output_truncated"] === true,
-        reason: c["reason"] as string | null | undefined,
-        passed,
-      }
-    })
-
-    const passedCount = checkResults.filter(c => c.passed).length
-    const failedCount = checkResults.filter(c => !c.passed && c.status === "failed").length
-    const skippedCount = checkResults.filter(c => c.status === "skipped").length
-
-    const mandatoryIds = new Set(plan.checks.filter(c => c.mandatory).map(c => c.checkId))
-    const mandatoryFailedList = checkResults.filter(c => mandatoryIds.has(c.checkId) && !c.passed)
-    const mandatoryPassed = mandatoryIds.size === 0 || (mandatoryFailedList.length === 0 && passedCount >= mandatoryIds.size)
-
-    // Check persistence status (M8 fail closed)
-    const persistenceStatus = rawRun["persistence_status"] as Record<string, unknown> | undefined
-    const persistenceFailed = persistenceStatus?.["status"] === "failed"
-    const persistenceError = persistenceFailed ? String(persistenceStatus?.["reason"] ?? "M8 persistence failed") : undefined
-    const persistedPath = persistenceStatus?.["status"] === "persisted" ? String(persistenceStatus["path"]) : undefined
-
-    const outcome = String(rawRun["outcome"] ?? (failedCount > 0 ? "failed" : "passed")) as "passed" | "failed" | "incomplete"
-
-    const failureReasons: string[] = []
-    for (const c of checkResults) {
-      if (!c.passed) {
-        failureReasons.push(c.reason ? `${c.checkId}: ${c.reason}` : `check ${c.checkId} failed`)
-      }
-    }
-    if (persistenceFailed) {
-      failureReasons.push(`PERSISTENCE_FAILED: ${persistenceError}`)
-    }
-
-    const evidenceDigest = computeDigest(JSON.stringify({
-      runId: plan.runId,
-      planDigest: plan.effectivePlanDigest,
-      checkResults: checkResults.map(c => ({ id: c.checkId, status: c.status })),
-    }))
-
-    const evidence: FdxRuntimeEvidence = {
-      runId: plan.runId,
-      verificationRunId: String(rawRun["run_id"] ?? randomUUID()),
-      stateFingerprint: changeIntelligence.stateFingerprint,
-      outcome: persistenceFailed ? "incomplete" : outcome,
-      assurance: String(rawRun["assurance"] ?? "EXACT"),
-      checksPassed: passedCount,
-      checksFailed: failedCount,
-      checksSkipped: skippedCount,
-      mandatoryPassed: !persistenceFailed && mandatoryPassed,
-      mandatoryFailed: persistenceFailed || mandatoryFailedList.length > 0,
-      failureReasons,
-      evidenceDigest,
-      persistedArtifactPath: persistedPath,
-      persistenceFailed,
-      persistenceError,
-      checkResults,
-      unresolvedObligations: Array.isArray(rawRun["unresolved_obligations"])
-        ? (rawRun["unresolved_obligations"] as Array<Record<string, unknown>>).map(o => String(o["check_id"] ?? o["scope"] ?? "obligation"))
-        : [],
-      providerState: capabilities.providerState,
-    }
-
-    return { plan, evidence, rawRun }
-  } catch (e: unknown) {
-    emit(`[FDX Native] Failed to parse verification output: ${e instanceof Error ? e.message : String(e)}`)
-    const plan = await generateVerificationPlan(changeIntelligence, capabilities)
-    const evidence: FdxRuntimeEvidence = {
-      runId: changeIntelligence.runId,
-      verificationRunId: randomUUID(),
-      stateFingerprint: changeIntelligence.stateFingerprint,
-      outcome: "failed",
-      assurance: "UNVERIFIED",
-      checksPassed: 0,
-      checksFailed: plan.checks.length,
-      checksSkipped: 0,
-      mandatoryPassed: false,
-      mandatoryFailed: true,
-      failureReasons: [`JSON parse error: ${e instanceof Error ? e.message : String(e)}`],
-      evidenceDigest: computeDigest("parse_error"),
-      persistenceFailed: true,
-      persistenceError: "Could not parse VerificationRun output",
-      checkResults: [],
-      unresolvedObligations: plan.checks.map(c => c.checkId),
-      providerState: capabilities.providerState,
-    }
-    return { plan, evidence }
+    return await executionPromise
+  } finally {
+    inFlightExecutions.delete(flightKey)
   }
 }
 

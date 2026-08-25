@@ -35,14 +35,15 @@ import {
 import { VerificationStatus } from "../src/orchestration/types"
 import type { FdxCapabilitySnapshot } from "../src/services/fdx-vci-adapter"
 import { buildCalibrationSignal } from "../src/orchestration/verification/fdx-recovery"
-import { resolveFdxBinaryPath } from "../src/tools/fdx-shared"
 
-const NATIVE_BIN = resolveFdxBinaryPath() || join(process.cwd(), "target/release/fdx")
+const NATIVE_BIN = process.env.FDX_BINARY_PATH || join(process.cwd(), "target/release/fdx")
+process.env.FDX_BINARY_PATH = NATIVE_BIN
 
 describe("Native FDX Authority — Real Binary Operations", () => {
   let tmpRepo: string
 
   beforeEach(() => {
+    process.env.FDX_BINARY_PATH = NATIVE_BIN
     invalidateCapabilityCache()
     tmpRepo = mkdtempSync(join(tmpdir(), "fdx-auth-test-"))
     // Initialize git repo in tmp directory
@@ -386,5 +387,23 @@ describe("Cancellation, Restart & Concurrency Idempotency (Workstreams K & L)", 
     const uniqueFingerprints = new Set(fingerprints)
     expect(uniqueFingerprints.size).toBe(1)
     expect(fingerprints[0]).toBe(intel1.stateFingerprint)
+  })
+  it("single-flight verification coalesces concurrent identical requests into one execution", async () => {
+    if (!existsSync(NATIVE_BIN)) return
+    process.env.FDX_BINARY_PATH = NATIVE_BIN
+    const caps = await queryFdxCapabilities(tmpRepo, true)
+    const intel = await deriveChangeIntelligence("run-sf", tmpRepo, caps)
+
+    const concurrentRuns = await Promise.all(
+      Array.from({ length: 10 }).map(() =>
+        executeNativeVerification(intel, caps, { noPersist: true })
+      )
+    )
+
+    const firstDigest = concurrentRuns[0].evidence.evidenceDigest
+    for (const run of concurrentRuns) {
+      expect(run.evidence.evidenceDigest).toBe(firstDigest)
+      expect(run.plan.effectivePlanDigest).toBe(concurrentRuns[0].plan.effectivePlanDigest)
+    }
   })
 })
