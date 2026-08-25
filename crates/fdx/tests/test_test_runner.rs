@@ -13,7 +13,7 @@ fn fdx_bin() -> PathBuf {
 #[test]
 fn test_test_cargo() {
     let output = Command::new(fdx_bin())
-        .args(["test", "cargo"])
+        .args(["test", "cargo", "--", "--lib", "--", "--list"])
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .output()
         .expect("fdx test cargo failed");

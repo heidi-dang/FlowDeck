@@ -408,6 +408,43 @@ pub fn is_reserved_planning_entry(name: &str) -> bool {
     RESERVED_PLANNING_ENTRIES.contains(&name)
 }
 
+pub fn find_repository_root(current_dir: &Path) -> std::io::Result<PathBuf> {
+    let current = current_dir
+        .canonicalize()
+        .unwrap_or_else(|_| current_dir.to_path_buf());
+
+    // First try git rev-parse
+    if let Ok(output) = std::process::Command::new("git")
+        .arg("rev-parse")
+        .arg("--show-toplevel")
+        .current_dir(&current)
+        .output()
+    {
+        if output.status.success() {
+            if let Ok(git_root) = String::from_utf8(output.stdout) {
+                let trimmed = git_root.trim();
+                if !trimmed.is_empty() {
+                    return Ok(PathBuf::from(trimmed));
+                }
+            }
+        }
+    }
+
+    // Fallback: search upward for .git
+    let mut search = current.clone();
+    loop {
+        if search.join(".git").exists() {
+            return Ok(search);
+        }
+        if !search.pop() {
+            break;
+        }
+    }
+
+    // If no git root, just use current canonical dir
+    Ok(current)
+}
+
 #[cfg(test)]
 mod tests {
 

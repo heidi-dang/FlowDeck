@@ -1,0 +1,7 @@
+{
+  "name": "@mono/pkg-b",
+  "version": "1.0.0",
+  "dependencies": {
+    "@mono/pkg-a": "1.0.0"
+  }
+}

@@ -1,0 +1,188 @@
+{
+  "milestone": "M8",
+  "title": "Hardened Runtime Evidence & Historical Verification Intelligence",
+  "functional_source_sha": "9f705270537e67c89c3db6655630a896fac762e0",
+  "binary_source_sha": "9f705270537e67c89c3db6655630a896fac762e0",
+  "binary_sha256": "4e2736be0a700668afc5ff373c9bd8250695a5b71c15ad4d297c2dd632b946f3",
+  "benchmark_harness_sha": "369c944fc0d1b1aaa396f691c6c91bac3dda50f2",
+  "qualification_head_sha": "369c944fc0d1b1aaa396f691c6c91bac3dda50f2",
+  "timestamp": "2026-08-24T08:47:20.235Z",
+  "platform": "linux",
+  "arch": "x64",
+  "node_version": "v24.19.0",
+  "schema_version": 7,
+  "invariants": {
+    "schema_version": 7,
+    "exact_artifact_bytes_digest_verified": true,
+    "physical_process_execution_truth_verified": true,
+    "synthetic_executions_excluded_from_executions_table": true,
+    "shared_execution_consistency_enforced": true,
+    "unplanned_check_rejection_enforced": true,
+    "independent_connection_concurrency_verified": true,
+    "durable_reconciliation_completeness_verified": true,
+    "legacy_v6_rows_explicitly_unqualified": true,
+    "atomic_identity_arbitration_in_transaction": true,
+    "planner_invariance_verified": true,
+    "verification_truth_isolation_verified": true
+  },
+  "preflights": [
+    {
+      "name": "exact_persisted_artifact_sha_matches_db",
+      "passed": true
+    },
+    {
+      "name": "format_only_artifact_mutation_conflicts",
+      "passed": true
+    },
+    {
+      "name": "exact_artifact_reimport_is_idempotent",
+      "passed": true
+    },
+    {
+      "name": "unsupported_obligation_has_zero_physical_executions",
+      "passed": true
+    },
+    {
+      "name": "skipped_obligation_has_zero_physical_executions",
+      "passed": true
+    },
+    {
+      "name": "spawn_failed_obligation_has_zero_physical_executions",
+      "passed": true
+    },
+    {
+      "name": "shared_execution_is_one_physical_process",
+      "passed": true
+    },
+    {
+      "name": "shared_execution_conflicting_command_rejected",
+      "passed": true
+    },
+    {
+      "name": "shared_execution_conflicting_status_rejected",
+      "passed": true
+    },
+    {
+      "name": "missing_planned_check_rejected",
+      "passed": true
+    },
+    {
+      "name": "same_artifact_two_independent_connections",
+      "passed": true
+    },
+    {
+      "name": "divergent_artifacts_two_independent_connections",
+      "passed": true
+    },
+    {
+      "name": "reconciliation_completeness_persists_after_reopen",
+      "passed": true
+    },
+    {
+      "name": "legacy_v6_rows_are_not_silently_qualified",
+      "passed": true
+    },
+    {
+      "name": "mixed_physicality_nonphysical_first_rejected",
+      "passed": true
+    },
+    {
+      "name": "mixed_physicality_physical_first_rejected",
+      "passed": true
+    },
+    {
+      "name": "spawnfailed_passed_mixed_group_rejected",
+      "passed": true
+    },
+    {
+      "name": "timedout_unsupported_mixed_group_rejected",
+      "passed": true
+    },
+    {
+      "name": "nonphysical_shared_command_conflict_rejected",
+      "passed": true
+    },
+    {
+      "name": "nonphysical_shared_status_conflict_rejected",
+      "passed": true
+    },
+    {
+      "name": "invalid_shared_execution_two_primaries_rejected",
+      "passed": true
+    },
+    {
+      "name": "invalid_shared_execution_no_primary_rejected",
+      "passed": true
+    },
+    {
+      "name": "physical_check_requires_execution_row",
+      "passed": true
+    },
+    {
+      "name": "nonphysical_check_has_no_execution_row",
+      "passed": true
+    },
+    {
+      "name": "crash_window_reconciliation",
+      "passed": true
+    },
+    {
+      "name": "malformed_artifact_fails_closed",
+      "passed": true
+    },
+    {
+      "name": "oversized_artifact_fails_closed",
+      "passed": true
+    },
+    {
+      "name": "symlink_artifact_escape_rejected",
+      "passed": true
+    },
+    {
+      "name": "planner_selection_unchanged",
+      "passed": true
+    },
+    {
+      "name": "M8_failure_does_not_rewrite_M7_truth",
+      "passed": true
+    }
+  ],
+  "metrics": {
+    "single_run_verify_and_ingest_ms": {
+      "count": 15,
+      "min": 121.53,
+      "max": 133.6,
+      "mean": 127.08,
+      "median": 122.95,
+      "p95": 133.6
+    },
+    "history_runs_query_50_ms": {
+      "count": 20,
+      "min": 3,
+      "max": 3.8,
+      "mean": 3.22,
+      "median": 3.18,
+      "p95": 3.8
+    },
+    "history_stats_query_ms": {
+      "count": 20,
+      "min": 2.94,
+      "max": 3.24,
+      "mean": 3.07,
+      "median": 3.05,
+      "p95": 3.24
+    },
+    "history_reconcile_50_artifacts_ms": {
+      "count": 15,
+      "min": 6.89,
+      "max": 7.43,
+      "mean": 7.14,
+      "median": 7.12,
+      "p95": 7.43
+    }
+  },
+  "database_metrics": {
+    "initial_db_bytes": 172032,
+    "db_bytes_after_50_runs": 208896
+  }
+}

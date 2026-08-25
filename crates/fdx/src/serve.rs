@@ -19,6 +19,7 @@ use std::thread;
 
 use serde::{Deserialize, Serialize};
 
+use crate::protocol::{NegotiateRequest, NegotiateResponse, FDX_PROTOCOL_VERSION};
 use crate::reader::code::cache::AstCache;
 use crate::reader::impact::{self, ImpactDirection};
 use crate::reader::outline::{self, OutlineOptions};
@@ -416,7 +417,245 @@ fn handle_impact(
     }
 }
 
-fn process_request(req: ServeRequest, cache: &AstCache, root: &Path) -> Option<String> {
+fn handle_evidence_graph_v1(
+    id: &str,
+    _args: &serde_json::Value,
+    _cache: &AstCache,
+) -> Option<String> {
+    // Resolve the canonical repository root exactly like the CLI does.
+    // The daemon must never fall back to an arbitrary nested CWD for graph
+    // storage identity.
+    let cwd = match std::env::current_dir() {
+        Ok(c) => c,
+        Err(_) => return format_err(id, "repository root unavailable".to_string()),
+    };
+    let repo_root = match crate::paths::find_repository_root(&cwd) {
+        Ok(r) => r,
+        Err(_) => return format_err(id, "repository root unavailable".to_string()),
+    };
+    let repo_root_ref = repo_root.as_path();
+
+    let db_result = crate::intelligence::db::EvidenceDatabase::open(
+        repo_root_ref,
+        crate::intelligence::db::DatabaseOpenMode::ReadOnly,
+    );
+    let db_ref = match &db_result {
+        Ok(db) => Ok(db),
+        Err(e) => Err(e),
+    };
+
+    // Same production status evaluator used by `fdx index status`.
+    let report = crate::intelligence::status::evaluate_index_status(
+        repo_root_ref,
+        db_ref,
+        &crate::protocol::GraphCompatibility::default(),
+    );
+
+    format_ok(
+        id,
+        serde_json::json!({
+            "status": report.state,
+            "reasons": report.reasons,
+            "generation": report.generation,
+            "schema_version": report.schema_version,
+            "files": report.files,
+            "nodes": report.nodes,
+            "edges": report.edges,
+            "journal_mode": report.journal_mode,
+            "foreign_keys": report.foreign_keys,
+            "busy_timeout": report.busy_timeout,
+        }),
+    )
+}
+fn handle_impact_v2(id: &str, args: &serde_json::Value, _cache: &AstCache) -> Option<String> {
+    let cwd = match std::env::current_dir() {
+        Ok(c) => c,
+        Err(_) => return format_err(id, "repository root unavailable".to_string()),
+    };
+    let repo_root = match crate::paths::find_repository_root(&cwd) {
+        Ok(r) => r,
+        Err(_) => return format_err(id, "repository root unavailable".to_string()),
+    };
+    let base = args.get("base").and_then(|v| v.as_str());
+    let head = args.get("head").and_then(|v| v.as_str());
+    let depth = args
+        .get("depth")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize);
+
+    match crate::intelligence::change::traverse::analyze_impact_v2(&repo_root, base, head, depth) {
+        Ok(res) => match serde_json::to_value(&res) {
+            Ok(v) => format_ok(id, v),
+            Err(e) => format_err(id, format!("serialization error: {}", e)),
+        },
+        Err(e) => format_err(id, format!("impact-v2 error: {}", e)),
+    }
+}
+
+fn handle_why_v1(id: &str, args: &serde_json::Value, _cache: &AstCache) -> Option<String> {
+    let cwd = match std::env::current_dir() {
+        Ok(c) => c,
+        Err(_) => return format_err(id, "repository root unavailable".to_string()),
+    };
+    let repo_root = match crate::paths::find_repository_root(&cwd) {
+        Ok(r) => r,
+        Err(_) => return format_err(id, "repository root unavailable".to_string()),
+    };
+    let target = match args.get("target").and_then(|v| v.as_str()) {
+        Some(t) => t,
+        None => return format_err(id, "why: missing target argument".to_string()),
+    };
+    let base = args.get("base").and_then(|v| v.as_str());
+    let head = args.get("head").and_then(|v| v.as_str());
+    let depth = args
+        .get("depth")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize);
+
+    match crate::intelligence::change::traverse::explain_why_target(
+        &repo_root, target, base, head, depth,
+    ) {
+        Ok(res) => match serde_json::to_value(&res) {
+            Ok(v) => format_ok(id, v),
+            Err(e) => format_err(id, format!("serialization error: {}", e)),
+        },
+        Err(e) => format_err(id, format!("why error: {}", e)),
+    }
+}
+
+fn handle_build_status_v1(
+    id: &str,
+    _args: &serde_json::Value,
+    _cache: &AstCache,
+) -> Option<String> {
+    let cwd = match std::env::current_dir() {
+        Ok(c) => c,
+        Err(_) => return format_err(id, "repository root unavailable".to_string()),
+    };
+    let repo_root = match crate::paths::find_repository_root(&cwd) {
+        Ok(r) => r,
+        Err(_) => return format_err(id, "repository root unavailable".to_string()),
+    };
+    let states = match crate::intelligence::build::freshness::evaluate_build_freshness(&repo_root) {
+        Ok(s) => s,
+        Err(e) => return format_err(id, format!("build status error: {}", e)),
+    };
+    let providers: Vec<serde_json::Value> = states
+        .iter()
+        .map(|s| {
+            serde_json::json!({
+                "provider": s.provider_id,
+                "type": s.provider_type,
+                "version": s.provider_version,
+                "health": s.health.as_str(),
+                "freshness": s.freshness.as_str(),
+                "fingerprint": s.fingerprint,
+                "workspace_root": s.workspace_root,
+                "last_success": s.last_successful_run,
+                "generation": s.generation,
+                "reason": s.failure_reason,
+            })
+        })
+        .collect();
+    format_ok(
+        id,
+        serde_json::json!({
+            "providers": providers,
+            "status": "ok",
+        }),
+    )
+}
+
+fn handle_build_graph_v1(id: &str, _args: &serde_json::Value, _cache: &AstCache) -> Option<String> {
+    let cwd = match std::env::current_dir() {
+        Ok(c) => c,
+        Err(_) => return format_err(id, "repository root unavailable".to_string()),
+    };
+    let repo_root = match crate::paths::find_repository_root(&cwd) {
+        Ok(r) => r,
+        Err(_) => return format_err(id, "repository root unavailable".to_string()),
+    };
+    match crate::cmd_build::build_graph_json(&repo_root) {
+        Ok(json_str) => match serde_json::from_str::<serde_json::Value>(&json_str) {
+            Ok(v) => format_ok(id, v),
+            Err(e) => format_err(id, format!("serialization error: {}", e)),
+        },
+        Err(e) => format_err(id, format!("build graph error: {}", e)),
+    }
+}
+
+fn handle_semantic_status_v1(
+    id: &str,
+    _args: &serde_json::Value,
+    _cache: &AstCache,
+) -> Option<String> {
+    // Read-only provider diagnostics: consumes already-persisted semantic
+    // evidence only. The daemon never executes providers.
+    let cwd = match std::env::current_dir() {
+        Ok(c) => c,
+        Err(_) => return format_err(id, "repository root unavailable".to_string()),
+    };
+    let repo_root = match crate::paths::find_repository_root(&cwd) {
+        Ok(r) => r,
+        Err(_) => return format_err(id, "repository root unavailable".to_string()),
+    };
+    let db = match crate::intelligence::db::EvidenceDatabase::open(
+        &repo_root,
+        crate::intelligence::db::DatabaseOpenMode::ReadOnly,
+    ) {
+        Ok(d) => d,
+        Err(crate::intelligence::db::DatabaseError::NotIndexed) => {
+            return format_ok(
+                id,
+                serde_json::json!({
+                    "providers": [],
+                    "semantic_nodes": 0,
+                    "semantic_edges": 0,
+                    "status": "absent",
+                }),
+            );
+        }
+        Err(e) => return format_err(id, format!("semantic status error: {}", e)),
+    };
+    let persisted = match crate::intelligence::semantic::state::load_provider_states(&db) {
+        Ok(s) => s,
+        Err(e) => return format_err(id, format!("semantic status error: {}", e)),
+    };
+    let registry = crate::intelligence::semantic::registry::ProviderRegistry::new();
+    let states = crate::intelligence::semantic::state::evaluate_effective_states(
+        &repo_root, &registry, persisted,
+    );
+    let (nodes, edges) =
+        crate::intelligence::semantic::state::count_semantic_evidence(&db).unwrap_or_default();
+    let providers: Vec<serde_json::Value> = states
+        .iter()
+        .map(|s| {
+            serde_json::json!({
+                "provider": s.provider_id(),
+                "type": s.identity.provider_type.as_str(),
+                "version": s.identity.provider_version,
+                "health": s.health.as_str(),
+                "freshness": s.freshness.as_str(),
+                "fingerprint": s.fingerprint.digest,
+                "scope_root": s.scope.workspace_root,
+                "scope_package": s.scope.package,
+                "last_success": s.last_successful_run,
+                "generation": s.semantic_generation,
+                "reason": s.failure_reason,
+            })
+        })
+        .collect();
+    format_ok(
+        id,
+        serde_json::json!({
+            "providers": providers,
+            "semantic_nodes": nodes,
+            "semantic_edges": edges,
+            "status": "ok",
+        }),
+    )
+}
+fn process_request(req: ServeRequest, cache: &AstCache) -> Option<String> {
     match req.op.as_str() {
         "version" => format_ok(
             &req.id,
@@ -426,10 +665,38 @@ fn process_request(req: ServeRequest, cache: &AstCache, root: &Path) -> Option<S
             &req.id,
             serde_json::json!({ "healthy": true, "service": "fdx-native-daemon" }),
         ),
-        "read" => handle_read(&req.id, &req.args, cache, root),
-        "search" => handle_search(&req.id, &req.args, cache, root),
-        "outline" => handle_outline(&req.id, &req.args, cache, root),
-        "impact" => handle_impact(&req.id, &req.args, cache, root),
+        "negotiate" => {
+            let neg_req: NegotiateRequest =
+                serde_json::from_value(req.args).unwrap_or(NegotiateRequest {
+                    protocol: FDX_PROTOCOL_VERSION,
+                    capabilities: Vec::new(),
+                });
+            let resp = NegotiateResponse::negotiate(&neg_req);
+            match serde_json::to_value(&resp) {
+                Ok(val) => format_ok(&req.id, val),
+                Err(e) => format_err(&req.id, format!("negotiate serialization error: {}", e)),
+            }
+        }
+        "capabilities" => {
+            let resp = NegotiateResponse::negotiate(&NegotiateRequest {
+                protocol: FDX_PROTOCOL_VERSION,
+                capabilities: Vec::new(),
+            });
+            match serde_json::to_value(&resp) {
+                Ok(val) => format_ok(&req.id, val),
+                Err(e) => format_err(&req.id, format!("capabilities serialization error: {}", e)),
+            }
+        }
+        "read" => handle_read(&req.id, &req.args, cache),
+        "search" => handle_search(&req.id, &req.args, cache),
+        "outline" => handle_outline(&req.id, &req.args, cache),
+        "impact" => handle_impact(&req.id, &req.args, cache),
+        "evidence-graph-v1" => handle_evidence_graph_v1(&req.id, &req.args, cache),
+        "semantic-status-v1" => handle_semantic_status_v1(&req.id, &req.args, cache),
+        "build-status-v1" | "build-status" => handle_build_status_v1(&req.id, &req.args, cache),
+        "build-graph-v1" | "build-graph" => handle_build_graph_v1(&req.id, &req.args, cache),
+        "impact-v2" => handle_impact_v2(&req.id, &req.args, cache),
+        "why-v1" | "why" => handle_why_v1(&req.id, &req.args, cache),
         other => format_err(&req.id, format!("FDX_METHOD_NOT_ALLOWED {}", other)),
     }
 }

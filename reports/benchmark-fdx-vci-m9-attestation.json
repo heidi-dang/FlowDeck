@@ -1,0 +1,276 @@
+{
+  "milestone": "M9",
+  "title": "Verification Attestation & Cryptographic Evidence Binding",
+  "functional_source_sha": "75db2931195c2c6dc1496237ca569511c6859dc4",
+  "binary_source_sha": "75db2931195c2c6dc1496237ca569511c6859dc4",
+  "binary_sha256": "01dd3621844266d172d3d8af32e166aa3445b56ddecfce73668109845fb72ed3",
+  "benchmark_harness_sha": "3b55aaa8d06224e78ccee34fa3a642b0f0b1825a",
+  "qualification_head_sha": "3b55aaa8d06224e78ccee34fa3a642b0f0b1825a",
+  "timestamp": "2026-08-24T12:13:22.215Z",
+  "platform": "linux",
+  "arch": "x64",
+  "node_version": "v24.19.0",
+  "schema_version": 1,
+  "invariants": {
+    "in_toto_statement_v1_envelope": true,
+    "exact_artifact_sha256_subject_digest": true,
+    "qualified_m8_history_bound": true,
+    "rfc_8785_jcs_canonical_serialization": true,
+    "deterministic_attestation_digest": true,
+    "tamper_detection_verified": true,
+    "secrets_and_excerpts_excluded": true,
+    "absolute_paths_excluded": true,
+    "atomic_idempotent_persistence": true,
+    "offline_verification_supported": true,
+    "managed_path_containment_verified": true,
+    "symlink_escape_protection_verified": true,
+    "bounded_read_size_enforced": true,
+    "filesystem_toctou_handle_safety_verified": true,
+    "descriptor_relative_handle_acquisition_verified": true,
+    "external_single_open_nofollow_verified": true
+  },
+  "preflights": [
+    {
+      "name": "in_toto_statement_v1_exact_single_subject",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "exact_M7_artifact_subject_digest",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "qualified_M8_contract_v2_required",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "future_M8_contract_rejected",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "predicate_runtime_contract_v3_rejected",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "artifact_digest_mismatch_rejected",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "plan_digest_mismatch_rejected",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "passed_outcome_preserved",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "failed_outcome_preserved",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "incomplete_outcome_preserved",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "assurance_exactly_preserved",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "structured_unresolved_obligations_preserved",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "dirty_workspace_cleanliness_not_claimed",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "uncertainty_secret_redacted_everywhere",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "shared_execution_not_duplicated",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "nonphysical_obligation_has_no_physical_execution",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "extra_subject_rejected",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "unknown_predicate_field_rejected",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "noncanonical_attestation_bytes_rejected",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "managed_filename_digest_mismatch_rejected",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "external_content_address_lookalike_requires_expected_sha",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "external_content_address_lookalike_correct_sha_passes",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "fdx_parent_symlink_escape_rejected",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "attestations_dir_symlink_escape_rejected",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "managed_attestation_file_symlink_rejected",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "oversized_attestation_rejected",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "non_regular_attestation_rejected",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "atomic_publication_conflict_no_overwrite",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "atomic_publication_same_content_race",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "atomic_publication_unsupported_has_no_final_file",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "target_symlink_race_rejected",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "target_identical_byte_symlink_race_rejected",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "managed_directory_swap_cannot_escape",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "external_file_swap_does_not_bypass_anchor",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "bounded_read_growth_rejected",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "huge_existing_target_bounded",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "broken_managed_jail_never_downgrades_to_external",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "predicate_runtime_contract_v1_rejected",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "predicate_run_qualified_false_rejected",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "generator_name_tamper_rejected",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "managed_directory_swap_during_acquisition_rejected",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "fdx_directory_swap_during_acquisition_rejected",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "external_same_byte_symlink_substitution_rejected",
+      "status": "passed",
+      "details": {}
+    },
+    {
+      "name": "external_different_file_substitution_rejected",
+      "status": "passed",
+      "details": {}
+    }
+  ],
+  "metrics": {
+    "attest_create_single_run_ms": {
+      "count": 15,
+      "min": 5.38,
+      "max": 5.88,
+      "mean": 5.56,
+      "median": 5.49,
+      "p95": 5.88
+    },
+    "attest_verify_single_run_ms": {
+      "count": 15,
+      "min": 4.7,
+      "max": 17.25,
+      "mean": 5.96,
+      "median": 4.99,
+      "p95": 17.25
+    },
+    "attest_create_100_runs_total_ms": 554.21,
+    "attest_create_avg_per_run_ms": 5.54,
+    "attest_verify_100_runs_total_ms": 605.48,
+    "attest_verify_avg_per_run_ms": 6.05
+  }
+}

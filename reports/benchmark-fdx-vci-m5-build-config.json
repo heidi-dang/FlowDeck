@@ -1,0 +1,94 @@
+{
+  "metadata": {
+    "benchmark": "benchmark-fdx-vci-m5-build-config",
+    "timestamp": "2026-08-23T03:22:42.105Z",
+    "platform": "linux",
+    "arch": "x64",
+    "functional_source_sha": "9c1a9b693f5e17aba3b8e7203807d72f274fbaae",
+    "binary_source_sha": "9c1a9b693f5e17aba3b8e7203807d72f274fbaae",
+    "benchmark_harness_sha": "3a0ce7fb9c3b0080298136b1a278f8e23ba216f6",
+    "binary_path": "/tmp/flowdeck-m5-f5-final/target/release/fdx"
+  },
+  "results": {
+    "fresh_build_config_aware_impact": {
+      "count": 5,
+      "min": 63,
+      "max": 125.58,
+      "mean": 91.68,
+      "median": 87.03,
+      "p95": 125.58
+    },
+    "stale_new_dependency_snapshot_union": {
+      "count": 5,
+      "min": 26.22,
+      "max": 78.3,
+      "mean": 48.95,
+      "median": 32.4,
+      "p95": 78.3
+    },
+    "stale_scope_isolation": {
+      "count": 5,
+      "min": 58.6,
+      "max": 75.36,
+      "mean": 67.68,
+      "median": 69.52,
+      "p95": 75.36
+    },
+    "workspace_root_membership_change": {
+      "count": 5,
+      "min": 52.88,
+      "max": 54,
+      "mean": 53.31,
+      "median": 53.13,
+      "p95": 54
+    },
+    "bound_safe_widening": {
+      "count": 5,
+      "min": 4442.15,
+      "max": 4879.02,
+      "mean": 4757.01,
+      "median": 4804.3,
+      "p95": 4879.02
+    },
+    "provider_disappearance": {
+      "count": 5,
+      "min": 4.82,
+      "max": 5,
+      "mean": 4.89,
+      "median": 4.87,
+      "p95": 5
+    },
+    "provider_ingest_failure_preserves_evidence": {
+      "count": 5,
+      "min": 10.02,
+      "max": 13.39,
+      "mean": 11.73,
+      "median": 11.75,
+      "p95": 13.39
+    },
+    "malformed_snapshot_provider_failure": {
+      "count": 5,
+      "min": 52.54,
+      "max": 53.72,
+      "mean": 53.24,
+      "median": 53.27,
+      "p95": 53.72
+    },
+    "malformed_package_local_control": {
+      "count": 5,
+      "min": 19.45,
+      "max": 26.78,
+      "mean": 25.13,
+      "median": 26.67,
+      "p95": 26.78
+    },
+    "why_typed_build_path": {
+      "count": 5,
+      "min": 30.36,
+      "max": 55.85,
+      "mean": 49.87,
+      "median": 55.36,
+      "p95": 55.85
+    }
+  }
+}

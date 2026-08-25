@@ -1,0 +1,395 @@
+{
+  "status": "qualified",
+  "milestone": "M10",
+  "title": "Final Shadow Calibration & Empirical Verification Planner Accuracy",
+  "functional_source_sha": "f7461acb366fb584a8927668f752e4f7bf8c9dbb",
+  "binary_source_sha": "f7461acb366fb584a8927668f752e4f7bf8c9dbb",
+  "binary_sha256": "c95fcfba1c59f107e4b6117ce2248a9d0e3011d477fb0d81312afba3f9046b3d",
+  "benchmark_harness_sha": "d802bfb89af107f5e5ff9e1911eb81f85f02d4fd",
+  "qualification_head_sha": "d802bfb89af107f5e5ff9e1911eb81f85f02d4fd",
+  "timestamp": "2026-08-24T15:47:17.990Z",
+  "platform": "linux",
+  "arch": "x64",
+  "node_version": "v22.13.0",
+  "cargo_version": "cargo 1.98.0 (797e8a9bc 2026-08-05)",
+  "rustc_version": "rustc 1.98.0 (88d9e12ae 2026-08-18)",
+  "binary_size_bytes": 17391288,
+  "schema_version": 9,
+  "invariants": {
+    "schema_v9_migration_complete": true,
+    "deterministic_calibration_id_binding": true,
+    "candidate_plan_exact_preservation": true,
+    "shadow_reference_superset_discovery": true,
+    "signal_classification_complete": true,
+    "zero_signal_null_recall_enforced": true,
+    "bounded_shadow_checks_and_truncation": true,
+    "database_atomic_idempotent_persistence": true,
+    "divergent_data_conflict_rejected": true,
+    "secrets_and_excerpts_redacted": true,
+    "planner_selection_isolated": true,
+    "assurance_escalation_isolated": true,
+    "runtime_history_isolated": true,
+    "m9_attestation_bytes_isolated": true
+  },
+  "preflights": [
+    {
+      "name": "schema_v9_current",
+      "status": "passed",
+      "details": {
+        "test": "test_calibration_schema"
+      }
+    },
+    {
+      "name": "v8_to_v9_upgrade",
+      "status": "passed",
+      "details": {
+        "test": "test_calibration_v8_to_v9_upgrade"
+      }
+    },
+    {
+      "name": "legacy_v8_row_unqualified",
+      "status": "passed",
+      "details": {
+        "test": "test_calibration_v8_to_v9_upgrade"
+      }
+    },
+    {
+      "name": "candidate_plan_unchanged",
+      "status": "passed",
+      "details": {
+        "test": "test_calibration_candidate_isolation"
+      }
+    },
+    {
+      "name": "candidate_superset_low_limit",
+      "status": "passed",
+      "details": {
+        "test": "test_calibration_limits"
+      }
+    },
+    {
+      "name": "candidate_count_above_shadow_limit",
+      "status": "passed",
+      "details": {
+        "test": "test_calibration_limits"
+      }
+    },
+    {
+      "name": "additional_shadow_budget_zero",
+      "status": "passed",
+      "details": {
+        "test": "test_calibration_limits"
+      }
+    },
+    {
+      "name": "additional_shadow_budget_bounded",
+      "status": "passed",
+      "details": {
+        "test": "test_calibration_limits"
+      }
+    },
+    {
+      "name": "candidate_unsupported_nonphysical",
+      "status": "passed",
+      "details": {
+        "test": "test_calibration_physical_execution_truth"
+      }
+    },
+    {
+      "name": "candidate_skipped_nonphysical",
+      "status": "passed",
+      "details": {
+        "test": "test_calibration_physical_execution_truth"
+      }
+    },
+    {
+      "name": "candidate_spawnfailed_nonphysical",
+      "status": "passed",
+      "details": {
+        "test": "test_calibration_physical_execution_truth"
+      }
+    },
+    {
+      "name": "shared_candidate_execution_deduplicated",
+      "status": "passed",
+      "details": {
+        "test": "test_calibration_physical_execution_truth"
+      }
+    },
+    {
+      "name": "shared_candidate_duration_deduplicated",
+      "status": "passed",
+      "details": {
+        "test": "test_calibration_physical_execution_truth"
+      }
+    },
+    {
+      "name": "shared_shadow_execution_deduplicated",
+      "status": "passed",
+      "details": {
+        "test": "test_calibration_physical_execution_truth"
+      }
+    },
+    {
+      "name": "shared_shadow_duration_deduplicated",
+      "status": "passed",
+      "details": {
+        "test": "test_calibration_physical_execution_truth"
+      }
+    },
+    {
+      "name": "strict_total_duration_budget",
+      "status": "passed",
+      "details": {
+        "test": "test_calibration_total_budget"
+      }
+    },
+    {
+      "name": "observed_shadow_miss",
+      "status": "passed",
+      "details": {
+        "test": "test_calibration_observed_miss"
+      }
+    },
+    {
+      "name": "unselected_pass_not_false_negative",
+      "status": "passed",
+      "details": {
+        "test": "test_calibration_observed_miss"
+      }
+    },
+    {
+      "name": "incomplete_recall_null",
+      "status": "passed",
+      "details": {
+        "test": "test_calibration_incomplete"
+      }
+    },
+    {
+      "name": "truncated_recall_null",
+      "status": "passed",
+      "details": {
+        "test": "test_calibration_limits"
+      }
+    },
+    {
+      "name": "zero_signal_recall_null",
+      "status": "passed",
+      "details": {
+        "test": "test_calibration_zero_signal"
+      }
+    },
+    {
+      "name": "known_signal_recall_50_percent",
+      "status": "passed",
+      "details": {
+        "test": "test_calibration_observed_miss"
+      }
+    },
+    {
+      "name": "aggregate_recall_eligibility",
+      "status": "passed",
+      "details": {
+        "test": "test_calibration_v8_to_v9_upgrade"
+      }
+    },
+    {
+      "name": "aggregate_cost_eligibility",
+      "status": "passed",
+      "details": {
+        "test": "test_calibration_v8_to_v9_upgrade"
+      }
+    },
+    {
+      "name": "record_digest_deterministic",
+      "status": "passed",
+      "details": {
+        "test": "test_calibration_reopen_determinism"
+      }
+    },
+    {
+      "name": "same_record_idempotent",
+      "status": "passed",
+      "details": {
+        "test": "test_calibration_idempotency"
+      }
+    },
+    {
+      "name": "changed_check_conflict",
+      "status": "passed",
+      "details": {
+        "test": "test_calibration_conflict"
+      }
+    },
+    {
+      "name": "changed_execution_conflict",
+      "status": "passed",
+      "details": {
+        "test": "test_calibration_conflict"
+      }
+    },
+    {
+      "name": "changed_metrics_conflict",
+      "status": "passed",
+      "details": {
+        "test": "test_calibration_conflict"
+      }
+    },
+    {
+      "name": "qualified_existing_record_no_rerun",
+      "status": "passed",
+      "details": {
+        "test": "test_calibration_idempotency"
+      }
+    },
+    {
+      "name": "source_artifact_sha_bound",
+      "status": "passed",
+      "details": {
+        "test": "test_calibration_reopen_determinism"
+      }
+    },
+    {
+      "name": "query_display_name_exact",
+      "status": "passed",
+      "details": {
+        "test": "test_calibration_reopen_determinism"
+      }
+    },
+    {
+      "name": "query_kind_exact",
+      "status": "passed",
+      "details": {
+        "test": "test_calibration_reopen_determinism"
+      }
+    },
+    {
+      "name": "query_scope_exact",
+      "status": "passed",
+      "details": {
+        "test": "test_calibration_reopen_determinism"
+      }
+    },
+    {
+      "name": "corrupt_status_rejected",
+      "status": "passed",
+      "details": {
+        "test": "test_calibration_reopen_determinism"
+      }
+    },
+    {
+      "name": "corrupt_kind_rejected",
+      "status": "passed",
+      "details": {
+        "test": "test_calibration_reopen_determinism"
+      }
+    },
+    {
+      "name": "candidate_reason_secret_redacted",
+      "status": "passed",
+      "details": {
+        "test": "test_calibration_privacy"
+      }
+    },
+    {
+      "name": "shadow_reason_secret_redacted",
+      "status": "passed",
+      "details": {
+        "test": "test_calibration_privacy"
+      }
+    },
+    {
+      "name": "absolute_cwd_not_persisted",
+      "status": "passed",
+      "details": {
+        "test": "test_calibration_privacy"
+      }
+    },
+    {
+      "name": "absolute_program_path_not_persisted",
+      "status": "passed",
+      "details": {
+        "test": "test_calibration_privacy"
+      }
+    },
+    {
+      "name": "git_colored_diff_does_not_break_change_detection",
+      "status": "passed",
+      "details": {
+        "test": "test_diff"
+      }
+    },
+    {
+      "name": "planner_selection_unchanged",
+      "status": "passed",
+      "details": {
+        "test": "test_calibration_planner_isolation"
+      }
+    },
+    {
+      "name": "planner_assurance_unchanged",
+      "status": "passed",
+      "details": {
+        "test": "test_calibration_planner_isolation"
+      }
+    },
+    {
+      "name": "M7_unchanged",
+      "status": "passed",
+      "details": {
+        "test": "test_calibration_candidate_isolation"
+      }
+    },
+    {
+      "name": "M8_unpolluted",
+      "status": "passed",
+      "details": {
+        "test": "test_calibration_runtime_isolation"
+      }
+    },
+    {
+      "name": "M9_attestation_bytes_unchanged",
+      "status": "passed",
+      "details": {
+        "test": "test_calibration_attestation_isolation"
+      }
+    },
+    {
+      "name": "offline_execution",
+      "status": "passed",
+      "details": {
+        "test": "test_calibration_cli"
+      }
+    }
+  ],
+  "metrics": {
+    "calibration_run_single_ms": {
+      "count": 15,
+      "min": 9.98,
+      "max": 12.27,
+      "mean": 11.06,
+      "median": 10.85,
+      "p95": 12.27
+    },
+    "calibration_show_single_ms": {
+      "count": 15,
+      "min": 4.88,
+      "max": 6.1,
+      "mean": 5.27,
+      "median": 5.18,
+      "p95": 6.1
+    },
+    "calibration_stats_query_ms": {
+      "count": 15,
+      "min": 4.38,
+      "max": 6.19,
+      "mean": 5.24,
+      "median": 5.22,
+      "p95": 6.19
+    },
+    "calibrate_50_runs_total_ms": 632.46,
+    "calibrate_avg_per_run_ms": 12.65,
+    "calibrate_show_50_runs_total_ms": 250.85,
+    "calibrate_show_avg_per_run_ms": 5.02
+  }
+}
