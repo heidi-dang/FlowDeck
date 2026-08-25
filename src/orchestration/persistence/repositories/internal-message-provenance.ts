@@ -25,6 +25,11 @@ export interface InternalMessageRecord {
   createdAt: string;
 }
 
+export interface InternalMessageProvenanceStats {
+  totalCount: number;
+  oldestCreatedAt: string | null;
+}
+
 /**
  * Persists semantic FlowDeck message provenance independently of OpenCode's
  * role=user transport. A caller can only reserve a known native message ID
@@ -99,5 +104,56 @@ export class InternalMessageProvenanceRepository extends BaseRepository {
 
   isInternal(sessionId: string, messageId?: string): boolean {
     return Boolean(messageId && this.find(sessionId, messageId));
+  }
+
+  /**
+   * Deletes all provenance records for a given session when the session is deleted.
+   */
+  deleteForSession(sessionId: string): number {
+    return this.tx.write(() => {
+      const result = this.db.query(`
+        DELETE FROM flowdeck_internal_messages
+        WHERE session_id = ?
+      `).run(sessionId);
+      return result.changes;
+    });
+  }
+
+  /**
+   * Prunes settled/completed internal message provenance records older than the cutoff.
+   * Unresolved/in-flight dispatches or records tied to outcome_unknown dispatches are retained.
+   */
+  pruneExpired(olderThanIso: string): number {
+    return this.tx.write(() => {
+      const result = this.db.query(`
+        DELETE FROM flowdeck_internal_messages
+        WHERE created_at < ?
+          AND (
+            dispatch_identity IS NULL
+            OR dispatch_identity NOT IN (
+              SELECT identity FROM continuation_dispatches
+              WHERE status IN ('pending', 'outcome_unknown')
+            )
+          )
+      `).run(olderThanIso);
+      return result.changes;
+    });
+  }
+
+  /**
+   * Returns diagnostic statistics for the provenance ledger.
+   */
+  getStats(): InternalMessageProvenanceStats {
+    return this.tx.read(() => {
+      const countRow = this.db.query(`
+        SELECT COUNT(*) as count, MIN(created_at) as oldest
+        FROM flowdeck_internal_messages
+      `).get() as { count: number; oldest: string | null } | null;
+
+      return {
+        totalCount: countRow?.count ?? 0,
+        oldestCreatedAt: countRow?.oldest ?? null,
+      };
+    });
   }
 }

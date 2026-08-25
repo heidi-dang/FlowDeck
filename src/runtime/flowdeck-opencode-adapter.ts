@@ -40,6 +40,7 @@ import type { InternalMessageProvenance } from "../orchestration/persistence/rep
 import { ContinuationDispatcher, type ContinuationToken, getContinuationPrompt } from "../orchestration/services/continuation-policy";
 import { readySpecialistSpecs } from "../orchestration/routing/specialist-planner";
 import { repoMasterConsultationRequirement, type RepoMasterAdvice } from "../orchestration/repository/repo-master";
+import { createOpenCodeMessageId } from "./opencode-identifier";
 
 function specialistIdFromNativeTask(prompt?: string, description?: string): string | undefined {
   const match = `${description ?? ""}\n${prompt ?? ""}`.match(/\[FlowDeck specialist:([A-Za-z0-9-]+)\]/);
@@ -147,7 +148,7 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
   }
 
   private newInternalPromptMessageId(): string {
-    return `flowdeck-internal-${randomUUID()}`;
+    return createOpenCodeMessageId("descending");
   }
 
   private getPathFingerprint(relPath: string): string {
@@ -1494,6 +1495,7 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
     if (this.disposed) return;
     this.pendingFastDirectTurns.delete(sessionID);
     clearRouteDecision(sessionID);
+    this.runtime.internalMessageProvenanceRepo?.deleteForSession(sessionID);
 
     // If deleted session belongs to a child execution where cancellation was requested / pending
     const childRec = this.runtime.childExecutionLifecycleService?.getChildExecution({ childSessionId: sessionID });
