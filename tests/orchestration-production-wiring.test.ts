@@ -31,7 +31,12 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
 
   afterEach(async () => {
     await disposeProjectRuntime(testDir);
-    rmSync(testDir, { recursive: true, force: true });
+    // The fixture is unique per test. Bun's Windows WAL close can retain the
+    // main database handle, so leave process-scoped temporary cleanup to the
+    // runner there rather than weakening lifecycle assertions.
+    if (process.platform !== "win32") {
+      rmSync(testDir, { recursive: true, force: true });
+    }
   });
 
   // 1. plugin-passes-opencode-client-to-runtime

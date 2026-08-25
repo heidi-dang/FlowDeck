@@ -37,7 +37,11 @@ describe("Session and Context Persistence (Phase 3 Gap)", () => {
 
   afterEach(() => {
     closeConnection(testDb)
-    rmSync(testDirectory, { recursive: true, force: true })
+    // This fixture is unique per test. Bun's Windows WAL close can retain the
+    // main database handle, so the runner owns process-scoped temp cleanup.
+    if (process.platform !== "win32") {
+      rmSync(testDirectory, { recursive: true, force: true })
+    }
   })
 
   it("persists agent session and updates status and metrics", () => {

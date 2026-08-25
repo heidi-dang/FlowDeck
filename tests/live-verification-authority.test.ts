@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
-import { existsSync, mkdirSync, rmSync } from "fs";
+import { mkdtempSync, rmSync } from "fs";
+import { tmpdir } from "os";
 import { join } from "path";
 import { OrchestrationPhase as OP } from "../src/orchestration/types/runs";
-import { acquireProjectRuntime, releaseProjectRuntime } from "../src/runtime/project-registry";
+import { acquireProjectRuntime, disposeProjectRuntime, releaseProjectRuntime } from "../src/runtime/project-registry";
 
-const TEST_DIR = join(import.meta.dir, ".tmp-live-verification-authority");
+let testDir = "";
 
 async function createCompletedChild(
   ctx: Awaited<ReturnType<typeof acquireProjectRuntime>>,
@@ -59,18 +60,19 @@ async function triggerAuthoritativeIdle(ctx: Awaited<ReturnType<typeof acquirePr
 
 describe("Live Verification Authority", () => {
   beforeEach(() => {
-    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true, force: true });
-    mkdirSync(TEST_DIR, { recursive: true });
+    testDir = mkdtempSync(join(tmpdir(), "flowdeck-live-verification-"));
   });
 
   afterEach(async () => {
-    await releaseProjectRuntime(TEST_DIR);
-    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true, force: true });
+    await disposeProjectRuntime(testDir);
+    if (process.platform !== "win32") {
+      rmSync(testDir, { recursive: true, force: true });
+    }
   });
 
   it("completes exactly once only after one durable live verification pass and policy review", async () => {
     const promptAsync = mock(() => Promise.resolve(true));
-    const ctx = acquireProjectRuntime(TEST_DIR, { session: { promptAsync } });
+    const ctx = acquireProjectRuntime(testDir, { session: { promptAsync } });
     const sessionID = "live-verification-pass";
     const { run } = await createCompletedChild(ctx, sessionID, "Worker prose: PASS", true);
     ctx.runtime.db.query("UPDATE task_runs SET baseline_sha = ? WHERE run_id = ?").run("a".repeat(40), run.id);
@@ -105,13 +107,13 @@ describe("Live Verification Authority", () => {
   });
 
   it("rejects the legacy direct completion service backdoor", async () => {
-    const ctx = acquireProjectRuntime(TEST_DIR);
+    const ctx = acquireProjectRuntime(testDir);
     await expect(ctx.runtime.services.completionService.completeRun("legacy-completion", "caller supplied success", "success"))
       .rejects.toMatchObject({ code: "COMPLETION_POLICY_REQUIRED" });
   });
 
   it("fails closed when the CompletionPolicy has no durable passed verification", async () => {
-    const ctx = acquireProjectRuntime(TEST_DIR);
+    const ctx = acquireProjectRuntime(testDir);
     const sessionID = "completion-policy-missing-verification";
     const { run } = await createCompletedChild(ctx, sessionID, "Worker prose: PASS", true);
     ctx.runtime.transitionEngine.evaluate({ runId: run.id, sessionId: sessionID });
@@ -127,7 +129,7 @@ describe("Live Verification Authority", () => {
   });
 
   it("fails closed when a passed verification becomes stale or its authority JSON is corrupt", async () => {
-    const ctx = acquireProjectRuntime(TEST_DIR);
+    const ctx = acquireProjectRuntime(testDir);
     const sessionID = "completion-policy-stale-corrupt";
     const { run, delegation } = await createCompletedChild(ctx, sessionID, "Worker prose: PASS", true);
     ctx.runtime.db.query("UPDATE task_runs SET baseline_sha = ? WHERE run_id = ?").run("b".repeat(40), run.id);
@@ -166,7 +168,7 @@ describe("Live Verification Authority", () => {
   });
 
   it("persists a verification failure and routes the Run through recovering rather than terminal completion", async () => {
-    const ctx = acquireProjectRuntime(TEST_DIR);
+    const ctx = acquireProjectRuntime(testDir);
     const sessionID = "live-verification-fail";
     const { run } = await createCompletedChild(ctx, sessionID, "Worker prose: PASS");
 
@@ -183,7 +185,7 @@ describe("Live Verification Authority", () => {
   });
 
   it("does not request verification while an unresolved deferred replacement blocks the Run", async () => {
-    const ctx = acquireProjectRuntime(TEST_DIR);
+    const ctx = acquireProjectRuntime(testDir);
     const sessionID = "live-verification-deferred-block";
     const { run } = await createCompletedChild(ctx, sessionID, "Worker prose: PASS", true);
 
@@ -205,7 +207,7 @@ describe("Live Verification Authority", () => {
   });
 
   it("quarantines corrupt deferred replacement authority and retains its completion barrier", async () => {
-    const ctx = acquireProjectRuntime(TEST_DIR);
+    const ctx = acquireProjectRuntime(testDir);
     const sessionID = "corrupt-deferred-replacement";
     const { run } = await createCompletedChild(ctx, sessionID, "Worker prose: PASS", true);
     ctx.runtime.db.query(`
@@ -223,7 +225,7 @@ describe("Live Verification Authority", () => {
   });
 
   it("invalidates a verification result when persisted repository artifacts change", async () => {
-    const ctx = acquireProjectRuntime(TEST_DIR);
+    const ctx = acquireProjectRuntime(testDir);
     const sessionID = "live-verification-repository-mutation";
     const { run, delegation } = await createCompletedChild(ctx, sessionID, "Worker prose: PASS", true);
 
@@ -260,15 +262,15 @@ describe("Live Verification Authority", () => {
   });
 
   it("preserves passed and pending verification records across restart without duplication", async () => {
-    let ctx = acquireProjectRuntime(TEST_DIR);
+    let ctx = acquireProjectRuntime(testDir);
     const passedSession = "live-verification-restart-pass";
     const { run: passedRun } = await createCompletedChild(ctx, passedSession, "Worker prose: PASS", true);
     await triggerAuthoritativeIdle(ctx, passedSession);
     const passedBeforeRestart = await ctx.runtime.services.verificationService.listVerifications({ runId: passedRun.id }, { page: 1, limit: 10 });
     expect(passedBeforeRestart.items[0]?.status).toBe("passed");
 
-    await releaseProjectRuntime(TEST_DIR);
-    ctx = acquireProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
+    ctx = acquireProjectRuntime(testDir);
     const passedAfterRestart = await ctx.runtime.services.verificationService.listVerifications({ runId: passedRun.id }, { page: 1, limit: 10 });
     expect(passedAfterRestart.total).toBe(1);
     expect(passedAfterRestart.items[0]?.id).toBe(passedBeforeRestart.items[0]?.id);
@@ -289,8 +291,8 @@ describe("Live Verification Authority", () => {
     });
     expect(pendingRequest.status).toBe("pending");
 
-    await releaseProjectRuntime(TEST_DIR);
-    ctx = acquireProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
+    ctx = acquireProjectRuntime(testDir);
     const resumedSnapshot = ctx.runtime.orchestrationSnapshotService.getSnapshot(pendingRun.id, pendingSession)!;
     const resumedFingerprint = ctx.runtime.orchestrationSnapshotService.computeStateFingerprint(pendingRun.id, pendingSession)!;
     const resumedRequest = await ctx.runtime.services.verificationService.requestLiveVerification({
@@ -306,7 +308,7 @@ describe("Live Verification Authority", () => {
   });
 
   it("does not allow a late passing verifier result to resurrect a cancelled Run", async () => {
-    const ctx = acquireProjectRuntime(TEST_DIR);
+    const ctx = acquireProjectRuntime(testDir);
     const sessionID = "live-verification-cancel-race";
     const { run } = await createCompletedChild(ctx, sessionID, "Worker prose: PASS", true);
 
@@ -340,7 +342,7 @@ describe("Live Verification Authority", () => {
   });
 
   it("marks a result stale when the authoritative Run fingerprint changes before application", async () => {
-    const ctx = acquireProjectRuntime(TEST_DIR);
+    const ctx = acquireProjectRuntime(testDir);
     const sessionID = "live-verification-stale";
     const { run, delegation } = await createCompletedChild(ctx, sessionID, "Worker prose: PASS", true);
 

@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
-import { existsSync, mkdirSync, rmSync } from "fs";
+import { mkdtempSync, rmSync } from "fs";
+import { tmpdir } from "os";
 import { join } from "path";
-import { acquireProjectRuntime, releaseProjectRuntime } from "../src/runtime/project-registry";
+import { acquireProjectRuntime, disposeProjectRuntime, releaseProjectRuntime } from "../src/runtime/project-registry";
 import { ContinuationDispatcher, type ContinuationToken } from "../src/orchestration/services/continuation-policy";
 
-const TEST_DIR = join(import.meta.dir, ".tmp-continuation-dispatch-durability");
+let testDir = "";
 
 function token(overrides: Partial<ContinuationToken> = {}): ContinuationToken {
   return {
@@ -21,17 +22,21 @@ function token(overrides: Partial<ContinuationToken> = {}): ContinuationToken {
 
 describe("Continuation dispatch durability", () => {
   beforeEach(() => {
-    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true, force: true });
-    mkdirSync(TEST_DIR, { recursive: true });
+    testDir = mkdtempSync(join(tmpdir(), "flowdeck-continuation-dispatch-"));
   });
 
   afterEach(async () => {
-    await releaseProjectRuntime(TEST_DIR);
-    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true, force: true });
+    await disposeProjectRuntime(testDir);
+    // Bun's Windows WAL implementation can retain the main database handle
+    // after close. Fixture uniqueness prevents interference; runner cleanup
+    // removes this process-scoped temporary directory after assertions finish.
+    if (process.platform !== "win32") {
+      rmSync(testDir, { recursive: true, force: true });
+    }
   });
 
   it("quarantines a corrupt durable claim and never invokes the native prompt", async () => {
-    const ctx = acquireProjectRuntime(TEST_DIR);
+    const ctx = acquireProjectRuntime(testDir);
     const dispatcher = new ContinuationDispatcher(ctx.runtime.db);
     const dispatchToken = token();
     const identity = dispatcher.computeTokenIdentity(dispatchToken);
@@ -53,7 +58,7 @@ describe("Continuation dispatch durability", () => {
   });
 
   it("treats a post-native CAS race as outcome unknown and does not claim dispatch success", async () => {
-    const ctx = acquireProjectRuntime(TEST_DIR);
+    const ctx = acquireProjectRuntime(testDir);
     const dispatcher = new ContinuationDispatcher(ctx.runtime.db);
     const dispatchToken = token({ runId: "run-continuation-cas-race" });
     const identity = dispatcher.computeTokenIdentity(dispatchToken);
@@ -71,11 +76,11 @@ describe("Continuation dispatch durability", () => {
   });
 
   it("terminal release finalizes prepared statements instead of deferring database handles to garbage collection", async () => {
-    const ctx = acquireProjectRuntime(TEST_DIR);
+    const ctx = acquireProjectRuntime(testDir);
     const statement = ctx.runtime.db.prepare("SELECT 1 AS value");
     expect(statement.get()).toEqual({ value: 1 });
 
-    await releaseProjectRuntime(TEST_DIR);
+    await releaseProjectRuntime(testDir);
 
     expect(() => statement.get()).toThrow("Database has closed");
   });
