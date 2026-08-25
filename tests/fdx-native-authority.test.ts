@@ -293,6 +293,54 @@ describe("Milestone 10: Exact Per-Check Truth (Workstream E)", () => {
     expect(checkB?.passed).toBe(false)
     expect(checkC?.passed).toBe(true)
   })
+
+  it("refuses calibration signal (returns null) when per-check evidence is absent or empty", () => {
+    const sessionWithoutCheckResults = {
+      sessionId: "s2",
+      runId: "r2",
+      stateVersion: 1,
+      stateFingerprint: "fp2",
+      basePlanDigest: "bp2",
+      effectivePlanDigest: "ep2",
+      plan: {
+        planId: "p2",
+        runId: "r2",
+        basePlanDigest: "bp2",
+        effectivePlanDigest: "ep2",
+        checks: [
+          { checkId: "check-1", command: "test", args: [], rationale: "", mandatory: true, policyAdded: false },
+        ],
+        m11OverlayApplied: false,
+        m11CandidatesAvailable: [],
+        providerState: "native_vci_full" as const,
+        assurance: "EXACT" as const,
+      },
+      evidence: {
+        runId: "r2",
+        verificationRunId: "vr2",
+        stateFingerprint: "fp2",
+        outcome: "passed" as const,
+        assurance: "EXACT" as const,
+        checksPassed: 1,
+        checksFailed: 0,
+        checksSkipped: 0,
+        mandatoryPassed: true,
+        mandatoryFailed: false,
+        failureReasons: [],
+        evidenceDigest: "ev2",
+        persistenceFailed: false,
+        checkResults: [], // empty: per-check evidence missing
+        unresolvedObligations: [],
+        providerState: "native_vci_full" as const,
+      },
+      blockers: [],
+      status: "passed" as const,
+      createdAt: new Date().toISOString(),
+    }
+
+    const signal = buildCalibrationSignal(sessionWithoutCheckResults)
+    expect(signal).toBeNull()
+  })
 })
 
 describe("Cancellation, Restart & Concurrency Idempotency (Workstreams K & L)", () => {

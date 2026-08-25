@@ -191,23 +191,18 @@ export function buildCalibrationSignal(
   if (!session.evidence) return null
 
   // Milestone 10 exact truth: consume actual per-check execution evidence.
-  // Never collapse or fabricate per-check status from overall run status.
-  const checkResults = session.evidence.checkResults.length > 0
-    ? session.evidence.checkResults.map(r => ({
-        checkId: r.checkId,
-        passed: r.passed,
-        status: r.status,
-        durationMs: r.durationMs,
-      }))
-    : session.plan.checks.map(c => {
-        const failedReason = session.evidence?.failureReasons.find(r => r.includes(c.checkId))
-        const passed = !failedReason && (session.evidence?.mandatoryPassed ?? false)
-        return {
-          checkId: c.checkId,
-          passed,
-          status: passed ? "passed" : "failed",
-        }
-      })
+  // Never collapse or fabricate per-check status from aggregate run status.
+  // Invariant: no exact per-check evidence = no qualified M10 calibration signal.
+  if (!session.evidence.checkResults || session.evidence.checkResults.length === 0) {
+    return null
+  }
+
+  const checkResults = session.evidence.checkResults.map(r => ({
+    checkId: r.checkId,
+    passed: r.passed,
+    status: r.status,
+    durationMs: r.durationMs,
+  }))
 
   return {
     runId: session.runId,
