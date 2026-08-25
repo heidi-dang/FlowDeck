@@ -1,0 +1,114 @@
+{
+  "suite": "heidi-fdx-native-integration-final",
+  "harness": "H38",
+  "report": "R38",
+  "supersedes": [
+    "H37",
+    "R37"
+  ],
+  "timestamp": "2026-08-25T10:45:43.915Z",
+  "platform": "linux-x64",
+  "provenance": {
+    "binaryPath": "target/release/fdx",
+    "binarySha256": "0f818cbf6bfa78d5f9f62830fdf0dcee299badfa9de19a11620f8b7d6d8487b7",
+    "binarySize": 18159160,
+    "functionalSha": "7473cdba2ef17321bdee0169c039d61e8c44718e",
+    "binaryProfile": "release"
+  },
+  "scenarios": [
+    {
+      "id": "S1_CAPABILITY_NEGOTIATION_M12",
+      "title": "M12 Canonical Capability Negotiation",
+      "passed": true,
+      "durationMs": 4
+    },
+    {
+      "id": "S2_SIMPLE_TASK_FAST_BYPASS",
+      "title": "Non-Code & Simple Task Fast Classification",
+      "passed": true,
+      "durationMs": 0
+    },
+    {
+      "id": "S3_NATIVE_PLANNING_M6",
+      "title": "Milestone 6 Native Verification Planning",
+      "passed": true,
+      "durationMs": 29
+    },
+    {
+      "id": "S4_NATIVE_EXECUTION_M7_M8",
+      "title": "Milestones 7 & 8 Native Execution and Persistence",
+      "passed": true,
+      "durationMs": 22
+    },
+    {
+      "id": "S5_REAL_M8_PERSISTENCE_FAULT",
+      "title": "Milestone 8 Real Persistence Fault Injection & Containment",
+      "passed": true,
+      "durationMs": 28
+    },
+    {
+      "id": "S6_ATTESTATION_M9_V1",
+      "title": "Milestone 9 Content-Bound in-toto Attestation (Predicate v1)",
+      "passed": true,
+      "durationMs": 9
+    },
+    {
+      "id": "S7_CONTENT_BOUND_FINGERPRINT",
+      "title": "Content-Bound Working-Tree State Fingerprint Invariant",
+      "passed": true,
+      "durationMs": 14
+    },
+    {
+      "id": "S8_M10_EXACT_PER_CHECK_TRUTH",
+      "title": "Milestone 10 Exact Per-Check Truth & Missing-Evidence Refusal",
+      "passed": true,
+      "durationMs": 0
+    },
+    {
+      "id": "S9_M11_V2_LIFECYCLE",
+      "title": "M11 Policy Lifecycle & Predicate v2 Provenance Verification",
+      "passed": true,
+      "durationMs": 51
+    },
+    {
+      "id": "S10_VERIFICATION_SERVICE_COMPLETION_POLICY",
+      "title": "Production VerificationService & CompletionPolicy Authority Path",
+      "passed": true,
+      "durationMs": 385
+    },
+    {
+      "id": "S11_REPO_MASTER_SPECIALIST_ROUTING",
+      "title": "Complex Recovery Specialist Routing & Repo Master Fact Bridge",
+      "passed": true,
+      "durationMs": 0
+    },
+    {
+      "id": "S12_VERIFICATION_CANCELLATION",
+      "title": "Native Verification Cancellation & Process Lifecycle",
+      "passed": true,
+      "durationMs": 24
+    },
+    {
+      "id": "S13_RESTART_RECOVERY_DURABILITY",
+      "title": "Restart Recovery Durability & Bounded Convergence",
+      "passed": true,
+      "durationMs": 0
+    },
+    {
+      "id": "S14_CONCURRENCY_SINGLE_FLIGHT",
+      "title": "Real Concurrency & Duplicate-Trigger Single-Flight Idempotency",
+      "passed": true,
+      "durationMs": 168
+    },
+    {
+      "id": "S15_COMPATIBILITY_INVARIANTS",
+      "title": "Doctor & Capability Compatibility Invariants",
+      "passed": true,
+      "durationMs": 2
+    }
+  ],
+  "score": 10,
+  "maxScore": 10,
+  "status": "PASS",
+  "durationMs": 857
+}
