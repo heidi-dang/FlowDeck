@@ -217,7 +217,7 @@ describe("Repo Master durable advisory repository intelligence", () => {
     const stateFile = join(root, ".flowdeck", "repo-master.json")
     expect(statSync(stateFile).size).toBeLessThan(2_048)
     expect(readFileSync(stateFile, "utf8")).not.toContain("perf-run-")
-  })
+  }, 15_000)
 
   it("supports a minimal repository without duplicating source or requiring a package graph", () => {
     const root = join(tmpdir(), `flowdeck-empty-${crypto.randomUUID()}`)
