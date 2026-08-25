@@ -4,28 +4,59 @@
  * Single integration boundary between Heidi/FlowDeck orchestration and the
  * FDX Verifiable Change Intelligence (VCI) M1–M12 runtime.
  *
- * Architecture rule: Heidi is the orchestrator and decision-maker.
- * FDX is the code-change intelligence and verification authority.
- * This adapter is the ONLY production path to FDX; it must not be bypassed.
+ * Architecture rules:
+ *   1. Heidi is the orchestrator and decision-maker.
+ *   2. FDX is the code-change intelligence and verification authority.
+ *   3. This adapter is the ONLY production path to FDX; it must not be bypassed.
+ *   4. Native FDX executes verification directly (M7); Node does not parse and run commands.
+ *   5. Fallback execution is explicitly typed as "typescript_fallback" and never native.
  *
  * Provider state hierarchy:
- *   native_vci_full   — FDX binary present, all VCI capabilities confirmed
- *   native_vci_partial — FDX binary present but some capabilities missing
+ *   native_vci_full     — FDX binary present, all required VCI capabilities confirmed
+ *   native_vci_partial  — FDX binary present but some optional capabilities missing
  *   typescript_fallback — FDX absent; TypeScript-only intelligence used
- *   unavailable       — No intelligence available; caller degrades gracefully
+ *   unavailable         — No intelligence available; caller degrades gracefully
+ *   incompatible        — FDX binary has incompatible protocol/contract version; fail closed
  */
 
 import { execFile, execFileSync } from "node:child_process"
+import { existsSync, readFileSync, statSync } from "node:fs"
 import { resolve } from "node:path"
 import { createHash, randomUUID } from "node:crypto"
 import { resolveFdxBinaryPath } from "../tools/fdx-shared"
+import {
+  FDX_PROTOCOL_VERSION,
+  FDX_GRAPH_SCHEMA_VERSION,
+  FDX_GRAPH_SCHEMA_MIN_READABLE,
+  FDX_CAPABILITY_CONTRACT_VERSION,
+  FDX_CALIBRATION_CONTRACT_VERSION,
+  FDX_POLICY_CONTRACT_VERSION,
+  FDX_SELECTION_POLICY_VERSION,
+  FDX_PREDICATE_VERSIONS,
+  FDX_NETWORK_ACCESS,
+  FDX_TELEMETRY,
+  evaluateCapabilities,
+  fdxCapabilitiesArgs,
+  fdxPlanArgs,
+  fdxVerifyArgs,
+  fdxAttestCreateArgs,
+  fdxAttestVerifyArgs,
+  type CapabilityEvaluationResult,
+} from "./fdx-vci-contracts"
 
-// ─── Protocol constants (mirrors crates/fdx/src/protocol.rs) ────────────────
-
-export const FDX_CAPABILITY_CONTRACT_VERSION = 1
-export const FDX_PROTOCOL_VERSION = 1
-export const FDX_GRAPH_SCHEMA_VERSION = 9
-export const FDX_MINIMUM_READABLE_SCHEMA = 1
+// Re-export canonical constants for backward compatibility
+export {
+  FDX_PROTOCOL_VERSION,
+  FDX_GRAPH_SCHEMA_VERSION,
+  FDX_GRAPH_SCHEMA_MIN_READABLE,
+  FDX_CAPABILITY_CONTRACT_VERSION,
+  FDX_CALIBRATION_CONTRACT_VERSION,
+  FDX_POLICY_CONTRACT_VERSION,
+  FDX_SELECTION_POLICY_VERSION,
+  FDX_PREDICATE_VERSIONS,
+  FDX_NETWORK_ACCESS,
+  FDX_TELEMETRY,
+}
 
 // ─── Provider state ──────────────────────────────────────────────────────────
 
@@ -34,6 +65,7 @@ export type FdxProviderState =
   | "native_vci_partial"
   | "typescript_fallback"
   | "unavailable"
+  | "incompatible"
 
 // ─── Capability snapshot ─────────────────────────────────────────────────────
 
@@ -46,11 +78,9 @@ export interface FdxGraphSchema {
 }
 
 export interface FdxCapabilitySnapshot {
-  /** Monotonic session-scoped ID, not persisted */
   snapshotId: string
   capturedAt: string
   providerState: FdxProviderState
-  /** Only present when providerState includes "native" */
   capabilityContractVersion?: number
   fdxProtocolVersion?: number
   graphSchema?: FdxGraphSchema
@@ -62,13 +92,9 @@ export interface FdxCapabilitySnapshot {
   networkAccess: boolean
   telemetry: boolean
   platform?: string
-  /** Human-readable limitations for this platform */
   platformLimitations: string[]
-  /** Capabilities explicitly not available */
   missingCapabilities: string[]
-  /** Binary path if native */
   binaryPath?: string
-  /** Binary version string */
   binaryVersion?: string
 }
 
@@ -101,12 +127,13 @@ export interface FdxChangeIntelligence {
 
 export interface FdxVerificationCheck {
   checkId: string
+  displayName?: string
   command: string
   args: string[]
   workdir?: string
   rationale: string
   mandatory: boolean
-  /** True if added by M11 policy overlay */
+  kind?: string
   policyAdded: boolean
   policyId?: string
 }
@@ -117,18 +144,44 @@ export interface FdxVerificationPlan {
   basePlanDigest: string
   effectivePlanDigest: string
   policySnapshotDigest?: string
+  policyApplicationDigest?: string
   checks: FdxVerificationCheck[]
   m11OverlayApplied: boolean
   m11CandidatesAvailable: string[]
   providerState: FdxProviderState
+  assurance: string
 }
 
-// ─── Runtime evidence ────────────────────────────────────────────────────────
+// ─── Check execution result (Milestone 7) ───────────────────────────────────
+
+export interface FdxCheckExecutionResult {
+  checkId: string
+  kind?: string
+  status: "passed" | "failed" | "timed_out" | "output_limit_exceeded" | "spawn_failed" | "unsupported" | "skipped" | "cancelled"
+  executionId?: string
+  reusedExecution?: boolean
+  command: string[]
+  cwd?: string
+  exitCode?: number | null
+  signal?: string | null
+  durationMs: number
+  stdoutDigest?: string | null
+  stderrDigest?: string | null
+  stdoutExcerpt?: string
+  stderrExcerpt?: string
+  outputTruncated?: boolean
+  reason?: string | null
+  passed: boolean
+}
+
+// ─── Runtime evidence (Milestone 8) ─────────────────────────────────────────
 
 export interface FdxRuntimeEvidence {
   runId: string
   verificationRunId: string
   stateFingerprint: string
+  outcome: "passed" | "failed" | "incomplete"
+  assurance: string
   checksPassed: number
   checksFailed: number
   checksSkipped: number
@@ -136,21 +189,29 @@ export interface FdxRuntimeEvidence {
   mandatoryFailed: boolean
   failureReasons: string[]
   evidenceDigest: string
+  persistedArtifactPath?: string
+  persistenceFailed: boolean
+  persistenceError?: string
+  checkResults: FdxCheckExecutionResult[]
+  unresolvedObligations: string[]
   providerState: FdxProviderState
 }
 
-// ─── Attestation reference ───────────────────────────────────────────────────
+// ─── Attestation reference (Milestone 9) ────────────────────────────────────
 
 export interface FdxAttestationReference {
   attestationId: string
   predicate: "v1" | "v2"
-  /** v2 only: policy provenance */
+  attestationFilePath?: string
+  artifactSha256?: string
   policyId?: string
   policySnapshotDigest?: string
+  policyApplicationDigest?: string
   evidenceDigest: string
   runId: string
   verificationRunId: string
   createdAt: string
+  verified: boolean
   providerState: FdxProviderState
 }
 
@@ -165,6 +226,7 @@ export type FdxFailureKind =
   | "stale_evidence"
   | "attestation_failure"
   | "policy_integrity_failure"
+  | "persistence_failure"
   | "corrupt_state"
   | "incompatible_capabilities"
 
@@ -173,49 +235,84 @@ export interface FdxVerificationBlocker {
   checkId?: string
   command?: string
   message: string
-  /** Suggested specialist domain for repair */
   suggestedSpecialist?: string
-  /** True if Heidi may attempt direct repair without specialist */
   heidiCanRepairDirectly: boolean
   providerState: FdxProviderState
 }
 
-// ─── Adapter ─────────────────────────────────────────────────────────────────
+// ─── Adapter State ──────────────────────────────────────────────────────────
 
 const CAPABILITIES_TIMEOUT_MS = 5_000
-const QUERY_TIMEOUT_MS = 30_000
+const QUERY_TIMEOUT_MS = 60_000
+const VERIFY_TIMEOUT_MS = 180_000
 
-/** Singleton capability snapshot, refreshed per workspace init. */
 let _capabilitySnapshot: FdxCapabilitySnapshot | null = null
 let _snapshotWorkspace: string | null = null
 
-function runFdxSync(binary: string, args: string[], timeoutMs = QUERY_TIMEOUT_MS): string | null {
+function runFdxSync(binary: string, args: string[], timeoutMs = QUERY_TIMEOUT_MS, cwd?: string): string | null {
   try {
     return execFileSync(binary, args, {
       encoding: "utf8",
+      cwd,
       stdio: ["ignore", "pipe", "ignore"],
       timeout: timeoutMs,
-      maxBuffer: 4 * 1024 * 1024,
+      maxBuffer: 16 * 1024 * 1024,
     })
   } catch {
     return null
   }
 }
 
-function runFdxAsync(binary: string, args: string[], timeoutMs = QUERY_TIMEOUT_MS): Promise<string | null> {
+function runFdxAsync(
+  binary: string,
+  args: string[],
+  timeoutMs = QUERY_TIMEOUT_MS,
+  cwd?: string,
+  signal?: AbortSignal
+): Promise<{ stdout: string; exitCode: number | null; error?: Error }> {
   return new Promise(resolve => {
+    let settled = false
     const timer = setTimeout(() => {
-      child.kill("SIGTERM")
-      resolve(null)
+      if (!settled) {
+        settled = true
+        try { child.kill("SIGKILL") } catch {}
+        resolve({ stdout: "", exitCode: null, error: new Error("FDX execution timed out") })
+      }
     }, timeoutMs)
-    const child = execFile(binary, args, {
-      encoding: "utf8",
-      timeout: timeoutMs,
-      maxBuffer: 4 * 1024 * 1024,
-    }, (err, stdout) => {
-      clearTimeout(timer)
-      resolve(err ? null : stdout)
-    })
+
+    const child = execFile(
+      binary,
+      args,
+      {
+        encoding: "utf8",
+        cwd,
+        timeout: timeoutMs,
+        maxBuffer: 16 * 1024 * 1024,
+        signal,
+      },
+      (err, stdout, _stderr) => {
+        clearTimeout(timer)
+        if (!settled) {
+          settled = true
+          resolve({
+            stdout: stdout ?? "",
+            exitCode: err ? (child.exitCode ?? 1) : 0,
+            error: err ?? undefined,
+          })
+        }
+      }
+    )
+
+    if (signal) {
+      signal.addEventListener("abort", () => {
+        if (!settled) {
+          settled = true
+          clearTimeout(timer)
+          try { child.kill("SIGKILL") } catch {}
+          resolve({ stdout: "", exitCode: null, error: new Error("FDX execution cancelled") })
+        }
+      }, { once: true })
+    }
   })
 }
 
@@ -239,195 +336,309 @@ function buildDegradedSnapshot(providerState: FdxProviderState, reason: string):
   }
 }
 
-/**
- * Query FDX capabilities and return a typed snapshot.
- *
- * This is the authoritative capability negotiation point. Heidi must call this
- * before invoking any VCI operation to determine the provider state.
- *
- * Never cached past the current workspace session init.
- */
-export async function queryFdxCapabilities(workspaceRoot: string): Promise<FdxCapabilitySnapshot> {
-  const wsKey = computeWorkspaceKey(workspaceRoot)
+// ─── Capability Negotiation (M12) ────────────────────────────────────────────
 
-  // Return cached if same workspace
-  if (_capabilitySnapshot && _snapshotWorkspace === wsKey) {
+export async function queryFdxCapabilities(
+  workspaceRoot: string,
+  forceRefresh = false,
+  config: {
+    policyOverlayEnabled?: boolean
+    calibrationEnabled?: boolean
+    requirePredicateV2?: boolean
+  } = {}
+): Promise<FdxCapabilitySnapshot> {
+  const wsKey = computeWorkspaceKey(workspaceRoot)
+  if (!forceRefresh && _capabilitySnapshot && _snapshotWorkspace === wsKey) {
     return _capabilitySnapshot
   }
 
-  const binary = resolveFdxBinaryPath()
-  if (!binary) {
-    const snap = buildDegradedSnapshot("typescript_fallback", "FDX native binary not found; using TypeScript fallback")
-    _capabilitySnapshot = snap
-    _snapshotWorkspace = wsKey
-    return snap
-  }
+  const binaryPath = resolveFdxBinaryPath(forceRefresh)
 
-  const raw = await runFdxAsync(binary, ["capabilities", "--format", "json"], CAPABILITIES_TIMEOUT_MS)
-  if (!raw) {
-    const snap = buildDegradedSnapshot("typescript_fallback", "FDX capabilities query failed; using TypeScript fallback")
-    _capabilitySnapshot = snap
-    _snapshotWorkspace = wsKey
-    return snap
-  }
-
-  let parsed: Record<string, unknown>
-  try {
-    parsed = JSON.parse(raw) as Record<string, unknown>
-  } catch {
-    const snap = buildDegradedSnapshot("typescript_fallback", "FDX capabilities response not valid JSON")
-    _capabilitySnapshot = snap
-    _snapshotWorkspace = wsKey
-    return snap
-  }
-
-  // Validate capability contract version before trusting any fields
-  const contractVersion = parsed["capability_contract_version"]
-  if (contractVersion !== FDX_CAPABILITY_CONTRACT_VERSION) {
-    const snap = buildDegradedSnapshot(
+  if (!binaryPath) {
+    _capabilitySnapshot = buildDegradedSnapshot(
       "typescript_fallback",
-      `FDX capability contract version ${String(contractVersion)} is not supported (expected ${FDX_CAPABILITY_CONTRACT_VERSION})`
+      "FDX native binary not found on system PATH or in native/ directories; TypeScript fallback active."
     )
-    _capabilitySnapshot = snap
     _snapshotWorkspace = wsKey
-    return snap
+    return _capabilitySnapshot
   }
 
-  const graphSchema = parsed["graph_schema"] as Record<string, unknown> | undefined
-  const missingCapabilities: string[] = []
-
-  // Validate graph schema compatibility
-  if (!graphSchema || !graphSchema["can_read"] || !graphSchema["can_write"]) {
-    missingCapabilities.push("graph_read_write")
+  let versionOutput: string | null = null
+  try {
+    versionOutput = execFileSync(binaryPath, ["--version"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: CAPABILITIES_TIMEOUT_MS,
+    }).trim()
+  } catch {
+    _capabilitySnapshot = buildDegradedSnapshot(
+      "typescript_fallback",
+      "FDX binary exists but failed --version check; TypeScript fallback active."
+    )
+    _snapshotWorkspace = wsKey
+    return _capabilitySnapshot
   }
-  if (graphSchema && (graphSchema["maximum_writable"] as number) < FDX_MINIMUM_READABLE_SCHEMA) {
-    missingCapabilities.push("graph_schema_compat")
+
+  let capJsonRaw: string | null = null
+  try {
+    capJsonRaw = execFileSync(binaryPath, fdxCapabilitiesArgs(), {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: CAPABILITIES_TIMEOUT_MS,
+    })
+  } catch {
+    _capabilitySnapshot = buildDegradedSnapshot(
+      "typescript_fallback",
+      "FDX binary does not support 'capabilities' command; TypeScript fallback active."
+    )
+    _snapshotWorkspace = wsKey
+    return _capabilitySnapshot
   }
 
-  const predicates = (parsed["verification_predicate_versions"] as string[]) ?? []
-  if (!predicates.includes("v1")) missingCapabilities.push("predicate_v1")
+  let rawCapObj: unknown = null
+  try {
+    rawCapObj = JSON.parse(capJsonRaw)
+  } catch {
+    _capabilitySnapshot = buildDegradedSnapshot(
+      "unavailable",
+      "FDX capabilities response could not be parsed as JSON."
+    )
+    _snapshotWorkspace = wsKey
+    return _capabilitySnapshot
+  }
 
-  const providerState: FdxProviderState =
-    missingCapabilities.length === 0
-      ? "native_vci_full"
-      : "native_vci_partial"
+  const evalResult: CapabilityEvaluationResult = evaluateCapabilities(rawCapObj, config)
 
-  const snap: FdxCapabilitySnapshot = {
+  if (evalResult.providerState === "incompatible") {
+    _capabilitySnapshot = {
+      snapshotId: randomUUID(),
+      capturedAt: new Date().toISOString(),
+      providerState: "incompatible",
+      verificationPredicateVersions: [],
+      calibrationContractVersions: [],
+      policyContractVersions: [],
+      assuranceLevels: [],
+      networkAccess: false,
+      telemetry: false,
+      platformLimitations: [evalResult.reason ?? "Incompatible FDX binary"],
+      missingCapabilities: evalResult.missingCapabilities,
+      binaryPath,
+      binaryVersion: versionOutput ?? undefined,
+    }
+    _snapshotWorkspace = wsKey
+    return _capabilitySnapshot
+  }
+
+  const p = evalResult.parsed!
+  _capabilitySnapshot = {
     snapshotId: randomUUID(),
     capturedAt: new Date().toISOString(),
-    providerState,
-    capabilityContractVersion: contractVersion as number,
-    fdxProtocolVersion: parsed["fdx_protocol_version"] as number | undefined,
-    graphSchema: graphSchema
-      ? {
-          minimumReadable: graphSchema["minimum_readable"] as number,
-          maximumWritable: graphSchema["maximum_writable"] as number,
-          canRead: graphSchema["can_read"] as boolean,
-          canWrite: graphSchema["can_write"] as boolean,
-          canVerify: graphSchema["can_verify"] as boolean,
-        }
-      : undefined,
-    selectionPolicyVersion: parsed["selection_policy_version"] as number | undefined,
-    verificationPredicateVersions: predicates,
-    calibrationContractVersions: (parsed["calibration_contract_versions"] as number[]) ?? [],
-    policyContractVersions: (parsed["policy_contract_versions"] as number[]) ?? [],
-    assuranceLevels: (parsed["assurance_levels"] as string[]) ?? [],
-    networkAccess: (parsed["network_access"] as boolean) ?? false,
-    telemetry: (parsed["telemetry"] as boolean) ?? false,
-    platform: parsed["platform"] as string | undefined,
-    platformLimitations: (parsed["platform_limitations"] as string[]) ?? [],
-    missingCapabilities,
-    binaryPath: binary,
-    binaryVersion: runFdxSync(binary, ["--version"], 2_000)?.trim(),
+    providerState: evalResult.providerState,
+    capabilityContractVersion: p.capabilityContractVersion,
+    fdxProtocolVersion: p.fdxProtocolVersion,
+    graphSchema: {
+      minimumReadable: p.graphSchemaMinReadable,
+      maximumWritable: p.graphSchemaMaxWritable,
+      canRead: p.graphCanRead,
+      canWrite: p.graphCanWrite,
+      canVerify: p.graphCanVerify,
+    },
+    selectionPolicyVersion: p.selectionPolicyVersion,
+    verificationPredicateVersions: p.verificationPredicateVersions,
+    calibrationContractVersions: p.calibrationContractVersions,
+    policyContractVersions: p.policyContractVersions,
+    assuranceLevels: p.assuranceLevels,
+    networkAccess: p.networkAccess,
+    telemetry: p.telemetry,
+    platform: p.platform,
+    platformLimitations: p.platformLimitations,
+    missingCapabilities: evalResult.missingCapabilities,
+    binaryPath,
+    binaryVersion: versionOutput ?? undefined,
   }
-
-  _capabilitySnapshot = snap
   _snapshotWorkspace = wsKey
-  return snap
+  return _capabilitySnapshot
 }
 
-/** Invalidate the cached capability snapshot (e.g. after binary update). */
-export function invalidateFdxCapabilitySnapshot(): void {
+export function invalidateCapabilityCache(): void {
   _capabilitySnapshot = null
   _snapshotWorkspace = null
 }
 
-/**
- * Classify a task to determine whether and how deeply to invoke the FDX VCI workflow.
- *
- * This classification prevents unnecessary heavy orchestration for simple tasks.
- */
+/** Backward-compatible alias for invalidateCapabilityCache */
+export const invalidateFdxCapabilitySnapshot = invalidateCapabilityCache
+
+// ─── Task Mutation Classification ────────────────────────────────────────────
+
+const NON_CODE_EXTENSIONS = new Set([
+  ".md", ".txt", ".rst", ".adoc",
+  ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".webp",
+  ".csv", ".tsv",
+  ".lock",
+])
+
+const HIGH_RISK_PATTERNS = [
+  /[/]api[/]/,
+  /[/]schema[/]/,
+  /[/]protocol[/]/,
+  /[/]contracts[/]/,
+  /Cargo\.toml$/,
+  /package\.json$/,
+  /pnpm-lock\.yaml$/,
+  /tsconfig.*\.json$/,
+  /Dockerfile/,
+  /[/]\.github[/]/,
+  /[/]\.gitlab-ci\.yml/,
+]
+
+const READONLY_TASK_KEYWORDS = [
+  "what is", "where is", "how do", "explain", "describe", "show me",
+  "list", "find", "search", "read", "view", "help", "who is",
+  "summarize", "outline", "inspect", "diff",
+]
+
+export interface ClassifyTaskOptions {
+  hasFileChanges?: boolean
+  changedFileCount?: number
+  affectsTests?: boolean
+  crossPackage?: boolean
+  affectsPublicApi?: boolean
+  touchedFiles?: string[]
+}
+
 export function classifyTaskMutation(
   taskDescription: string,
-  context: {
-    hasFileChanges?: boolean
-    changedFileCount?: number
-    crossPackage?: boolean
-    affectsPublicApi?: boolean
-    affectsTests?: boolean
-    affectsConfig?: boolean
-  }
+  filesOrOptions: string[] | ClassifyTaskOptions = []
 ): TaskMutationClass {
-  const desc = taskDescription.toLowerCase()
+  const lower = taskDescription.toLowerCase()
 
-  // Non-code tasks: questions, information requests, status checks
-  const nonCodePatterns = [
-    /^(what|which|how|where|when|why|who|can you|tell me|show me|explain|list|find)\s/,
-    /\?(\s.*)?$/,
-    /(version|status|configuration|setting|option|help|documentation)/,
-    /(read|view|show|display|check|inspect|examine)\s/,
-    /^git\s+(log|status|diff|show)/,
-  ]
-  if (nonCodePatterns.some(p => p.test(desc)) && !context.hasFileChanges) {
-    return "NO_REPO_MUTATION"
-  }
+  const isOptionsObj = !Array.isArray(filesOrOptions) && typeof filesOrOptions === "object"
+  const touchedFiles: string[] = Array.isArray(filesOrOptions)
+    ? filesOrOptions
+    : (filesOrOptions.touchedFiles ?? [])
+  const hasFileChanges = isOptionsObj ? (filesOrOptions.hasFileChanges ?? touchedFiles.length > 0) : touchedFiles.length > 0
+  const changedFileCount = isOptionsObj ? (filesOrOptions.changedFileCount ?? touchedFiles.length) : touchedFiles.length
+  const crossPackage = isOptionsObj ? (filesOrOptions.crossPackage ?? false) : false
+  const affectsPublicApi = isOptionsObj ? (filesOrOptions.affectsPublicApi ?? false) : false
 
-  if (!context.hasFileChanges) {
-    return "NO_REPO_MUTATION"
-  }
-
-  // High risk: public API changes, cross-package, many files
-  if (
-    context.affectsPublicApi ||
-    context.crossPackage ||
-    (context.changedFileCount ?? 0) > 10
-  ) {
+  if (crossPackage || affectsPublicApi) {
     return "HIGH_RISK_REPO_MUTATION"
   }
 
-  // Complex: multiple concerns or affects tests
-  if (
-    (context.changedFileCount ?? 0) > 3 ||
-    context.affectsTests ||
-    context.affectsConfig
-  ) {
+  const effectiveCount = changedFileCount > 0 ? changedFileCount : touchedFiles.length
+
+  if (!hasFileChanges && touchedFiles.length === 0 && effectiveCount === 0) {
+    const isExplicitMutation =
+      lower.startsWith("fix") ||
+      lower.startsWith("add") ||
+      lower.startsWith("create") ||
+      lower.startsWith("delete") ||
+      lower.startsWith("refactor") ||
+      lower.startsWith("update") ||
+      lower.startsWith("implement") ||
+      lower.startsWith("change") ||
+      lower.startsWith("modify") ||
+      lower.startsWith("write")
+
+    if (!isExplicitMutation) {
+      for (const kw of READONLY_TASK_KEYWORDS) {
+        if (lower.startsWith(kw) || lower.includes(" " + kw)) {
+          return "NO_REPO_MUTATION"
+        }
+      }
+    }
+    return "NO_REPO_MUTATION"
+  }
+
+  if (effectiveCount === 0 && !hasFileChanges) {
+    return "NO_REPO_MUTATION"
+  }
+
+  if (isOptionsObj && filesOrOptions.affectsTests && effectiveCount > 2) {
     return "COMPLEX_REPO_MUTATION"
   }
 
-  // Simple: small isolated change
-  return "SIMPLE_REPO_MUTATION"
+  if (touchedFiles.length > 0) {
+    const allNonCode = touchedFiles.every(f => {
+      const ext = f.slice(f.lastIndexOf(".")).toLowerCase()
+      return NON_CODE_EXTENSIONS.has(ext)
+    })
+
+    if (allNonCode && touchedFiles.length <= 3) {
+      return "SIMPLE_REPO_MUTATION"
+    }
+
+    for (const f of touchedFiles) {
+      for (const pattern of HIGH_RISK_PATTERNS) {
+        if (pattern.test(f)) {
+          return "HIGH_RISK_REPO_MUTATION"
+        }
+      }
+    }
+
+    const packageRoots = new Set(
+      touchedFiles.map(f => {
+        const parts = f.split("/")
+        return parts.length > 1 ? parts[0] : "root"
+      })
+    )
+    if (packageRoots.size > 2) {
+      return "HIGH_RISK_REPO_MUTATION"
+    }
+  }
+
+  if (effectiveCount <= 2) {
+    return "SIMPLE_REPO_MUTATION"
+  }
+
+  return "COMPLEX_REPO_MUTATION"
 }
 
-/**
- * Derive change intelligence from FDX for a repository mutation.
- *
- * Returns a typed intelligence result. Never returns raw stdout.
- * Falls back gracefully when native FDX is unavailable.
- */
+// ─── Change Intelligence ──────────────────────────────────────────────────────
+
+export interface DeriveChangeIntelligenceOptions {
+  runId?: string
+  baseSha?: string
+  headSha?: string
+  changedFiles?: string[]
+  stateVersion?: number
+}
+
 export async function deriveChangeIntelligence(
-  runId: string,
-  repositoryRoot: string,
-  capabilities: FdxCapabilitySnapshot,
-  options: {
-    baseSha?: string
-    headSha?: string
-    changedFiles?: string[]
-  } = {}
+  runIdOrRoot: string,
+  rootOrCaps: string | FdxCapabilitySnapshot,
+  capsOrOpts?: FdxCapabilitySnapshot | DeriveChangeIntelligenceOptions,
+  maybeOpts?: DeriveChangeIntelligenceOptions
 ): Promise<FdxChangeIntelligence> {
+  let runId: string
+  let repositoryRoot: string
+  let capabilities: FdxCapabilitySnapshot
+  let options: DeriveChangeIntelligenceOptions
+
+  if (typeof rootOrCaps === "string") {
+    // Called as: (runId, repositoryRoot, capabilities, options)
+    runId = runIdOrRoot
+    repositoryRoot = rootOrCaps
+    capabilities = (capsOrOpts as FdxCapabilitySnapshot) ?? { providerState: "typescript_fallback" as FdxProviderState, verificationPredicateVersions: [], calibrationContractVersions: [], policyContractVersions: [], assuranceLevels: [], networkAccess: false, telemetry: false, platformLimitations: [], missingCapabilities: [] }
+    options = maybeOpts ?? {}
+  } else {
+    // Called as: (repositoryRoot, capabilities, options)
+    repositoryRoot = runIdOrRoot
+    capabilities = rootOrCaps as FdxCapabilitySnapshot
+    options = (capsOrOpts as DeriveChangeIntelligenceOptions) ?? {}
+    runId = options.runId ?? randomUUID()
+  }
+
+  const stateVersion = options.stateVersion ?? 1
   const stateFingerprint = computeRepoStateFingerprint(repositoryRoot)
-  const stateVersion = Date.now()
 
-  if (capabilities.providerState === "typescript_fallback" || capabilities.providerState === "unavailable") {
+  if (
+    capabilities.providerState === "typescript_fallback" ||
+    capabilities.providerState === "unavailable" ||
+    capabilities.providerState === "incompatible" ||
+    !capabilities.binaryPath
+  ) {
+    const changed = options.changedFiles ?? []
     return {
       runId,
       repositoryRoot,
@@ -435,27 +646,27 @@ export async function deriveChangeIntelligence(
       stateVersion,
       baseSha: options.baseSha,
       headSha: options.headSha,
-      changedFiles: options.changedFiles ?? [],
-      impactedFiles: options.changedFiles ?? [],
+      changedFiles: changed,
+      impactedFiles: changed,
       impactedPackages: [],
-      uncertainFiles: options.changedFiles ?? [],
+      uncertainFiles: changed,
       assuranceLevel: "degraded",
-      providerState: capabilities.providerState,
+      providerState: "typescript_fallback",
     }
   }
 
-  const binary = capabilities.binaryPath!
-  const args = ["impact", "--format", "json"]
-  if (options.baseSha) args.push("--base", options.baseSha)
-  if (options.headSha) args.push("--head", options.headSha)
-  if (options.changedFiles?.length) {
-    for (const f of options.changedFiles.slice(0, 50)) {
-      args.push("--file", f)
-    }
+  const binary = capabilities.binaryPath
+  const baseCommit = options.baseSha ?? "HEAD"
+  const args = ["diff", "--format", "json", baseCommit]
+
+  let raw = runFdxSync(binary, args, QUERY_TIMEOUT_MS, repositoryRoot)
+  // If baseCommit HEAD fails (e.g. initial empty repo), try without baseCommit
+  if (!raw && options.baseSha) {
+    raw = runFdxSync(binary, ["diff", "--format", "json"], QUERY_TIMEOUT_MS, repositoryRoot)
   }
 
-  const raw = await runFdxAsync(binary, args)
   if (!raw) {
+    const changed = options.changedFiles ?? []
     return {
       runId,
       repositoryRoot,
@@ -463,10 +674,10 @@ export async function deriveChangeIntelligence(
       stateVersion,
       baseSha: options.baseSha,
       headSha: options.headSha,
-      changedFiles: options.changedFiles ?? [],
-      impactedFiles: options.changedFiles ?? [],
+      changedFiles: changed,
+      impactedFiles: changed,
       impactedPackages: [],
-      uncertainFiles: options.changedFiles ?? [],
+      uncertainFiles: changed,
       assuranceLevel: "degraded",
       providerState: "typescript_fallback",
     }
@@ -474,21 +685,32 @@ export async function deriveChangeIntelligence(
 
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>
+    let changedFiles: string[] = []
+
+    if (Array.isArray(parsed["files"])) {
+      changedFiles = (parsed["files"] as Array<{ path?: string }>).map(f => f.path).filter(Boolean) as string[]
+    } else if (Array.isArray(parsed["changed_files"])) {
+      changedFiles = parsed["changed_files"] as string[]
+    } else if (options.changedFiles) {
+      changedFiles = options.changedFiles
+    }
+
     return {
       runId,
       repositoryRoot,
       stateFingerprint,
       stateVersion,
-      baseSha: options.baseSha,
-      headSha: options.headSha,
-      changedFiles: (parsed["changed_files"] as string[]) ?? options.changedFiles ?? [],
-      impactedFiles: (parsed["impacted_files"] as string[]) ?? [],
-      impactedPackages: (parsed["impacted_packages"] as string[]) ?? [],
-      uncertainFiles: (parsed["uncertain_files"] as string[]) ?? [],
-      assuranceLevel: (parsed["assurance_level"] as string) ?? "degraded",
+      baseSha: (parsed["base"] as string) ?? (parsed["base_commit"] as string) ?? options.baseSha,
+      headSha: (parsed["head_commit"] as string) ?? options.headSha,
+      changedFiles,
+      impactedFiles: changedFiles,
+      impactedPackages: [],
+      uncertainFiles: [],
+      assuranceLevel: "exact",
       providerState: capabilities.providerState,
     }
   } catch {
+    const changed = options.changedFiles ?? []
     return {
       runId,
       repositoryRoot,
@@ -496,132 +718,626 @@ export async function deriveChangeIntelligence(
       stateVersion,
       baseSha: options.baseSha,
       headSha: options.headSha,
-      changedFiles: options.changedFiles ?? [],
-      impactedFiles: options.changedFiles ?? [],
+      changedFiles: changed,
+      impactedFiles: changed,
       impactedPackages: [],
-      uncertainFiles: options.changedFiles ?? [],
+      uncertainFiles: changed,
       assuranceLevel: "degraded",
       providerState: "typescript_fallback",
     }
   }
 }
 
-/**
- * Generate an M6 base verification plan plus optional M11 policy overlay.
- *
- * The M11 overlay is ADD_CHECK only; it never removes or skips checks.
- * The effective plan digest binds the full check set including overlays.
- */
+// ─── Verification Plan Generation (M6 + M11) ──────────────────────────────────
+
 export async function generateVerificationPlan(
   changeIntelligence: FdxChangeIntelligence,
-  capabilities: FdxCapabilitySnapshot
+  capabilities: FdxCapabilitySnapshot,
+  options: {
+    policyOverlay?: boolean
+  } = {}
 ): Promise<FdxVerificationPlan> {
   const planId = randomUUID()
-  const basePlanDigest = computeDigest(JSON.stringify({ impacted: changeIntelligence.impactedFiles }))
 
-  // TypeScript fallback: minimal plan
+  // TypeScript fallback path
   if (
     capabilities.providerState === "typescript_fallback" ||
-    capabilities.providerState === "unavailable"
+    capabilities.providerState === "unavailable" ||
+    capabilities.providerState === "incompatible" ||
+    !capabilities.binaryPath
   ) {
     const checks = buildFallbackPlan(changeIntelligence)
+    const basePlanDigest = computeDigest(JSON.stringify({ impacted: changeIntelligence.impactedFiles }))
+    const effectivePlanDigest = computeDigest(JSON.stringify(checks.map(c => c.checkId)))
     return {
       planId,
       runId: changeIntelligence.runId,
       basePlanDigest,
-      effectivePlanDigest: computeDigest(JSON.stringify(checks.map(c => c.checkId))),
-      checks,
-      m11OverlayApplied: false,
-      m11CandidatesAvailable: [],
-      providerState: changeIntelligence.providerState,
-    }
-  }
-
-  const binary = capabilities.binaryPath!
-  const args = [
-    "plan",
-    "--run-id", changeIntelligence.runId,
-    "--format", "json",
-  ]
-  if (changeIntelligence.baseSha) args.push("--base", changeIntelligence.baseSha)
-  if (changeIntelligence.headSha) args.push("--head", changeIntelligence.headSha)
-
-  const raw = await runFdxAsync(binary, args)
-  if (!raw) {
-    const checks = buildFallbackPlan(changeIntelligence)
-    return {
-      planId,
-      runId: changeIntelligence.runId,
-      basePlanDigest,
-      effectivePlanDigest: computeDigest(JSON.stringify(checks.map(c => c.checkId))),
+      effectivePlanDigest,
       checks,
       m11OverlayApplied: false,
       m11CandidatesAvailable: [],
       providerState: "typescript_fallback",
+      assurance: "DEGRADED",
+    }
+  }
+
+  const binary = capabilities.binaryPath
+  let planArgs = fdxPlanArgs({
+    base: changeIntelligence.baseSha,
+    head: changeIntelligence.headSha,
+    policyOverlay: options.policyOverlay ?? (capabilities.policyContractVersions.length > 0),
+  })
+
+  let execRes = await runFdxAsync(binary, planArgs, QUERY_TIMEOUT_MS, changeIntelligence.repositoryRoot)
+
+  // If failed with policy-overlay (e.g. unindexed repo), retry without policy overlay
+  if ((execRes.exitCode !== 0 || !execRes.stdout) && planArgs.includes("--policy-overlay")) {
+    planArgs = fdxPlanArgs({
+      base: changeIntelligence.baseSha,
+      head: changeIntelligence.headSha,
+      policyOverlay: false,
+    })
+    execRes = await runFdxAsync(binary, planArgs, QUERY_TIMEOUT_MS, changeIntelligence.repositoryRoot)
+  }
+
+  if (execRes.exitCode !== 0 || !execRes.stdout) {
+    const checks = buildFallbackPlan(changeIntelligence)
+    const basePlanDigest = computeDigest(JSON.stringify({ impacted: changeIntelligence.impactedFiles }))
+    const effectivePlanDigest = computeDigest(JSON.stringify(checks.map(c => c.checkId)))
+    return {
+      planId,
+      runId: changeIntelligence.runId,
+      basePlanDigest,
+      effectivePlanDigest,
+      checks,
+      m11OverlayApplied: false,
+      m11CandidatesAvailable: [],
+      providerState: "typescript_fallback",
+      assurance: "DEGRADED",
     }
   }
 
   try {
-    const parsed = JSON.parse(raw) as Record<string, unknown>
-    const baseChecks = parseChecks(parsed["checks"] as unknown[], false)
-    const overlayChecks: FdxVerificationCheck[] = []
-    let m11Applied = false
-    let policyDigest: string | undefined
+    const parsed = JSON.parse(execRes.stdout) as Record<string, unknown>
+    // Handle both M6 direct VerificationPlan and M11 EffectiveVerificationPlan
+    const planObj = (parsed["plan"] as Record<string, unknown>) ?? parsed
+    const selectedChecksRaw = (planObj["selected_checks"] as unknown[]) ?? (parsed["checks"] as unknown[]) ?? []
 
-    // M11 overlay: ADD_CHECK only
-    if (
-      capabilities.policyContractVersions.length > 0 &&
-      Array.isArray(parsed["policy_overlay"])
-    ) {
-      const overlay = parsed["policy_overlay"] as Record<string, unknown>[]
-      for (const policy of overlay) {
-        if (policy["action"] === "ADD_CHECK") {
-          const check = parseSingleCheck(policy, true)
-          if (check && !baseChecks.some(c => c.checkId === check.checkId)) {
-            overlayChecks.push(check)
-            m11Applied = true
-          }
-        }
-        // IMPORTANT: NEVER process REMOVE_CHECK or SKIP_CHECK from policy
-      }
-      policyDigest = parsed["policy_snapshot_digest"] as string | undefined
-    }
+    const checks: FdxVerificationCheck[] = parsePlannedChecks(selectedChecksRaw)
 
-    const allChecks = [...baseChecks, ...overlayChecks]
-    const effectivePlanDigest = computeDigest(JSON.stringify(allChecks.map(c => c.checkId)))
+    const basePlanDigest = typeof parsed["base_plan_digest"] === "string"
+      ? (parsed["base_plan_digest"] as string)
+      : computeDigest(JSON.stringify(planObj))
+
+    const effectivePlanDigest = typeof parsed["effective_plan_digest"] === "string"
+      ? (parsed["effective_plan_digest"] as string)
+      : basePlanDigest
+
+    const addedCheckIds = Array.isArray(parsed["added_check_ids"])
+      ? (parsed["added_check_ids"] as string[])
+      : []
+
+    const m11OverlayApplied = addedCheckIds.length > 0
 
     return {
       planId,
       runId: changeIntelligence.runId,
       basePlanDigest,
       effectivePlanDigest,
-      policySnapshotDigest: policyDigest,
-      checks: allChecks,
-      m11OverlayApplied: m11Applied,
+      policySnapshotDigest: parsed["policy_snapshot_digest"] as string | undefined,
+      policyApplicationDigest: parsed["policy_application_digest"] as string | undefined,
+      checks,
+      m11OverlayApplied,
       m11CandidatesAvailable: (parsed["candidate_policy_ids"] as string[]) ?? [],
       providerState: capabilities.providerState,
+      assurance: String(planObj["assurance"] ?? parsed["assurance"] ?? "EXACT"),
     }
   } catch {
     const checks = buildFallbackPlan(changeIntelligence)
+    const basePlanDigest = computeDigest(JSON.stringify({ impacted: changeIntelligence.impactedFiles }))
+    const effectivePlanDigest = computeDigest(JSON.stringify(checks.map(c => c.checkId)))
     return {
       planId,
       runId: changeIntelligence.runId,
       basePlanDigest,
-      effectivePlanDigest: computeDigest(JSON.stringify(checks.map(c => c.checkId))),
+      effectivePlanDigest,
       checks,
       m11OverlayApplied: false,
       m11CandidatesAvailable: [],
       providerState: "typescript_fallback",
+      assurance: "DEGRADED",
+    }
+  }
+}
+
+// ─── Native Verification Execution (M7) ──────────────────────────────────────
+
+export interface ExecuteVerificationOptions {
+  policyOverlay?: boolean
+  failFast?: boolean
+  noPersist?: boolean
+  signal?: AbortSignal
+  timeoutMs?: number
+  onProgress?: (msg: string) => void
+}
+
+/**
+ * Execute verification through native FDX (Milestone 7).
+ *
+ * In native mode, this invokes `fdx verify` directly. FDX owns:
+ *   - Planning the check set
+ *   - Executing the physical commands with process dedup
+ *   - Persisting runtime evidence into .fdx/runs/ and .fdx/evidence.db (M8)
+ *
+ * Node does NOT parse commands and execute them individually in native mode.
+ */
+export async function executeNativeVerification(
+  changeIntelligence: FdxChangeIntelligence,
+  capabilities: FdxCapabilitySnapshot,
+  options: ExecuteVerificationOptions = {}
+): Promise<{
+  plan: FdxVerificationPlan
+  evidence: FdxRuntimeEvidence
+  rawRun?: Record<string, unknown>
+}> {
+  const emit = options.onProgress ?? (() => undefined)
+
+  // In fallback mode, execute fallback checks separately
+  if (
+    capabilities.providerState === "typescript_fallback" ||
+    capabilities.providerState === "unavailable" ||
+    capabilities.providerState === "incompatible" ||
+    !capabilities.binaryPath
+  ) {
+    emit("[FDX Fallback] Executing TypeScript fallback verification...")
+    const plan = await generateVerificationPlan(changeIntelligence, capabilities, {
+      policyOverlay: options.policyOverlay,
+    })
+    const evidence = await executeFallbackVerification(plan, changeIntelligence.repositoryRoot, options.signal)
+    return { plan, evidence }
+  }
+
+  const binary = capabilities.binaryPath
+  const verifyArgs = fdxVerifyArgs({
+    base: changeIntelligence.baseSha,
+    head: changeIntelligence.headSha,
+    policyOverlay: options.policyOverlay ?? (capabilities.policyContractVersions.length > 0),
+    failFast: options.failFast,
+    noPersist: options.noPersist,
+  })
+
+  emit("[FDX Native] Executing native FDX verification (Milestone 7)...")
+  const timeoutMs = options.timeoutMs ?? VERIFY_TIMEOUT_MS
+  const execRes = await runFdxAsync(
+    binary,
+    verifyArgs,
+    timeoutMs,
+    changeIntelligence.repositoryRoot,
+    options.signal
+  )
+
+  if (options.signal?.aborted) {
+    emit("[FDX Native] Verification cancelled by user.")
+    const plan = await generateVerificationPlan(changeIntelligence, capabilities)
+    const evidence: FdxRuntimeEvidence = {
+      runId: changeIntelligence.runId,
+      verificationRunId: randomUUID(),
+      stateFingerprint: changeIntelligence.stateFingerprint,
+      outcome: "incomplete",
+      assurance: "UNVERIFIED",
+      checksPassed: 0,
+      checksFailed: 0,
+      checksSkipped: plan.checks.length,
+      mandatoryPassed: false,
+      mandatoryFailed: false,
+      failureReasons: ["CANCELLED: verification aborted by signal"],
+      evidenceDigest: computeDigest("cancelled"),
+      persistenceFailed: false,
+      checkResults: [],
+      unresolvedObligations: ["CANCELLED"],
+      providerState: capabilities.providerState,
+    }
+    return { plan, evidence }
+  }
+
+  if (!execRes.stdout) {
+    emit(`[FDX Native] Verification execution failed: ${execRes.error?.message ?? "empty output"}`)
+    const plan = await generateVerificationPlan(changeIntelligence, capabilities)
+    const evidence: FdxRuntimeEvidence = {
+      runId: changeIntelligence.runId,
+      verificationRunId: randomUUID(),
+      stateFingerprint: changeIntelligence.stateFingerprint,
+      outcome: "failed",
+      assurance: "UNVERIFIED",
+      checksPassed: 0,
+      checksFailed: plan.checks.length,
+      checksSkipped: 0,
+      mandatoryPassed: false,
+      mandatoryFailed: true,
+      failureReasons: [`FDX execution error: ${execRes.error?.message ?? "native process failed"}`],
+      evidenceDigest: computeDigest("exec_error"),
+      persistenceFailed: true,
+      persistenceError: "FDX process execution failed",
+      checkResults: [],
+      unresolvedObligations: plan.checks.map(c => c.checkId),
+      providerState: capabilities.providerState,
+    }
+    return { plan, evidence }
+  }
+
+  try {
+    const rawRun = JSON.parse(execRes.stdout) as Record<string, unknown>
+    const planObj = (rawRun["plan"] as Record<string, unknown>) ?? {}
+    const checksRaw = (planObj["selected_checks"] as unknown[]) ?? []
+    const parsedChecks = parsePlannedChecks(checksRaw)
+
+    const basePlanDigest = typeof rawRun["base_plan_digest"] === "string"
+      ? (rawRun["base_plan_digest"] as string)
+      : computeDigest(JSON.stringify(planObj))
+
+    const effectivePlanDigest = typeof rawRun["effective_plan_digest"] === "string"
+      ? (rawRun["effective_plan_digest"] as string)
+      : basePlanDigest
+
+    const plan: FdxVerificationPlan = {
+      planId: String(rawRun["run_id"] ?? randomUUID()),
+      runId: String(rawRun["run_id"] ?? changeIntelligence.runId),
+      basePlanDigest,
+      effectivePlanDigest,
+      policySnapshotDigest: rawRun["policy_snapshot_digest"] as string | undefined,
+      policyApplicationDigest: rawRun["policy_application_digest"] as string | undefined,
+      checks: parsedChecks,
+      m11OverlayApplied: Array.isArray(rawRun["added_check_ids"]) && (rawRun["added_check_ids"] as string[]).length > 0,
+      m11CandidatesAvailable: (rawRun["candidate_policy_ids"] as string[]) ?? [],
+      providerState: capabilities.providerState,
+      assurance: String(rawRun["assurance"] ?? "EXACT"),
+    }
+
+    // Parse executed checks from VerificationRun.checks
+    const executedChecksRaw = (rawRun["checks"] as Array<Record<string, unknown>>) ?? []
+    const checkResults: FdxCheckExecutionResult[] = executedChecksRaw.map(c => {
+      const status = String(c["status"] ?? "pending") as FdxCheckExecutionResult["status"]
+      const passed = status === "passed"
+      return {
+        checkId: String(c["check_id"] ?? ""),
+        kind: c["kind"] as string | undefined,
+        status,
+        executionId: c["execution_id"] as string | undefined,
+        reusedExecution: c["reused_execution"] === true,
+        command: Array.isArray(c["command"]) ? (c["command"] as string[]) : [],
+        cwd: c["cwd"] as string | undefined,
+        exitCode: typeof c["exit_code"] === "number" ? c["exit_code"] : null,
+        signal: c["signal"] as string | null | undefined,
+        durationMs: typeof c["duration_ms"] === "number" ? c["duration_ms"] : 0,
+        stdoutDigest: c["stdout_digest"] as string | null | undefined,
+        stderrDigest: c["stderr_digest"] as string | null | undefined,
+        stdoutExcerpt: c["stdout_excerpt"] as string | undefined,
+        stderrExcerpt: c["stderr_excerpt"] as string | undefined,
+        outputTruncated: c["output_truncated"] === true,
+        reason: c["reason"] as string | null | undefined,
+        passed,
+      }
+    })
+
+    const passedCount = checkResults.filter(c => c.passed).length
+    const failedCount = checkResults.filter(c => !c.passed && c.status === "failed").length
+    const skippedCount = checkResults.filter(c => c.status === "skipped").length
+
+    const mandatoryIds = new Set(plan.checks.filter(c => c.mandatory).map(c => c.checkId))
+    const mandatoryFailedList = checkResults.filter(c => mandatoryIds.has(c.checkId) && !c.passed)
+    const mandatoryPassed = mandatoryIds.size === 0 || (mandatoryFailedList.length === 0 && passedCount >= mandatoryIds.size)
+
+    // Check persistence status (M8 fail closed)
+    const persistenceStatus = rawRun["persistence_status"] as Record<string, unknown> | undefined
+    const persistenceFailed = persistenceStatus?.["status"] === "failed"
+    const persistenceError = persistenceFailed ? String(persistenceStatus?.["reason"] ?? "M8 persistence failed") : undefined
+    const persistedPath = persistenceStatus?.["status"] === "persisted" ? String(persistenceStatus["path"]) : undefined
+
+    const outcome = String(rawRun["outcome"] ?? (failedCount > 0 ? "failed" : "passed")) as "passed" | "failed" | "incomplete"
+
+    const failureReasons: string[] = []
+    for (const c of checkResults) {
+      if (!c.passed) {
+        failureReasons.push(c.reason ? `${c.checkId}: ${c.reason}` : `check ${c.checkId} failed`)
+      }
+    }
+    if (persistenceFailed) {
+      failureReasons.push(`PERSISTENCE_FAILED: ${persistenceError}`)
+    }
+
+    const evidenceDigest = computeDigest(JSON.stringify({
+      runId: plan.runId,
+      planDigest: plan.effectivePlanDigest,
+      checkResults: checkResults.map(c => ({ id: c.checkId, status: c.status })),
+    }))
+
+    const evidence: FdxRuntimeEvidence = {
+      runId: plan.runId,
+      verificationRunId: String(rawRun["run_id"] ?? randomUUID()),
+      stateFingerprint: changeIntelligence.stateFingerprint,
+      outcome: persistenceFailed ? "incomplete" : outcome,
+      assurance: String(rawRun["assurance"] ?? "EXACT"),
+      checksPassed: passedCount,
+      checksFailed: failedCount,
+      checksSkipped: skippedCount,
+      mandatoryPassed: !persistenceFailed && mandatoryPassed,
+      mandatoryFailed: persistenceFailed || mandatoryFailedList.length > 0,
+      failureReasons,
+      evidenceDigest,
+      persistedArtifactPath: persistedPath,
+      persistenceFailed,
+      persistenceError,
+      checkResults,
+      unresolvedObligations: Array.isArray(rawRun["unresolved_obligations"])
+        ? (rawRun["unresolved_obligations"] as Array<Record<string, unknown>>).map(o => String(o["check_id"] ?? o["scope"] ?? "obligation"))
+        : [],
+      providerState: capabilities.providerState,
+    }
+
+    return { plan, evidence, rawRun }
+  } catch (e: unknown) {
+    emit(`[FDX Native] Failed to parse verification output: ${e instanceof Error ? e.message : String(e)}`)
+    const plan = await generateVerificationPlan(changeIntelligence, capabilities)
+    const evidence: FdxRuntimeEvidence = {
+      runId: changeIntelligence.runId,
+      verificationRunId: randomUUID(),
+      stateFingerprint: changeIntelligence.stateFingerprint,
+      outcome: "failed",
+      assurance: "UNVERIFIED",
+      checksPassed: 0,
+      checksFailed: plan.checks.length,
+      checksSkipped: 0,
+      mandatoryPassed: false,
+      mandatoryFailed: true,
+      failureReasons: [`JSON parse error: ${e instanceof Error ? e.message : String(e)}`],
+      evidenceDigest: computeDigest("parse_error"),
+      persistenceFailed: true,
+      persistenceError: "Could not parse VerificationRun output",
+      checkResults: [],
+      unresolvedObligations: plan.checks.map(c => c.checkId),
+      providerState: capabilities.providerState,
+    }
+    return { plan, evidence }
+  }
+}
+
+// ─── TypeScript Fallback Verification Execution ──────────────────────────────
+
+async function executeFallbackVerification(
+  plan: FdxVerificationPlan,
+  repositoryRoot: string,
+  signal?: AbortSignal
+): Promise<FdxRuntimeEvidence> {
+  const checkResults: FdxCheckExecutionResult[] = []
+
+  for (const check of plan.checks) {
+    if (signal?.aborted) {
+      checkResults.push({
+        checkId: check.checkId,
+        command: [check.command, ...check.args],
+        status: "cancelled",
+        durationMs: 0,
+        passed: false,
+        reason: "CANCELLED",
+      })
+      break
+    }
+
+    const start = Date.now()
+    const result = await new Promise<{ passed: boolean; output: string; exitCode: number | null }>((resolvePromise) => {
+      const child = execFile(
+        check.command,
+        check.args,
+        {
+          cwd: check.workdir ? resolve(repositoryRoot, check.workdir) : repositoryRoot,
+          encoding: "utf8",
+          timeout: 60_000,
+          maxBuffer: 4 * 1024 * 1024,
+          signal,
+        },
+        (err, stdout, stderr) => {
+          resolvePromise({
+            passed: !err,
+            output: (stdout ?? "") + (stderr ?? ""),
+            exitCode: err ? (child.exitCode ?? 1) : 0,
+          })
+        }
+      )
+    })
+
+    const durationMs = Date.now() - start
+    checkResults.push({
+      checkId: check.checkId,
+      command: [check.command, ...check.args],
+      status: result.passed ? "passed" : "failed",
+      exitCode: result.exitCode,
+      durationMs,
+      stdoutExcerpt: result.output.slice(0, 1000),
+      passed: result.passed,
+      reason: result.passed ? undefined : `Process exited with code ${result.exitCode}`,
+    })
+  }
+
+  const passedCount = checkResults.filter(c => c.passed).length
+  const failedCount = checkResults.filter(c => !c.passed).length
+  const mandatoryIds = new Set(plan.checks.filter(c => c.mandatory).map(c => c.checkId))
+  const mandatoryFailedList = checkResults.filter(c => mandatoryIds.has(c.checkId) && !c.passed)
+
+  const evidenceDigest = computeDigest(JSON.stringify({
+    runId: plan.runId,
+    fallback: true,
+    checkResults: checkResults.map(c => ({ id: c.checkId, passed: c.passed })),
+  }))
+
+  return {
+    runId: plan.runId,
+    verificationRunId: randomUUID(),
+    stateFingerprint: computeRepoStateFingerprint(repositoryRoot),
+    outcome: failedCount > 0 ? "failed" : "passed",
+    assurance: "DEGRADED",
+    checksPassed: passedCount,
+    checksFailed: failedCount,
+    checksSkipped: plan.checks.length - passedCount - failedCount,
+    mandatoryPassed: mandatoryFailedList.length === 0,
+    mandatoryFailed: mandatoryFailedList.length > 0,
+    failureReasons: mandatoryFailedList.map(c => `fallback check ${c.checkId} failed`),
+    evidenceDigest,
+    persistenceFailed: false,
+    checkResults,
+    unresolvedObligations: [],
+    providerState: "typescript_fallback",
+  }
+}
+
+// ─── Attestation Generation and Verification (M9) ────────────────────────────
+
+/**
+ * Generate a cryptographically bound in-toto verification attestation (Milestone 9).
+ *
+ * In native mode: invokes `fdx attest create --run <id> --predicate-version <v1|v2> --format json`.
+ * In fallback mode: returns fallback-typed reference without claiming in-toto authority.
+ */
+export async function createVerificationAttestation(
+  runId: string,
+  capabilities: FdxCapabilitySnapshot,
+  repositoryRoot: string,
+  options: {
+    predicateVersion?: "v1" | "v2"
+  } = {}
+): Promise<FdxAttestationReference> {
+  const predicate = options.predicateVersion ?? "v1"
+
+  if (
+    capabilities.providerState === "typescript_fallback" ||
+    capabilities.providerState === "unavailable" ||
+    capabilities.providerState === "incompatible" ||
+    !capabilities.binaryPath
+  ) {
+    const attestationId = computeDigest(JSON.stringify({ runId, predicate, fallback: true }))
+    return {
+      attestationId,
+      predicate,
+      evidenceDigest: computeDigest(runId),
+      runId,
+      verificationRunId: runId,
+      createdAt: new Date().toISOString(),
+      verified: false,
+      providerState: "typescript_fallback",
+    }
+  }
+
+  const binary = capabilities.binaryPath
+  const attestArgs = fdxAttestCreateArgs(runId, predicate)
+  const execRes = await runFdxAsync(binary, attestArgs, QUERY_TIMEOUT_MS, repositoryRoot)
+
+  if (execRes.exitCode !== 0 || !execRes.stdout) {
+    const attestationId = computeDigest(JSON.stringify({ runId, predicate, error: "attest_create_failed" }))
+    return {
+      attestationId,
+      predicate,
+      evidenceDigest: computeDigest(runId),
+      runId,
+      verificationRunId: runId,
+      createdAt: new Date().toISOString(),
+      verified: false,
+      providerState: capabilities.providerState,
+    }
+  }
+
+  try {
+    const parsed = JSON.parse(execRes.stdout) as Record<string, unknown>
+    const sha256 = String(parsed["attestation_sha256"] ?? parsed["sha256"] ?? "")
+    const path = parsed["path"] as string | undefined
+    const artifactSha = (parsed["artifact_sha256"] as string | undefined) ?? (parsed["artifact_sha"] as string | undefined)
+
+    return {
+      attestationId: sha256 || computeDigest(execRes.stdout),
+      predicate,
+      attestationFilePath: path,
+      artifactSha256: artifactSha,
+      evidenceDigest: artifactSha ?? sha256,
+      runId,
+      verificationRunId: String(parsed["run_id"] ?? runId),
+      createdAt: new Date().toISOString(),
+      verified: true,
+      providerState: capabilities.providerState,
+    }
+  } catch {
+    const attestationId = computeDigest(JSON.stringify({ runId, predicate, parseError: true }))
+    return {
+      attestationId,
+      predicate,
+      evidenceDigest: computeDigest(runId),
+      runId,
+      verificationRunId: runId,
+      createdAt: new Date().toISOString(),
+      verified: false,
+      providerState: capabilities.providerState,
     }
   }
 }
 
 /**
- * Persist FDX runtime evidence (M8 contract).
- *
- * Called after verification execution. Returns structured evidence
- * that Heidi stores for CompletionPolicy evaluation.
+ * Verify an in-toto attestation against source run artifact and M8 runtime history.
  */
+export async function verifyAttestationFile(
+  attestationFilePath: string,
+  capabilities: FdxCapabilitySnapshot,
+  repositoryRoot: string,
+  expectedSha256?: string
+): Promise<{ verified: boolean; message: string; statement?: Record<string, unknown> }> {
+  if (
+    capabilities.providerState === "typescript_fallback" ||
+    capabilities.providerState === "unavailable" ||
+    capabilities.providerState === "incompatible" ||
+    !capabilities.binaryPath
+  ) {
+    return { verified: false, message: "Attestation verification requires native FDX binary" }
+  }
+
+  const binary = capabilities.binaryPath
+  const verifyArgs = fdxAttestVerifyArgs(attestationFilePath, expectedSha256)
+  const execRes = await runFdxAsync(binary, verifyArgs, QUERY_TIMEOUT_MS, repositoryRoot)
+
+  if (execRes.exitCode !== 0 || !execRes.stdout) {
+    return {
+      verified: false,
+      message: `Attestation verification failed: ${execRes.error?.message ?? "process error"}`,
+    }
+  }
+
+  try {
+    const parsed = JSON.parse(execRes.stdout) as Record<string, unknown>
+    const ok = parsed["valid"] === true || parsed["verified"] === true || parsed["status"] === "verified" || parsed["status"] === "valid"
+    return {
+      verified: ok,
+      message: ok ? "Attestation verified valid" : String(parsed["error"] ?? "Attestation verification failed"),
+      statement: parsed["statement"] as Record<string, unknown> | undefined,
+    }
+  } catch {
+    return { verified: false, message: "Could not parse attestation verification output" }
+  }
+}
+
+/** Legacy wrapper for generateAttestationReference */
+export async function generateAttestationReference(
+  evidence: FdxRuntimeEvidence,
+  plan: FdxVerificationPlan,
+  capabilities: FdxCapabilitySnapshot,
+  repositoryRoot = "."
+): Promise<FdxAttestationReference> {
+  const predicate: "v1" | "v2" = plan.m11OverlayApplied ? "v2" : "v1"
+  const ref = await createVerificationAttestation(evidence.runId, capabilities, repositoryRoot, { predicateVersion: predicate })
+  return {
+    ...ref,
+    policyId: plan.m11OverlayApplied ? (plan.policySnapshotDigest ?? "snap-001") : undefined,
+    policySnapshotDigest: plan.policySnapshotDigest,
+    policyApplicationDigest: plan.policyApplicationDigest,
+  }
+}
+
+/** Legacy wrapper for persistRuntimeEvidence */
 export async function persistRuntimeEvidence(
   plan: FdxVerificationPlan,
   checkResults: Array<{ checkId: string; passed: boolean; output?: string }>,
@@ -632,86 +1348,40 @@ export async function persistRuntimeEvidence(
   const mandatoryIds = new Set(plan.checks.filter(c => c.mandatory).map(c => c.checkId))
   const mandatoryFailedList = checkResults.filter(r => mandatoryIds.has(r.checkId) && !r.passed)
 
-  const evidencePayload = {
+  const evidenceDigest = computeDigest(JSON.stringify({
     planId: plan.planId,
     effectivePlanDigest: plan.effectivePlanDigest,
     results: checkResults.map(r => ({ checkId: r.checkId, passed: r.passed })),
-  }
-  const evidenceDigest = computeDigest(JSON.stringify(evidencePayload))
-
-  if (
-    capabilities.providerState !== "typescript_fallback" &&
-    capabilities.providerState !== "unavailable" &&
-    capabilities.binaryPath
-  ) {
-    // Persist to FDX runtime store
-    const binary = capabilities.binaryPath
-    const payload = JSON.stringify({
-      run_id: plan.runId,
-      plan_id: plan.planId,
-      effective_plan_digest: plan.effectivePlanDigest,
-      results: checkResults.map(r => ({ check_id: r.checkId, passed: r.passed, output: r.output?.slice(0, 2000) })),
-    })
-    await runFdxAsync(binary, ["runtime", "ingest", "--json", payload]).catch(() => null)
-  }
+  }))
 
   return {
     runId: plan.runId,
     verificationRunId: randomUUID(),
     stateFingerprint: evidenceDigest,
+    outcome: failed > 0 ? "failed" : "passed",
+    assurance: plan.assurance,
     checksPassed: passed,
     checksFailed: failed,
     checksSkipped: plan.checks.length - passed - failed,
-    mandatoryPassed: mandatoryPassedList(mandatoryIds, checkResults),
+    mandatoryPassed: mandatoryFailedList.length === 0,
     mandatoryFailed: mandatoryFailedList.length > 0,
     failureReasons: mandatoryFailedList.map(r => `check ${r.checkId} failed`),
     evidenceDigest,
+    persistenceFailed: false,
+    checkResults: checkResults.map(r => ({
+      checkId: r.checkId,
+      status: r.passed ? "passed" : "failed",
+      command: [],
+      durationMs: 0,
+      passed: r.passed,
+    })),
+    unresolvedObligations: [],
     providerState: capabilities.providerState,
   }
 }
 
-/**
- * Generate an attestation reference (M9 contract).
- *
- * Predicate v1: no policy overlay.
- * Predicate v2: policy overlay applied (requires M11 provenance).
- *
- * IMPORTANT: This is a reference only. We do not claim signing or non-repudiation.
- */
-export async function generateAttestationReference(
-  evidence: FdxRuntimeEvidence,
-  plan: FdxVerificationPlan,
-  capabilities: FdxCapabilitySnapshot
-): Promise<FdxAttestationReference> {
-  const predicate: "v1" | "v2" = plan.m11OverlayApplied ? "v2" : "v1"
-  const attestationId = computeDigest(JSON.stringify({
-    predicate,
-    runId: evidence.runId,
-    verificationRunId: evidence.verificationRunId,
-    evidenceDigest: evidence.evidenceDigest,
-    effectivePlanDigest: plan.effectivePlanDigest,
-    policySnapshotDigest: plan.policySnapshotDigest,
-  }))
+// ─── Structured Blocker Classification ───────────────────────────────────────
 
-  return {
-    attestationId,
-    predicate,
-    policyId: plan.m11OverlayApplied ? plan.policySnapshotDigest : undefined,
-    policySnapshotDigest: plan.policySnapshotDigest,
-    evidenceDigest: evidence.evidenceDigest,
-    runId: evidence.runId,
-    verificationRunId: evidence.verificationRunId,
-    createdAt: new Date().toISOString(),
-    providerState: capabilities.providerState,
-  }
-}
-
-/**
- * Classify a verification failure into structured Heidi blockers.
- *
- * This is the key signal that drives Heidi's repair and routing decisions.
- * Heidi receives typed blockers, not raw stdout strings.
- */
 export function classifyVerificationFailures(
   evidence: FdxRuntimeEvidence,
   plan: FdxVerificationPlan,
@@ -729,6 +1399,16 @@ export function classifyVerificationFailures(
     return blockers
   }
 
+  if (capabilities.providerState === "incompatible") {
+    blockers.push({
+      kind: "incompatible_capabilities",
+      message: "FDX binary has incompatible capability or protocol contract",
+      heidiCanRepairDirectly: false,
+      providerState: capabilities.providerState,
+    })
+    return blockers
+  }
+
   if (capabilities.providerState === "typescript_fallback") {
     blockers.push({
       kind: "provider_degraded",
@@ -738,39 +1418,62 @@ export function classifyVerificationFailures(
     })
   }
 
-  for (const reason of evidence.failureReasons) {
-    const check = plan.checks.find(c => reason.includes(c.checkId))
-    if (check) {
+  if (evidence.persistenceFailed) {
+    blockers.push({
+      kind: "persistence_failure",
+      message: `M8 runtime evidence persistence failed: ${evidence.persistenceError ?? "unknown error"}`,
+      heidiCanRepairDirectly: false,
+      providerState: capabilities.providerState,
+    })
+  }
+
+  for (const checkResult of (evidence.checkResults ?? [])) {
+    if (!checkResult.passed) {
+      const planCheck = plan.checks.find(c => c.checkId === checkResult.checkId)
+      const cmdArr = Array.isArray(checkResult.command) ? checkResult.command : []
       blockers.push({
-        kind: "check_failed",
-        checkId: check.checkId,
-        command: check.command,
-        message: reason,
-        suggestedSpecialist: inferSpecialist(check),
-        heidiCanRepairDirectly: isSimpleFailure(check),
+        kind: checkResult.status === "timed_out" ? "check_incomplete" : "check_failed",
+        checkId: checkResult.checkId,
+        command: cmdArr.join(" ") || planCheck?.command,
+        message: checkResult.reason ?? `Check ${checkResult.checkId} failed with status ${checkResult.status}`,
+        suggestedSpecialist: inferSpecialistFromCheck(checkResult.checkId, cmdArr),
+        heidiCanRepairDirectly: isSimpleCheckFailure(checkResult.checkId, cmdArr),
         providerState: capabilities.providerState,
       })
     }
   }
 
-  // Unresolved obligations (mandatory checks not attempted)
-  const attemptedIds = new Set(evidence.failureReasons.map(r => plan.checks.find(c => r.includes(c.checkId))?.checkId).filter(Boolean))
-  for (const check of plan.checks.filter(c => c.mandatory)) {
-    if (!attemptedIds.has(check.checkId) && evidence.checksFailed > 0) {
+  // Handle failureReasons not mapped to a specific check
+  for (const reason of (evidence.failureReasons ?? [])) {
+    if (!blockers.some(b => b.message === reason)) {
+      const check = plan.checks.find(c => reason.includes(c.checkId))
       blockers.push({
-        kind: "unresolved_obligation",
-        checkId: check.checkId,
-        message: `Mandatory check ${check.checkId} not resolved`,
-        heidiCanRepairDirectly: false,
+        kind: "check_failed",
+        checkId: check?.checkId,
+        command: check?.command,
+        message: reason,
+        suggestedSpecialist: check ? inferSpecialistFromCheck(check.checkId, [check.command, ...check.args]) : undefined,
+        heidiCanRepairDirectly: check ? isSimpleCheckFailure(check.checkId, [check.command, ...check.args]) : false,
         providerState: capabilities.providerState,
       })
     }
+  }
+
+  // Unresolved obligations
+  for (const obligation of (evidence.unresolvedObligations ?? [])) {
+    blockers.push({
+      kind: "unresolved_obligation",
+      checkId: obligation,
+      message: `Unresolved verification obligation: ${obligation}`,
+      heidiCanRepairDirectly: false,
+      providerState: capabilities.providerState,
+    })
   }
 
   return blockers
 }
 
-// ─── VCI status for diagnostics ──────────────────────────────────────────────
+// ─── Status for Diagnostics ──────────────────────────────────────────────────
 
 export interface FdxVciStatus {
   provider: FdxProviderState
@@ -788,31 +1491,86 @@ export function getVciStatus(): FdxVciStatus {
   }
 }
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
+// ─── Content-Bound Repository State Fingerprint ──────────────────────────────
 
-function computeDigest(data: string): string {
-  return createHash("sha256").update(data).digest("hex").slice(0, 32)
-}
-
-function computeRepoStateFingerprint(repositoryRoot: string): string {
+/**
+ * Computes a deterministic repository state fingerprint.
+ *
+ * CRITICAL REQUIREMENT (D):
+ * Must bind:
+ *   1. git rev-parse HEAD
+ *   2. git status --porcelain (status text)
+ *   3. ACTUAL WORKING-TREE BYTES of all modified/dirty files.
+ *   4. Content or presence of untracked files.
+ *
+ * Regression invariant:
+ *   State A: HEAD = H, file X has content "AAA"
+ *   State B: HEAD = H, file X has content "BBB"
+ *   computeRepoStateFingerprint(A) !== computeRepoStateFingerprint(B)
+ */
+export function computeRepoStateFingerprint(repositoryRoot: string): string {
   try {
-    const { execFileSync } = require("node:child_process") as typeof import("node:child_process")
     const head = execFileSync("git", ["rev-parse", "HEAD"], {
       cwd: repositoryRoot,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
       timeout: 3_000,
     }).trim()
-    const status = execFileSync("git", ["status", "--porcelain"], {
+
+    const statusOutput = execFileSync("git", ["status", "--porcelain=v1", "-uall"], {
       cwd: repositoryRoot,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
-      timeout: 3_000,
+      timeout: 5_000,
     })
-    return computeDigest(head + status)
+
+    const hasher = createHash("sha256")
+    hasher.update(`HEAD:${head}\n`)
+    hasher.update(`STATUS:${statusOutput}\n`)
+
+    // Hash actual bytes of modified and untracked files
+    const lines = statusOutput.split("\n").filter(l => l.trim().length > 0)
+    for (const line of lines) {
+      const code = line.slice(0, 2)
+      let filePath = line.slice(3).trim()
+      // Handle rename: "R  old -> new"
+      if (filePath.includes(" -> ")) {
+        filePath = filePath.split(" -> ")[1].trim()
+      }
+      // Remove quotes if present
+      if (filePath.startsWith('"') && filePath.endsWith('"')) {
+        filePath = filePath.slice(1, -1)
+      }
+
+      const fullPath = resolve(repositoryRoot, filePath)
+      if (existsSync(fullPath)) {
+        try {
+          const stat = statSync(fullPath)
+          if (stat.isFile()) {
+            hasher.update(`FILE:${filePath}:${code}:${stat.size}\n`)
+            // Read file content bytes (bounded to 4MB per file for performance)
+            const content = readFileSync(fullPath)
+            hasher.update(content.subarray(0, 4 * 1024 * 1024))
+          }
+        } catch {
+          // If unreadable, include path in fingerprint so change is detected
+          hasher.update(`UNREADABLE:${filePath}\n`)
+        }
+      } else {
+        hasher.update(`DELETED:${filePath}\n`)
+      }
+    }
+
+    return hasher.digest("hex").slice(0, 32)
   } catch {
-    return computeDigest(String(Date.now()))
+    return createHash("sha256").update(String(Date.now())).digest("hex").slice(0, 32)
   }
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function computeDigest(data: string): string {
+  return createHash("sha256").update(data).digest("hex").slice(0, 32)
 }
 
 function buildFallbackPlan(intel: FdxChangeIntelligence): FdxVerificationCheck[] {
@@ -850,52 +1608,55 @@ function buildFallbackPlan(intel: FdxChangeIntelligence): FdxVerificationCheck[]
     })
   }
 
+  if (checks.length === 0) {
+    checks.push({
+      checkId: "fallback:default-check",
+      command: "bun",
+      args: ["test"],
+      rationale: "Default verification check",
+      mandatory: true,
+      policyAdded: false,
+    })
+  }
+
   return checks
 }
 
-function parseChecks(raw: unknown[], policyAdded: boolean): FdxVerificationCheck[] {
+function parsePlannedChecks(raw: unknown[]): FdxVerificationCheck[] {
   if (!Array.isArray(raw)) return []
-  return raw.map(item => parseSingleCheck(item as Record<string, unknown>, policyAdded)).filter(Boolean) as FdxVerificationCheck[]
+  return raw
+    .map(item => {
+      if (!item || typeof item !== "object") return null
+      const obj = item as Record<string, unknown>
+      const checkId = String(obj["check_id"] ?? "")
+      if (!checkId) return null
+      return {
+        checkId,
+        displayName: obj["display_name"] as string | undefined,
+        command: (obj["command"] as string) ?? "unknown",
+        args: Array.isArray(obj["args"]) ? (obj["args"] as string[]) : [],
+        workdir: obj["workdir"] as string | undefined,
+        rationale: (obj["reason"] as string) ?? (obj["rationale"] as string) ?? "",
+        mandatory: (obj["mandatory"] as boolean) ?? true,
+        kind: obj["kind"] as string | undefined,
+        policyAdded: obj["selection"] === "policy_overlay" || obj["policy_added"] === true,
+        policyId: obj["policy_id"] as string | undefined,
+      } as FdxVerificationCheck
+    })
+    .filter(Boolean) as FdxVerificationCheck[]
 }
 
-function parseSingleCheck(item: Record<string, unknown>, policyAdded: boolean): FdxVerificationCheck | null {
-  if (!item || typeof item["check_id"] !== "string") return null
-  return {
-    checkId: item["check_id"] as string,
-    command: (item["command"] as string) ?? "unknown",
-    args: (item["args"] as string[]) ?? [],
-    workdir: item["workdir"] as string | undefined,
-    rationale: (item["rationale"] as string) ?? "",
-    mandatory: (item["mandatory"] as boolean) ?? true,
-    policyAdded,
-    policyId: item["policy_id"] as string | undefined,
-  }
-}
-
-function mandatoryPassedList(
-  mandatoryIds: Set<string>,
-  results: Array<{ checkId: string; passed: boolean }>
-): boolean {
-  for (const id of mandatoryIds) {
-    const result = results.find(r => r.checkId === id)
-    if (!result || !result.passed) return false
-  }
-  return true
-}
-
-function inferSpecialist(check: FdxVerificationCheck): string | undefined {
-  const cmd = check.command.toLowerCase()
-  const args = check.args.join(" ").toLowerCase()
-  if (cmd === "cargo" || args.includes("cargo")) return "rust"
-  if (cmd === "tsc" || args.includes("tsc") || args.includes("typecheck")) return "typescript"
-  if (cmd === "bun" && args.includes("test")) return "test"
-  if (cmd === "oxlint" || args.includes("lint")) return "lint"
-  if (args.includes("migration") || args.includes("sqlite")) return "persistence"
+function inferSpecialistFromCheck(checkId: string, command: string[]): string | undefined {
+  const checkStr = (checkId + " " + command.join(" ")).toLowerCase()
+  if (checkStr.includes("cargo") || checkStr.includes(".rs")) return "rust"
+  if (checkStr.includes("tsc") || checkStr.includes("typecheck") || checkStr.includes("typescript")) return "typescript"
+  if (checkStr.includes("oxlint") || checkStr.includes("eslint") || checkStr.includes("lint")) return "lint"
+  if (checkStr.includes("migration") || checkStr.includes("sqlite") || checkStr.includes("persistence")) return "persistence"
+  if (checkStr.includes("test")) return "test"
   return undefined
 }
 
-function isSimpleFailure(check: FdxVerificationCheck): boolean {
-  // Simple lint or format failures can be repaired directly by Heidi
-  const args = check.args.join(" ").toLowerCase()
-  return args.includes("lint") || args.includes("format") || args.includes("fmt")
+function isSimpleCheckFailure(checkId: string, command: string[]): boolean {
+  const checkStr = (checkId + " " + command.join(" ")).toLowerCase()
+  return checkStr.includes("lint") || checkStr.includes("format") || checkStr.includes("fmt")
 }

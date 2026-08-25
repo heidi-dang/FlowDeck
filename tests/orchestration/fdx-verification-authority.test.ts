@@ -32,6 +32,7 @@ const mockPlan = (overrides: Partial<FdxVerificationPlan> = {}): FdxVerification
   m11OverlayApplied: false,
   m11CandidatesAvailable: [],
   providerState: "typescript_fallback",
+  assurance: "EXACT",
   ...overrides,
 })
 
@@ -39,6 +40,8 @@ const mockEvidence = (overrides: Partial<FdxRuntimeEvidence> = {}): FdxRuntimeEv
   runId: "run-001",
   verificationRunId: "vrun-001",
   stateFingerprint: "fingerprint-001",
+  outcome: "passed",
+  assurance: "EXACT",
   checksPassed: 3,
   checksFailed: 0,
   checksSkipped: 0,
@@ -46,6 +49,9 @@ const mockEvidence = (overrides: Partial<FdxRuntimeEvidence> = {}): FdxRuntimeEv
   mandatoryFailed: false,
   failureReasons: [],
   evidenceDigest: "evidence-digest",
+  persistenceFailed: false,
+  checkResults: [],
+  unresolvedObligations: [],
   providerState: "typescript_fallback",
   ...overrides,
 })
