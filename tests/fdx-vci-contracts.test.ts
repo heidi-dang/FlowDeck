@@ -99,7 +99,12 @@ describe("FDX VCI Contracts & Ground Truth", () => {
     expect(res.value.server_capabilities).toContain("why-v1");
     expect(res.value.graph_schema_version).toBe(10);
     expect(res.value.selection_policy_version).toBe(1);
+    // M9 v1 remains the default for existing clients; M12 advertises v2 additively.
     expect(res.value.attestation_predicate_version).toBe(1);
+    expect(res.value.capability_contract_version).toBe(1);
+    expect(res.value.attestation_predicate_versions).toEqual([1, 2]);
+    expect(res.value.calibration_contract_versions).toEqual([2]);
+    expect(res.value.policy_contract_versions).toEqual([1]);
   });
 
   it("serves impact-v2 and why-v1 queries over resident daemon IPC", async () => {

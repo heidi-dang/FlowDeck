@@ -1,10 +1,17 @@
 //! Atomic, contained, and path-safe persistence for verification attestations.
 
 use crate::intelligence::attestation::canonical::canonicalize_to_vec;
-use crate::intelligence::attestation::model::VerificationAttestation;
+use crate::intelligence::attestation::model::{
+    VerificationAttestation, FDX_ATTESTATION_PREDICATE_VERSION, FDX_VERIFICATION_PREDICATE_V1_TYPE,
+};
+use crate::intelligence::attestation::v2::{
+    VerificationAttestationV2, FDX_ATTESTATION_PREDICATE_V2_VERSION,
+    FDX_VERIFICATION_PREDICATE_V2_TYPE,
+};
 use crate::intelligence::runtime::sha256_bytes;
 use rustix::fd::AsFd;
 use rustix::fs::{fstat, linkat, mkdirat, open, openat, unlinkat, AtFlags, FileType, Mode, OFlags};
+use serde::Serialize;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -15,6 +22,39 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub const MAX_ATTESTATION_ARTIFACT_BYTES: u64 = 16 * 1024 * 1024;
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+/// Strictly classified verification-attestation document. Unknown predicate URIs
+/// and future schema versions are rejected rather than being interpreted as v1.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AttestationDocument {
+    V1(Box<VerificationAttestation>),
+    V2(Box<VerificationAttestationV2>),
+}
+
+impl AttestationDocument {
+    pub fn run_id(&self) -> &str {
+        match self {
+            Self::V1(statement) => &statement.predicate.run.run_id,
+            Self::V2(statement) => &statement.predicate.run.run_id,
+        }
+    }
+
+    pub fn predicate_type(&self) -> &str {
+        match self {
+            Self::V1(_) => FDX_VERIFICATION_PREDICATE_V1_TYPE,
+            Self::V2(_) => FDX_VERIFICATION_PREDICATE_V2_TYPE,
+        }
+    }
+}
+
+/// Safe one-read attestation load result. `bytes` are the exact authenticated
+/// file bytes, not a reserialization of the parsed document.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoadedAttestation {
+    pub document: AttestationDocument,
+    pub bytes: Vec<u8>,
+    pub sha256: String,
+}
 
 thread_local! {
     pub static TEST_BEFORE_PUBLISH_HOOK: std::cell::RefCell<Option<Box<dyn Fn()>>> = const { std::cell::RefCell::new(None) };
@@ -433,12 +473,12 @@ pub fn classify_attestation_source(
     }
 }
 
-/// Persist an attestation artifact atomically and no-clobber to .fdx/attestations/<run_id>.<attestation_sha256>.json.
-pub fn persist_attestation(
+/// Persist canonical bytes atomically and no-clobber to .fdx/attestations/<run_id>.<sha256>.json.
+fn persist_attestation_for_run<T: Serialize>(
     repo_root: &Path,
-    attestation: &VerificationAttestation,
+    run_id: &str,
+    attestation: &T,
 ) -> Result<(PathBuf, String), String> {
-    let run_id = &attestation.predicate.run.run_id;
     validate_identifier(run_id)?;
 
     let canonical_bytes = canonicalize_to_vec(attestation)?;
@@ -626,6 +666,22 @@ pub fn persist_attestation(
     }
 }
 
+/// Persist a frozen Predicate v1 attestation without changing its historical API or bytes.
+pub fn persist_attestation(
+    repo_root: &Path,
+    attestation: &VerificationAttestation,
+) -> Result<(PathBuf, String), String> {
+    persist_attestation_for_run(repo_root, &attestation.predicate.run.run_id, attestation)
+}
+
+/// Persist a Predicate v2 attestation using the same atomic content-addressed jail as v1.
+pub fn persist_attestation_v2(
+    repo_root: &Path,
+    attestation: &crate::intelligence::attestation::v2::VerificationAttestationV2,
+) -> Result<(PathBuf, String), String> {
+    persist_attestation_for_run(repo_root, &attestation.predicate.run.run_id, attestation)
+}
+
 /// Extract content-addressed sha256 from filename if present (<run_id>.<sha256>.json).
 pub fn extract_filename_digest(path: &Path) -> Option<String> {
     let file_stem = path.file_stem()?.to_str()?;
@@ -638,11 +694,11 @@ pub fn extract_filename_digest(path: &Path) -> Option<String> {
 }
 
 /// Load an attestation statement from a file path with integrity anchor check.
-pub fn load_attestation_from_path(
+fn load_attestation_bytes_from_path(
     repo_root: &Path,
     file_path: &Path,
     expected_sha256: Option<&str>,
-) -> Result<(VerificationAttestation, Vec<u8>, String), String> {
+) -> Result<(PathBuf, Vec<u8>, String), String> {
     let source = classify_attestation_source(repo_root, file_path, expected_sha256)?;
 
     let (resolved_path, expected_digest, is_managed) = match source {
@@ -739,22 +795,100 @@ pub fn load_attestation_from_path(
         }
     }
 
-    let statement: VerificationAttestation = serde_json::from_slice(&bytes).map_err(|e| {
+    Ok((resolved_path, bytes, sha256))
+}
+
+/// Load, authenticate, classify, and strictly deserialize either supported
+/// predicate version. File access and digest validation occur exactly once.
+pub fn load_attestation_document_from_path(
+    repo_root: &Path,
+    file_path: &Path,
+    expected_sha256: Option<&str>,
+) -> Result<LoadedAttestation, String> {
+    let (resolved_path, bytes, sha256) =
+        load_attestation_bytes_from_path(repo_root, file_path, expected_sha256)?;
+
+    let probe: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| {
         format!(
             "failed to parse in-toto attestation JSON from {:?}: {}",
             resolved_path, e
         )
     })?;
+    let predicate_type = probe
+        .get("predicateType")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            format!(
+                "attestation {:?} is missing string predicateType",
+                resolved_path
+            )
+        })?;
+
+    let document = match predicate_type {
+        FDX_VERIFICATION_PREDICATE_V1_TYPE => {
+            let statement: VerificationAttestation = serde_json::from_slice(&bytes).map_err(|e| {
+                format!("failed to strictly parse v1 attestation {:?}: {}", resolved_path, e)
+            })?;
+            if statement.predicate.schema_version != FDX_ATTESTATION_PREDICATE_VERSION {
+                return Err(format!(
+                    "v1 predicate URI in {:?} has unsupported schema version {}",
+                    resolved_path, statement.predicate.schema_version
+                ));
+            }
+            AttestationDocument::V1(Box::new(statement))
+        }
+        FDX_VERIFICATION_PREDICATE_V2_TYPE => {
+            let statement: VerificationAttestationV2 = serde_json::from_slice(&bytes).map_err(|e| {
+                format!("failed to strictly parse v2 attestation {:?}: {}", resolved_path, e)
+            })?;
+            if statement.predicate.schema_version != FDX_ATTESTATION_PREDICATE_V2_VERSION {
+                return Err(format!(
+                    "v2 predicate URI in {:?} has unsupported schema version {}",
+                    resolved_path, statement.predicate.schema_version
+                ));
+            }
+            AttestationDocument::V2(Box::new(statement))
+        }
+        unsupported => {
+            return Err(format!(
+                "unsupported attestation predicateType {:?} in {:?}; refusing future or unknown predicate",
+                unsupported, resolved_path
+            ))
+        }
+    };
 
     if let Some(stem) = resolved_path.file_stem().and_then(|s| s.to_str()) {
         let parts: Vec<&str> = stem.split('.').collect();
-        if parts.len() == 2 && parts[0] != statement.predicate.run.run_id {
+        if parts.len() == 2 && parts[0] != document.run_id() {
             return Err(format!(
                 "Run ID mismatch in filename {:?}: filename prefix {:?} != attested run_id {:?}",
-                resolved_path, parts[0], statement.predicate.run.run_id
+                resolved_path,
+                parts[0],
+                document.run_id()
             ));
         }
     }
 
-    Ok((statement, bytes, sha256))
+    Ok(LoadedAttestation {
+        document,
+        bytes,
+        sha256,
+    })
+}
+
+/// Frozen v1 loader retained for callers which require a v1 document. It now
+/// delegates file safety to the version-dispatched loader and rejects v2 rather
+/// than accidentally deserializing it as a v1 statement.
+pub fn load_attestation_from_path(
+    repo_root: &Path,
+    file_path: &Path,
+    expected_sha256: Option<&str>,
+) -> Result<(VerificationAttestation, Vec<u8>, String), String> {
+    let loaded = load_attestation_document_from_path(repo_root, file_path, expected_sha256)?;
+    match loaded.document {
+        AttestationDocument::V1(statement) => Ok((*statement, loaded.bytes, loaded.sha256)),
+        AttestationDocument::V2(_) => {
+            Err("v2 attestation requires version-dispatched verification".to_string())
+        }
+    }
 }

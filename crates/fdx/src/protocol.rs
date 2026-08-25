@@ -20,8 +20,12 @@ pub const FDX_GRAPH_SCHEMA_VERSION: u32 = 10;
 /// Selection and escalation algorithm policy version.
 pub const FDX_SELECTION_POLICY_VERSION: u32 = 1;
 
-/// in-toto-compatible attestation statement predicate version.
+/// Default in-toto-compatible attestation statement predicate version retained for v1 clients.
 pub const FDX_ATTESTATION_PREDICATE_VERSION: u32 = 1;
+/// All attestation predicate versions implemented by this binary.
+pub const FDX_SUPPORTED_ATTESTATION_PREDICATE_VERSIONS: &[u32] = &[1, 2];
+/// Version of the local capability document consumed for authority-bearing negotiation.
+pub const FDX_CAPABILITY_CONTRACT_VERSION: u32 = 1;
 
 // ── Evidence Strength & Providers ─────────────────────────────────────
 
@@ -434,6 +438,12 @@ pub struct NegotiateResponse {
     pub graph_schema_version: u32,
     pub selection_policy_version: u32,
     pub attestation_predicate_version: u32,
+    /// Additive M12 capability contract; unknown versions must not be used as authority.
+    pub capability_contract_version: u32,
+    /// All supported predicate versions, preserving `attestation_predicate_version` for v1 clients.
+    pub attestation_predicate_versions: Vec<u32>,
+    pub calibration_contract_versions: Vec<u32>,
+    pub policy_contract_versions: Vec<u32>,
 }
 
 impl NegotiateResponse {
@@ -460,6 +470,10 @@ impl NegotiateResponse {
             graph_schema_version: FDX_GRAPH_SCHEMA_VERSION,
             selection_policy_version: FDX_SELECTION_POLICY_VERSION,
             attestation_predicate_version: FDX_ATTESTATION_PREDICATE_VERSION,
+            capability_contract_version: FDX_CAPABILITY_CONTRACT_VERSION,
+            attestation_predicate_versions: FDX_SUPPORTED_ATTESTATION_PREDICATE_VERSIONS.to_vec(),
+            calibration_contract_versions: vec![2],
+            policy_contract_versions: vec![1],
         }
     }
 }

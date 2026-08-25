@@ -1,6 +1,8 @@
 //! Attestation inspection and query helpers.
 
-use crate::intelligence::attestation::persist::{attestations_dir, load_attestation_from_path};
+use crate::intelligence::attestation::persist::{
+    attestations_dir, load_attestation_document_from_path, AttestationDocument,
+};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -8,6 +10,7 @@ use std::path::{Path, PathBuf};
 /// Summary of a discovered attestation file on disk.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttestationSummary {
+    pub predicate_type: String,
     pub run_id: String,
     pub attestation_sha256: String,
     pub artifact_sha256: String,
@@ -30,16 +33,30 @@ pub fn list_attestations(repo_root: &Path) -> Result<Vec<AttestationSummary>, St
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("json") {
-            if let Ok((attestation, _bytes, sha)) =
-                load_attestation_from_path(repo_root, &path, None)
-            {
+            if let Ok(loaded) = load_attestation_document_from_path(repo_root, &path, None) {
+                let predicate_type = loaded.document.predicate_type().to_string();
+                let (run_id, artifact_sha256, outcome, assurance) = match loaded.document {
+                    AttestationDocument::V1(attestation) => (
+                        attestation.predicate.run.run_id,
+                        attestation.predicate.run.artifact_sha256,
+                        attestation.predicate.result.outcome,
+                        attestation.predicate.result.assurance,
+                    ),
+                    AttestationDocument::V2(attestation) => (
+                        attestation.predicate.run.run_id,
+                        attestation.predicate.run.artifact_sha256,
+                        attestation.predicate.result.outcome,
+                        attestation.predicate.result.assurance,
+                    ),
+                };
                 summaries.push(AttestationSummary {
-                    run_id: attestation.predicate.run.run_id.clone(),
-                    attestation_sha256: sha,
-                    artifact_sha256: attestation.predicate.run.artifact_sha256.clone(),
+                    predicate_type,
+                    run_id,
+                    attestation_sha256: loaded.sha256,
+                    artifact_sha256,
                     path,
-                    outcome: attestation.predicate.result.outcome,
-                    assurance: attestation.predicate.result.assurance,
+                    outcome,
+                    assurance,
                 });
             }
         }

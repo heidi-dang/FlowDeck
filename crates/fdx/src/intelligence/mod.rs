@@ -1,6 +1,7 @@
 pub mod attestation;
 pub mod build;
 pub mod calibration;
+pub mod capabilities;
 pub mod change;
 pub mod compatibility;
 pub mod db;

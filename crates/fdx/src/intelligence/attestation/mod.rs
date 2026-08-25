@@ -8,6 +8,7 @@ pub mod canonical;
 pub mod model;
 pub mod persist;
 pub mod query;
+pub mod v2;
 pub mod verify;
 
 pub use build::{
@@ -25,8 +26,14 @@ pub use model::{
 };
 pub use persist::{
     attestation_file_path, attestations_dir, classify_attestation_source,
-    load_attestation_from_path, persist_attestation, AttestationSource, ManagedAttestationDir,
-    MAX_ATTESTATION_ARTIFACT_BYTES,
+    load_attestation_document_from_path, load_attestation_from_path, persist_attestation,
+    persist_attestation_v2, AttestationDocument, AttestationSource, LoadedAttestation,
+    ManagedAttestationDir, MAX_ATTESTATION_ARTIFACT_BYTES,
 };
 pub use query::{list_attestations, AttestationSummary};
+pub use v2::{
+    build_verification_attestation_v2, verify_attestation_v2, AppliedPolicyV2,
+    PolicyApplicationContextV2, VerificationAttestationV2, VerificationPredicateV2,
+    FDX_ATTESTATION_PREDICATE_V2_VERSION, FDX_VERIFICATION_PREDICATE_V2_TYPE,
+};
 pub use verify::{verify_attestation, AttestationVerificationReport};
