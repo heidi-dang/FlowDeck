@@ -91,4 +91,53 @@ fn test_attest_create_show_verify_roundtrip() {
     let report =
         verify_attestation(repo_root, &loaded, Some(&raw_att_bytes), None, &db.conn).unwrap();
     assert!(report.valid);
+
+    let binary = env!("CARGO_BIN_EXE_fdx");
+    let v1_output = std::process::Command::new(binary)
+        .current_dir(repo_root)
+        .args(["attest", "create", "--run", run_id, "--format", "json"])
+        .output()
+        .unwrap();
+    assert!(v1_output.status.success());
+    let v1: serde_json::Value = serde_json::from_slice(&v1_output.stdout).unwrap();
+    assert_eq!(v1["predicate_version"], "v1");
+    assert_eq!(
+        v1["statement"]["predicateType"],
+        fdx::intelligence::attestation::FDX_VERIFICATION_PREDICATE_V1_TYPE
+    );
+
+    let v2_output = std::process::Command::new(binary)
+        .current_dir(repo_root)
+        .args([
+            "attest",
+            "create",
+            "--run",
+            run_id,
+            "--predicate-version",
+            "v2",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert!(v2_output.status.success());
+    let v2: serde_json::Value = serde_json::from_slice(&v2_output.stdout).unwrap();
+    assert_eq!(v2["predicate_version"], "v2");
+    assert_eq!(
+        v2["statement"]["predicateType"],
+        fdx::intelligence::attestation::FDX_VERIFICATION_PREDICATE_V2_TYPE
+    );
+    assert!(v2["statement"]["predicate"].get("policy_context").is_none());
+
+    let v2_path = v2["path"].as_str().unwrap();
+    let verify_output = std::process::Command::new(binary)
+        .current_dir(repo_root)
+        .args(["attest", "verify", v2_path, "--format", "json"])
+        .output()
+        .unwrap();
+    assert!(
+        verify_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&verify_output.stderr)
+    );
 }

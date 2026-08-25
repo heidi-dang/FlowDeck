@@ -69,6 +69,9 @@ pub enum AttestAction {
         /// Verification run identifier
         #[arg(long)]
         run: String,
+        /// Predicate version: v1 preserves the frozen default; v2 binds M11 application provenance.
+        #[arg(long, default_value = "v1")]
+        predicate_version: String,
         /// Output format: text or json
         #[arg(long, default_value = "text")]
         format: String,
@@ -724,6 +727,16 @@ enum Commands {
     Calibrate {
         #[command(subcommand)]
         action: CalibrateAction,
+    },
+
+    /// Report the deterministic local M12 capability contract without network access or telemetry.
+    Capabilities {
+        /// Capability contract version required by the caller.
+        #[arg(long, default_value_t = 1)]
+        contract_version: u32,
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
     },
 
     /// Additive-only learned verification policy (Milestone 11)
@@ -2209,7 +2222,11 @@ fn main() {
             let repo_root = fdx::paths::find_repository_root(&cwd).unwrap_or(cwd);
 
             match action {
-                AttestAction::Create { run, format } => {
+                AttestAction::Create {
+                    run,
+                    predicate_version,
+                    format,
+                } => {
                     let format = parse_format(&format);
                     let db = match fdx::intelligence::db::EvidenceDatabase::open(
                         &repo_root,
@@ -2222,54 +2239,117 @@ fn main() {
                         }
                     };
 
-                    let attestation =
-                        match fdx::intelligence::attestation::build_verification_attestation(
-                            &repo_root, &run, &db.conn,
-                        ) {
-                            Ok(a) => a,
-                            Err(e) => {
-                                eprintln!("Error building verification attestation: {}", e);
+                    let (path, sha256, artifact_sha256, outcome, assurance, statement) =
+                        match predicate_version.as_str() {
+                            "v1" => {
+                                let attestation = match fdx::intelligence::attestation::build_verification_attestation(
+                                    &repo_root, &run, &db.conn,
+                                ) {
+                                    Ok(a) => a,
+                                    Err(e) => {
+                                        eprintln!("Error building verification attestation: {}", e);
+                                        process::exit(1);
+                                    }
+                                };
+                                let (path, sha256) =
+                                    match fdx::intelligence::attestation::persist_attestation(
+                                        &repo_root,
+                                        &attestation,
+                                    ) {
+                                        Ok(saved) => saved,
+                                        Err(e) => {
+                                            eprintln!("Error persisting attestation: {}", e);
+                                            process::exit(1);
+                                        }
+                                    };
+                                let statement =
+                                    serde_json::to_value(&attestation).unwrap_or_else(|e| {
+                                        eprintln!(
+                                            "Error serializing verification attestation: {}",
+                                            e
+                                        );
+                                        process::exit(1);
+                                    });
+                                (
+                                    path,
+                                    sha256,
+                                    attestation.predicate.run.artifact_sha256,
+                                    format!("{:?}", attestation.predicate.result.outcome),
+                                    format!("{:?}", attestation.predicate.result.assurance),
+                                    statement,
+                                )
+                            }
+                            "v2" => {
+                                let attestation = match fdx::intelligence::attestation::build_verification_attestation_v2(
+                                    &repo_root, &run, &db.conn,
+                                ) {
+                                    Ok(a) => a,
+                                    Err(e) => {
+                                        eprintln!("Error building v2 verification attestation: {}", e);
+                                        process::exit(1);
+                                    }
+                                };
+                                let (path, sha256) =
+                                    match fdx::intelligence::attestation::persist_attestation_v2(
+                                        &repo_root,
+                                        &attestation,
+                                    ) {
+                                        Ok(saved) => saved,
+                                        Err(e) => {
+                                            eprintln!("Error persisting v2 attestation: {}", e);
+                                            process::exit(1);
+                                        }
+                                    };
+                                let statement =
+                                    serde_json::to_value(&attestation).unwrap_or_else(|e| {
+                                        eprintln!(
+                                            "Error serializing v2 verification attestation: {}",
+                                            e
+                                        );
+                                        process::exit(1);
+                                    });
+                                (
+                                    path,
+                                    sha256,
+                                    attestation.predicate.run.artifact_sha256,
+                                    format!("{:?}", attestation.predicate.result.outcome),
+                                    format!("{:?}", attestation.predicate.result.assurance),
+                                    statement,
+                                )
+                            }
+                            unsupported => {
+                                eprintln!(
+                                    "Unsupported predicate version '{}'; expected v1 or v2",
+                                    unsupported
+                                );
                                 process::exit(1);
                             }
                         };
 
-                    match fdx::intelligence::attestation::persist_attestation(
-                        &repo_root,
-                        &attestation,
-                    ) {
-                        Ok((path, sha256)) => match format {
-                            OutputFormat::Json => {
-                                let obj = serde_json::json!({
-                                    "status": "created",
-                                    "run_id": run,
-                                    "path": path,
-                                    "attestation_sha256": sha256,
-                                    "artifact_sha256": attestation.predicate.run.artifact_sha256,
-                                    "statement": attestation,
-                                });
-                                if let Ok(s) = serde_json::to_string_pretty(&obj) {
-                                    println!("{}", s);
-                                }
+                    match format {
+                        OutputFormat::Json => {
+                            let obj = serde_json::json!({
+                                "status": "created",
+                                "run_id": run,
+                                "predicate_version": predicate_version,
+                                "path": path,
+                                "attestation_sha256": sha256,
+                                "artifact_sha256": artifact_sha256,
+                                "statement": statement,
+                            });
+                            if let Ok(s) = serde_json::to_string_pretty(&obj) {
+                                println!("{}", s);
                             }
-                            OutputFormat::Text => {
-                                println!("Verification Attestation Created:");
-                                println!("  Run ID: {}", run);
-                                println!("  Attestation SHA-256: {}", sha256);
-                                println!(
-                                    "  Artifact SHA-256: {}",
-                                    attestation.predicate.run.artifact_sha256
-                                );
-                                println!("  Outcome: {:?}", attestation.predicate.result.outcome);
-                                println!(
-                                    "  Assurance: {:?}",
-                                    attestation.predicate.result.assurance
-                                );
-                                println!("  Path: {:?}", path);
-                            }
-                        },
-                        Err(e) => {
-                            eprintln!("Error persisting attestation: {}", e);
-                            process::exit(1);
+                        }
+                        OutputFormat::Text => {
+                            println!("Verification Attestation Created:");
+                            println!("  Run ID: {}", run);
+                            println!("  Predicate version: {}", predicate_version);
+                            println!("  Attestation SHA-256: {}", sha256);
+                            println!("  Artifact SHA-256: {}", artifact_sha256);
+                            println!("  Outcome: {}", outcome);
+                            println!("  Assurance: {}", assurance);
+                            println!("  Path: {:?}", path);
                         }
                     }
                 }
@@ -2290,26 +2370,41 @@ fn main() {
                         }
                     };
 
-                    let (statement, raw_bytes, _file_sha) =
-                        match fdx::intelligence::attestation::load_attestation_from_path(
+                    let loaded =
+                        match fdx::intelligence::attestation::load_attestation_document_from_path(
                             &repo_root,
                             &file,
                             expected_sha256.as_deref(),
                         ) {
-                            Ok(res) => res,
+                            Ok(loaded) => loaded,
                             Err(e) => {
                                 eprintln!("Error loading attestation file: {}", e);
                                 process::exit(1);
                             }
                         };
+                    let predicate_type = loaded.document.predicate_type().to_string();
+                    let verification = match loaded.document {
+                        fdx::intelligence::attestation::AttestationDocument::V1(statement) => {
+                            fdx::intelligence::attestation::verify_attestation(
+                                &repo_root,
+                                &statement,
+                                Some(&loaded.bytes),
+                                expected_sha256.as_deref(),
+                                &db.conn,
+                            )
+                        }
+                        fdx::intelligence::attestation::AttestationDocument::V2(statement) => {
+                            fdx::intelligence::attestation::verify_attestation_v2(
+                                &repo_root,
+                                &statement,
+                                Some(&loaded.bytes),
+                                expected_sha256.as_deref(),
+                                &db.conn,
+                            )
+                        }
+                    };
 
-                    match fdx::intelligence::attestation::verify_attestation(
-                        &repo_root,
-                        &statement,
-                        Some(&raw_bytes),
-                        expected_sha256.as_deref(),
-                        &db.conn,
-                    ) {
+                    match verification {
                         Ok(report) => match format {
                             OutputFormat::Json => {
                                 if let Ok(s) = serde_json::to_string_pretty(&report) {
@@ -2318,6 +2413,7 @@ fn main() {
                             }
                             OutputFormat::Text => {
                                 println!("Verification Attestation Verified:");
+                                println!("  Predicate Type: {}", predicate_type);
                                 println!("  Valid: {}", report.valid);
                                 println!("  Run ID: {}", report.run_id);
                                 println!("  Attestation SHA-256: {}", report.attestation_sha256);
@@ -2340,11 +2436,11 @@ fn main() {
                 }
                 AttestAction::Show { file, format } => {
                     let format = parse_format(&format);
-                    let (statement, _bytes, file_sha) =
-                        match fdx::intelligence::attestation::load_attestation_from_path(
+                    let loaded =
+                        match fdx::intelligence::attestation::load_attestation_document_from_path(
                             &repo_root, &file, None,
                         ) {
-                            Ok(res) => res,
+                            Ok(loaded) => loaded,
                             Err(e) => {
                                 eprintln!("Error loading attestation file: {}", e);
                                 process::exit(1);
@@ -2353,51 +2449,93 @@ fn main() {
 
                     match format {
                         OutputFormat::Json => {
-                            if let Ok(s) = serde_json::to_string_pretty(&statement) {
-                                println!("{}", s);
+                            let rendered = match &loaded.document {
+                                fdx::intelligence::attestation::AttestationDocument::V1(
+                                    statement,
+                                ) => serde_json::to_string_pretty(statement),
+                                fdx::intelligence::attestation::AttestationDocument::V2(
+                                    statement,
+                                ) => serde_json::to_string_pretty(statement),
+                            };
+                            match rendered {
+                                Ok(rendered) => println!("{}", rendered),
+                                Err(error) => {
+                                    eprintln!("Error serializing attestation: {}", error);
+                                    process::exit(1);
+                                }
                             }
                         }
                         OutputFormat::Text => {
                             println!("Verification Attestation Statement:");
-                            println!("  Type: {}", statement.statement_type);
-                            println!("  Predicate Type: {}", statement.predicate_type);
-                            println!("  File SHA-256: {}", file_sha);
-                            println!("  Run ID: {}", statement.predicate.run.run_id);
-                            println!(
-                                "  Artifact SHA-256: {}",
-                                statement.predicate.run.artifact_sha256
-                            );
-                            println!("  Plan SHA-256: {}", statement.predicate.run.plan_sha256);
-                            println!("  Outcome: {:?}", statement.predicate.result.outcome);
-                            println!("  Assurance: {:?}", statement.predicate.result.assurance);
-                            println!(
-                                "  Total Obligations: {}",
-                                statement.predicate.plan.total_obligations
-                            );
-                            println!("  Checks ({}):", statement.predicate.checks.len());
-                            for c in &statement.predicate.checks {
-                                println!(
-                                    "    - {} (status: {:?}, physical: {}, reused: {})",
-                                    c.check_id,
-                                    c.status,
-                                    c.has_physical_execution,
-                                    c.reused_execution
-                                );
-                            }
-                            println!("  Executions ({}):", statement.predicate.executions.len());
-                            for e in &statement.predicate.executions {
-                                println!(
-                                    "    - {} (prog: {}, status: {:?}, dur: {}ms)",
-                                    e.execution_id, e.program, e.status, e.duration_ms
-                                );
-                            }
-                            if !statement.predicate.uncertainty.is_empty() {
-                                println!(
-                                    "  Uncertainty ({}):",
-                                    statement.predicate.uncertainty.len()
-                                );
-                                for u in &statement.predicate.uncertainty {
-                                    println!("    - [{}] {}", u.code, u.message);
+                            println!("  Predicate Type: {}", loaded.document.predicate_type());
+                            println!("  File SHA-256: {}", loaded.sha256);
+                            match &loaded.document {
+                                fdx::intelligence::attestation::AttestationDocument::V1(
+                                    statement,
+                                ) => {
+                                    println!("  Type: {}", statement.statement_type);
+                                    println!("  Run ID: {}", statement.predicate.run.run_id);
+                                    println!(
+                                        "  Artifact SHA-256: {}",
+                                        statement.predicate.run.artifact_sha256
+                                    );
+                                    println!(
+                                        "  Plan SHA-256: {}",
+                                        statement.predicate.run.plan_sha256
+                                    );
+                                    println!("  Outcome: {:?}", statement.predicate.result.outcome);
+                                    println!(
+                                        "  Assurance: {:?}",
+                                        statement.predicate.result.assurance
+                                    );
+                                    println!(
+                                        "  Total Obligations: {}",
+                                        statement.predicate.plan.total_obligations
+                                    );
+                                    println!(
+                                        "  Checks: {} | Executions: {} | Uncertainty: {}",
+                                        statement.predicate.checks.len(),
+                                        statement.predicate.executions.len(),
+                                        statement.predicate.uncertainty.len()
+                                    );
+                                }
+                                fdx::intelligence::attestation::AttestationDocument::V2(
+                                    statement,
+                                ) => {
+                                    println!("  Type: {}", statement.statement_type);
+                                    println!("  Run ID: {}", statement.predicate.run.run_id);
+                                    println!(
+                                        "  Artifact SHA-256: {}",
+                                        statement.predicate.run.artifact_sha256
+                                    );
+                                    println!(
+                                        "  Plan SHA-256: {}",
+                                        statement.predicate.run.plan_sha256
+                                    );
+                                    println!("  Outcome: {:?}", statement.predicate.result.outcome);
+                                    println!(
+                                        "  Assurance: {:?}",
+                                        statement.predicate.result.assurance
+                                    );
+                                    println!(
+                                        "  Total Obligations: {}",
+                                        statement.predicate.plan.total_obligations
+                                    );
+                                    println!(
+                                        "  Checks: {} | Executions: {} | Uncertainty: {}",
+                                        statement.predicate.checks.len(),
+                                        statement.predicate.executions.len(),
+                                        statement.predicate.uncertainty.len()
+                                    );
+                                    match &statement.predicate.policy_context {
+                                        Some(context) => println!(
+                                            "  Policy Context: application={} snapshot={} added_checks={}",
+                                            context.policy_application_digest,
+                                            context.policy_snapshot_digest,
+                                            context.added_check_ids.len(),
+                                        ),
+                                        None => println!("  Policy Context: none (base-only run)"),
+                                    }
                                 }
                             }
                         }
@@ -2792,6 +2930,61 @@ Checks ({}):",
             }
         }
 
+        Commands::Capabilities {
+            contract_version,
+            format,
+        } => {
+            let format = parse_format(&format);
+            let capabilities =
+                match fdx::intelligence::capabilities::require_supported_capability_contract(
+                    contract_version,
+                ) {
+                    Ok(capabilities) => capabilities,
+                    Err(error) => {
+                        eprintln!("Error reporting capabilities: {error}");
+                        process::exit(1);
+                    }
+                };
+            match format {
+                OutputFormat::Json => match serde_json::to_string_pretty(&capabilities) {
+                    Ok(rendered) => println!("{rendered}"),
+                    Err(error) => {
+                        eprintln!("Error serializing capabilities: {error}");
+                        process::exit(1);
+                    }
+                },
+                OutputFormat::Text => {
+                    println!(
+                        "FlowDeck Local Capabilities (contract v{}):",
+                        capabilities.capability_contract_version
+                    );
+                    println!(
+                        "  Protocol: v{} | graph read {}..{} | write max {}",
+                        capabilities.fdx_protocol_version,
+                        capabilities.graph_schema.minimum_readable,
+                        capabilities.graph_schema.maximum_writable,
+                        capabilities.graph_schema.maximum_writable,
+                    );
+                    println!(
+                        "  Predicates: {}",
+                        capabilities.verification_predicate_versions.join(", ")
+                    );
+                    println!(
+                        "  Calibration contracts: {:?}",
+                        capabilities.calibration_contract_versions
+                    );
+                    println!(
+                        "  Policy contracts: {:?}",
+                        capabilities.policy_contract_versions
+                    );
+                    println!(
+                        "  Network access: {} | telemetry: {}",
+                        capabilities.network_access, capabilities.telemetry
+                    );
+                    println!("  Platform: {}", capabilities.platform);
+                }
+            }
+        }
         Commands::Policy { action } => {
             let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
             let repo_root = fdx::paths::find_repository_root(&cwd).unwrap_or(cwd);
