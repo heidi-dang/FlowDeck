@@ -22,6 +22,7 @@ import {
 } from "../orchestration/routing/fast-router-adapter";
 import { classifyUserTurnIntent } from "../services/user-turn-intent";
 import { normalizeTaskInvocation } from "../services/task-invocation-adapter";
+import { isInternalFlowDeckMessage } from "./message-provenance";
 
 export interface PendingFastDirectTurn {
   sessionID: string;
@@ -189,6 +190,20 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
         .join("\n");
 
       if (!text.trim()) return;
+
+      // Authority boundary: internal FlowDeck orchestration messages injected via
+      // session.promptAsync are transported as role=user by OpenCode but must NEVER
+      // establish genuine user authority, increment userTurnVersion, or enter task
+      // classification. This check runs before incrementTurnVersion to prevent the
+      // confirmed v2.5.0 loop where synthetic messages silently incremented the
+      // durable user-turn counter and created new continuation authority.
+      //
+      // See: src/runtime/message-provenance.ts for the authoritative prefix list.
+      // See: BUG-001 in hotfix/v2.5.1-runtime-authority for root-cause analysis.
+      if (isInternalFlowDeckMessage(text)) {
+        noteInternalContinuation(input.sessionID);
+        return;
+      }
 
       const msgHash = stableHash(text);
       const _currentTurn = this.runtime.sessionTurnRepo?.incrementTurnVersion({
