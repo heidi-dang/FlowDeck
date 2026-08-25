@@ -22,6 +22,7 @@ import {
   resolveSourceSha,
   isCodeModeTelemetry,
   specialistPlanFromRoutingDecision,
+  repoMasterAdviceFromRoutingDecision,
 } from "../src/orchestration/routing/fast-router-adapter";
 import { buildSpecialistPlan, readySpecialistSpecs } from "../src/orchestration/routing/specialist-planner";
 import { classifyTask } from "../src/services/heidi-fast-router";
@@ -206,6 +207,29 @@ describe("FlowDeck Orchestration Foundation Integration Tests", () => {
     }
   });
 
+  it("5a. repo-master-routing-evidence-survives-cold-restart: run-bound advice restores from canonical routing while shared cache stays metadata-only", async () => {
+    const sessionID = "sess-restart-repo-master";
+    const first = acquireProjectRuntime(dirA);
+    await first.adapter.onChatMessage(
+      { sessionID, agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "Perform a security vulnerability scan on authentication routes.", id: "1", sessionID, messageID: "restart-repo-master" }] }
+    );
+    const runId = first.runtime.sessionRepo.findById(sessionID)!.runId;
+    const before = repoMasterAdviceFromRoutingDecision(first.runtime.routingDecisionRepository.getLatestDecisionForRun(runId)!);
+    expect(before?.runId).toBe(runId);
+    await disposeProjectRuntime(dirA);
+    closeAllConnections();
+    _resetRouteState();
+
+    const restarted = acquireProjectRuntime(dirA);
+    await restarted.adapter.hydrateSessionRoute(sessionID);
+    const after = repoMasterAdviceFromRoutingDecision(restarted.runtime.routingDecisionRepository.getLatestDecisionForRun(runId)!);
+    expect(after?.runId).toBe(runId);
+    expect(after?.requestId).toBe(before?.requestId);
+    expect(restarted.runtime.orchestrationSnapshotService.getSnapshot(runId, sessionID)?.repoMaster.status).toBe("fresh");
+    await releaseProjectRuntime(dirA);
+  });
+
   it("6. user-turn-intent-classifier: unit tests for all domain intents", () => {
     expect(classifyUserTurnIntent({ newMessage: "x", messageHash: "h1", lastMessageHash: "h1" }).intent).toBe("REPLAY");
     expect(classifyUserTurnIntent({ newMessage: "continue" }).intent).toBe("CONTINUE");
@@ -373,9 +397,13 @@ describe("FlowDeck Orchestration Foundation Integration Tests", () => {
     expect(specialistPlan?.executionMode).toBe("SINGLE_SPECIALIST");
     expect(specialistPlan?.specs).toHaveLength(1);
     expect(ctx.runtime.metrics.singleSpecialistTaskCount.get()).toBe(1);
-    expect(ctx.runtime.orchestrationSnapshotService.getSnapshot(session.runId, sessionID)?.specialistState).toMatchObject({
+    const initialSnapshot = ctx.runtime.orchestrationSnapshotService.getSnapshot(session.runId, sessionID)!;
+    expect(initialSnapshot.specialistState).toMatchObject({
       planned: 1, active: 0, completed: 0, failed: 0, attempts: 0, reasonCode: "SPECIALIST_SECURITY",
     });
+    expect(initialSnapshot.repoMaster).toMatchObject({ status: "fresh" });
+    expect(initialSnapshot.repoMaster.relevantScopeCount).toBeGreaterThanOrEqual(0);
+    expect(JSON.stringify(initialSnapshot.repoMaster)).not.toContain(dirA);
 
     await ctx.adapter.onSessionIdle(sessionID);
     const postIdleSnapshot = ctx.runtime.orchestrationSnapshotService.getSnapshot(session.runId, sessionID)!;
@@ -1358,6 +1386,33 @@ describe("FlowDeck Orchestration Foundation Integration Tests", () => {
     await releaseProjectRuntime(dirA);
   });
 
+  it("38a. cancellation-cannot-resurrect-repo-master-advice: terminal cancellation blocks later consultation and specialist dispatch", async () => {
+    const ctx = acquireProjectRuntime(dirA);
+    const sessionID = "sess-cancel-repo-master";
+    const prompts: unknown[] = [];
+    ctx.adapter.setClient({ session: { promptAsync: async (input: unknown) => { prompts.push(input); return { data: { accepted: true } }; } } });
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "Perform a security vulnerability scan on authentication routes.", id: "1", sessionID, messageID: "cancel-repo-master" }] }
+    );
+    const run = await ctx.adapter.resolveActiveRunForSession(sessionID);
+    expect(run).not.toBeNull();
+    const persisted = ctx.runtime.routingDecisionRepository.getLatestDecisionForRun(run!.id)!;
+    expect(repoMasterAdviceFromRoutingDecision(persisted)?.runId).toBe(run!.id);
+    const consultationsBeforeCancel = ctx.runtime.metrics.repoMasterConsultations.get();
+
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "cancel this task", id: "2", sessionID, messageID: "cancel-repo-master-2" }] }
+    );
+    await ctx.adapter.onSessionIdle(sessionID);
+
+    expect(await ctx.adapter.resolveActiveRunForSession(sessionID)).toBeNull();
+    expect(ctx.runtime.metrics.repoMasterConsultations.get()).toBe(consultationsBeforeCancel);
+    expect(prompts).toHaveLength(0);
+    await releaseProjectRuntime(dirA);
+  });
+
   it("39. cold-restart-reconciliation: reloads non-terminal child execution state from SQLite without fabricating success", async () => {
     const ctx1 = acquireProjectRuntime(dirA);
     const sessionID = "sess-restart-child";
@@ -1534,6 +1589,31 @@ describe("FlowDeck Orchestration Foundation Integration Tests", () => {
     expect(runB).not.toBeNull();
     expect(runB?.id).not.toBe(runA?.id);
 
+    await releaseProjectRuntime(dirA);
+  });
+
+  it("43a. replacement-regenerates-run-bound-repo-master-advice: superseded repository advice cannot be reused by the replacement run", async () => {
+    const ctx = acquireProjectRuntime(dirA);
+    const sessionID = "sess-replace-repo-master";
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "Perform a security vulnerability scan on the authentication routes.", id: "1", sessionID, messageID: "repo-master-a" }] }
+    );
+    const runA = await ctx.adapter.resolveActiveRunForSession(sessionID);
+    expect(runA).not.toBeNull();
+    const adviceA = repoMasterAdviceFromRoutingDecision(ctx.runtime.routingDecisionRepository.getLatestDecisionForRun(runA!.id)!);
+    expect(adviceA?.runId).toBe(runA!.id);
+
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "scratch that, instead perform a security vulnerability scan on the billing routes.", id: "2", sessionID, messageID: "repo-master-b" }] }
+    );
+    const runB = await ctx.adapter.resolveActiveRunForSession(sessionID);
+    expect(runB).not.toBeNull();
+    expect(runB!.id).not.toBe(runA!.id);
+    const adviceB = repoMasterAdviceFromRoutingDecision(ctx.runtime.routingDecisionRepository.getLatestDecisionForRun(runB!.id)!);
+    expect(adviceB?.runId).toBe(runB!.id);
+    expect(adviceB?.requestId).not.toBe(adviceA?.requestId);
     await releaseProjectRuntime(dirA);
   });
 

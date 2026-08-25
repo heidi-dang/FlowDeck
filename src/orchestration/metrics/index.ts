@@ -48,6 +48,12 @@ const METRIC_DESCRIPTIONS: Record<string, string> = {
   fanout_blocked: "Number of specialist candidates blocked by fan-out policy",
   specialist_failures: "Number of failed specialist child executions",
   specialist_replans: "Number of specialist-plan revisions",
+  repo_master_consultations: "Number of advisory Repo Master consultations",
+  repo_master_cache_hits: "Number of advisory Repo Master cache hits",
+  repo_master_cache_misses: "Number of advisory Repo Master cache misses",
+  repo_master_refreshes: "Number of advisory Repo Master index refreshes",
+  repo_master_stale_advice: "Number of stale Repo Master advice observations",
+  repo_master_consultation_latency_ms: "Repo Master consultation latency in milliseconds",
 };
 
 // ── OrchestrationMetrics ───────────────────────────────────────────────────
@@ -126,6 +132,12 @@ export class OrchestrationMetrics {
   readonly specialistFailures: Counter;
   readonly specialistReplans: Counter;
   readonly specialistSetupLatency: Histogram;
+  readonly repoMasterConsultations: Counter;
+  readonly repoMasterCacheHits: Counter;
+  readonly repoMasterCacheMisses: Counter;
+  readonly repoMasterRefreshes: Counter;
+  readonly repoMasterStaleAdvice: Counter;
+  readonly repoMasterConsultationLatency: Histogram;
 
   private readonly counters = new Map<string, number>();
   private readonly gauges = new Map<string, number>();
@@ -182,12 +194,18 @@ export class OrchestrationMetrics {
     this.fanoutBlocked = createCounter("fanout_blocked", this.counters);
     this.specialistFailures = createCounter("specialist_failures", this.counters);
     this.specialistReplans = createCounter("specialist_replans", this.counters);
+    this.repoMasterConsultations = createCounter("repo_master_consultations", this.counters);
+    this.repoMasterCacheHits = createCounter("repo_master_cache_hits", this.counters);
+    this.repoMasterCacheMisses = createCounter("repo_master_cache_misses", this.counters);
+    this.repoMasterRefreshes = createCounter("repo_master_refreshes", this.counters);
+    this.repoMasterStaleAdvice = createCounter("repo_master_stale_advice", this.counters);
 
     this.queryLatency = createHistogram("query_latency_ms", this.histograms);
     this.verificationLatency = createHistogram("verification_latency_ms", this.histograms);
     this.completionLatency = createHistogram("completion_latency_ms", this.histograms);
     this.routingAssessmentLatency = createHistogram("routing_assessment_duration", this.histograms);
     this.specialistSetupLatency = createHistogram("specialist_setup_latency_ms", this.histograms);
+    this.repoMasterConsultationLatency = createHistogram("repo_master_consultation_latency_ms", this.histograms);
 
     this.activeRuns = createGauge("active_runs", this.gauges);
     this.subscriberLag = createGauge("subscriber_lag", this.gauges);
@@ -201,6 +219,15 @@ export class OrchestrationMetrics {
     if (facts.fanoutBlocked) this.fanoutBlocked.inc(facts.fanoutBlocked)
     if (facts.setupLatencyMs !== undefined) this.specialistSetupLatency.observe(facts.setupLatencyMs)
     if (facts.replanned) this.specialistReplans.inc()
+  }
+
+  recordRepoMasterConsultation(facts: { cacheHit: boolean; refreshed: boolean; fresh: boolean; latencyMs: number }): void {
+    this.repoMasterConsultations.inc()
+    if (facts.cacheHit) this.repoMasterCacheHits.inc()
+    else this.repoMasterCacheMisses.inc()
+    if (facts.refreshed) this.repoMasterRefreshes.inc()
+    if (!facts.fresh) this.repoMasterStaleAdvice.inc()
+    this.repoMasterConsultationLatency.observe(Math.max(0, facts.latencyMs))
   }
 
   recordSpecialistSpawn(): void { this.specialistsSpawned.inc() }

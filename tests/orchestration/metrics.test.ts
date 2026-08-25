@@ -123,6 +123,22 @@ describe("OrchestrationMetrics", () => {
     })
   })
 
+  describe("Repo Master advisory metrics", () => {
+    it("records aggregate consultation outcomes without unbounded labels", () => {
+      metrics.recordRepoMasterConsultation({ cacheHit: false, refreshed: true, fresh: true, latencyMs: 12 })
+      metrics.recordRepoMasterConsultation({ cacheHit: true, refreshed: false, fresh: false, latencyMs: 8 })
+
+      expect(metrics.repoMasterConsultations.get()).toBe(2)
+      expect(metrics.repoMasterCacheHits.get()).toBe(1)
+      expect(metrics.repoMasterCacheMisses.get()).toBe(1)
+      expect(metrics.repoMasterRefreshes.get()).toBe(1)
+      expect(metrics.repoMasterStaleAdvice.get()).toBe(1)
+      expect(metrics.repoMasterConsultationLatency.get()).toMatchObject({ count: 2, sum: 20, min: 8, max: 12, avg: 10 })
+      expect(() => metrics.assertBoundedCardinality()).not.toThrow()
+      expect(metrics.toPrometheusText()).toContain("repo_master_consultations 2")
+    })
+  })
+
   describe("snapshot()", () => {
     it("should snapshot all metrics including counter, gauge, and histogram statistics", () => {
       metrics.commandsDispatched.inc(3);

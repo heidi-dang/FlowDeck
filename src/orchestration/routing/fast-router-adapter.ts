@@ -17,6 +17,7 @@ import {
 } from "./contracts/task-intelligence";
 import { assessTask } from "./intelligence";
 import { buildSpecialistPlan, parseSpecialistPlan, type SpecialistPlan } from "./specialist-planner";
+import { parseRepoMasterAdvice, type RepoMasterAdvice } from "../repository/repo-master";
 import {
   type RouterDecision,
   type ExecutionClass,
@@ -126,6 +127,8 @@ export function buildCanonicalRoutingDecision(input: {
   lastUserMessageHash: string;
   directory?: string;
   sourceSha?: string;
+  /** Bounded advisory repository evidence; routing and SpecialistPlan remain authoritative. */
+  repoMasterAdvice?: RepoMasterAdvice;
 }): RoutingDecision {
   const sourceSha = resolveSourceSha(input.directory, input.sourceSha);
   const executionMode = input.decision.executionMode ?? executionModeForClass(input.decision.executionClass);
@@ -133,6 +136,7 @@ export function buildCanonicalRoutingDecision(input: {
     runId: input.runId,
     goal: input.goal,
     decision: { ...input.decision, executionMode },
+    repositoryAdvice: input.repoMasterAdvice,
   });
 
   // Use real FlowDeck assessment logic to compute taskClass, complexity, ambiguity, risk
@@ -152,6 +156,15 @@ export function buildCanonicalRoutingDecision(input: {
     { id: `ev-confidence-${randomUUID().slice(0, 8)}`, kind: "classification", signal: "confidence", value: String(input.decision.confidence), weight: 100 },
     { id: `ev-forced-signal-${randomUUID().slice(0, 8)}`, kind: "classification", signal: "forcedByExplicitSignal", value: String(Boolean(input.decision.forcedByExplicitSignal)), weight: 100 },
   ];
+  if (input.repoMasterAdvice) {
+    additionalEvidence.push({
+      id: `ev-repo-master-${randomUUID().slice(0, 8)}`,
+      kind: "repository",
+      signal: "repoMasterAdvice",
+      value: JSON.stringify(input.repoMasterAdvice),
+      weight: 75,
+    });
+  }
 
   if (input.decision.specialists && input.decision.specialists.length > 0) {
     additionalEvidence.push({
@@ -226,6 +239,13 @@ export function buildCanonicalRoutingDecision(input: {
   };
 
   return routingDecisionSchema.parse(raw);
+}
+
+export function repoMasterAdviceFromRoutingDecision(decision: RoutingDecision): RepoMasterAdvice | null {
+  const evidence = decision?.assessment?.evidence
+  if (!Array.isArray(evidence)) return null
+  const raw = evidence.find(item => item.signal === "repoMasterAdvice")?.value
+  return typeof raw === "string" ? parseRepoMasterAdvice(raw) : null
 }
 
 export function specialistPlanFromRoutingDecision(decision: RoutingDecision): SpecialistPlan | null {

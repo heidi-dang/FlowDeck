@@ -8,7 +8,7 @@ import {
   isDuplicateMessage,
   markRouteInactive,
 } from "../services/heidi-route-state";
-import { classifyTask, type RouterDecision, stableHash } from "../services/heidi-fast-router";
+import { classifyTask, executionModeForClass, type RouterDecision, stableHash } from "../services/heidi-fast-router";
 import type { Event, UserMessage, Part, TextPart } from "@opencode-ai/sdk";
 import { isTerminalRunStatus, OrchestrationPhase as OP, type Run } from "../orchestration/types/runs";
 import type { DeferredReplacementRecord } from "../orchestration/persistence/repositories/deferred-replacement";
@@ -18,6 +18,7 @@ import {
   reconstructRouterDecision,
   mapExecutionClassToRunStrategy,
   specialistPlanFromRoutingDecision,
+  repoMasterAdviceFromRoutingDecision,
 } from "../orchestration/routing/fast-router-adapter";
 import { classifyUserTurnIntent } from "../services/user-turn-intent";
 import { normalizeTaskInvocation } from "../services/task-invocation-adapter";
@@ -37,6 +38,7 @@ import {
 import type { NativeChildControlPort } from "../orchestration/services/child-execution-lifecycle-service";
 import { ContinuationDispatcher, type ContinuationToken, getContinuationPrompt } from "../orchestration/services/continuation-policy";
 import { readySpecialistSpecs } from "../orchestration/routing/specialist-planner";
+import { repoMasterConsultationRequirement, type RepoMasterAdvice } from "../orchestration/repository/repo-master";
 
 function specialistIdFromNativeTask(prompt?: string, description?: string): string | undefined {
   const match = `${description ?? ""}\n${prompt ?? ""}`.match(/\[FlowDeck specialist:([A-Za-z0-9-]+)\]/);
@@ -121,6 +123,42 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
 
   private getPathFingerprint(relPath: string): string {
     return getMutationTargetFingerprint(this.directory, [relPath]);
+  }
+
+  /**
+   * Repo Master contributes only bounded repository evidence. Routing, SpecialistPlan,
+   * native execution, VerificationService, and CompletionPolicy retain their authority.
+   */
+  private consultRepoMaster(runId: string, decision: RouterDecision, goal: string): { advice?: RepoMasterAdvice; requirement: "none" | "optional" | "required" } {
+    const executionMode = decision.executionMode ?? executionModeForClass(decision.executionClass);
+    const request = { runId, goal, executionMode, decision };
+    const requirement = repoMasterConsultationRequirement(request);
+    if (requirement === "none") return { requirement };
+    if (!this.runtime.repoMaster) {
+      if (requirement === "required") throw new Error("REPO_MASTER_REQUIRED_UNAVAILABLE");
+      return { requirement };
+    }
+    try {
+      const startedAt = performance.now();
+      const result = this.runtime.repoMaster.consult(request);
+      this.runtime.metrics?.recordRepoMasterConsultation?.({
+        cacheHit: result.cacheHit,
+        refreshed: result.refreshed,
+        fresh: this.runtime.repoMaster.isAdviceFresh(result.advice),
+        latencyMs: performance.now() - startedAt,
+      });
+      return { advice: result.advice, requirement };
+    } catch (error) {
+      if (requirement === "required") {
+        const detail = error instanceof Error ? error.message : String(error);
+        throw new Error(`REPO_MASTER_REQUIRED_CONSULTATION_FAILED: ${detail}`);
+      }
+      return { requirement };
+    }
+  }
+
+  private isRepoMasterAdviceFresh(advice: RepoMasterAdvice | null): boolean {
+    return Boolean(advice && this.runtime.repoMaster?.isAdviceFresh(advice));
   }
 
   async onChatMessage(
@@ -480,7 +518,9 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
             metadata: { taskId, goal, lastUserMessageHash: msgHash },
           });
 
-      // Authoritative routing persistence using real repository assessment
+      // Consult bounded repository intelligence before routing persistence. The Router and
+      // SpecialistPlan remain authoritative; required consultation failures stay explicit.
+      const repoMaster = this.consultRepoMaster(run.id, decision, goal);
       const specialistSetupStartedAt = performance.now();
       const canonicalRouting = buildCanonicalRoutingDecision({
         runId: run.id,
@@ -488,6 +528,7 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
         goal,
         lastUserMessageHash: msgHash,
         directory: this.directory,
+        repoMasterAdvice: repoMaster.advice,
       });
       this.runtime.routingDecisionRepository.saveDecision(canonicalRouting);
       const specialistPlan = specialistPlanFromRoutingDecision(canonicalRouting);
@@ -729,6 +770,9 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
           assignmentId: childRec?.assignmentId,
           executionId: childRec?.executionId,
         });
+        if (obs.repositoryStateDelta > 0) {
+          this.runtime.repoMaster?.invalidate(postTargets.targetPaths);
+        }
 
         if (inFlight) {
           const resultFingerprint = this.runtime.progressObservationService.computeResultFingerprint({
@@ -840,10 +884,41 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
    */
   private async dispatchReadySpecialists(activeRun: Run, sessionId: string): Promise<boolean> {
     // A specialist session cannot create a new team. Heidi is the sole dispatcher.
-    if (this.runtime.childExecutionLifecycleService.getChildExecution({ childSessionId: sessionId })) return false;
+    if (isTerminalRunStatus(activeRun.status) || this.runtime.childExecutionLifecycleService.getChildExecution({ childSessionId: sessionId })) return false;
+    const deferred = this.runtime.deferredReplacementRepo.findCurrentForSession(sessionId);
+    if (deferred?.oldRunId === activeRun.id) return false;
 
-    const decision = this.runtime.routingDecisionRepository.getLatestDecisionForRun(activeRun.id);
-    const plan = decision ? specialistPlanFromRoutingDecision(decision) : null;
+    let decision = this.runtime.routingDecisionRepository.getLatestDecisionForRun(activeRun.id);
+    let plan = decision ? specialistPlanFromRoutingDecision(decision) : null;
+    const persistedAdvice = decision ? repoMasterAdviceFromRoutingDecision(decision) : null;
+    const reconstructed = decision ? reconstructRouterDecision(decision) : null;
+    if (reconstructed) {
+      const requirement = repoMasterConsultationRequirement({
+        goal: reconstructed.goal,
+        executionMode: reconstructed.decision.executionMode ?? executionModeForClass(reconstructed.decision.executionClass),
+        decision: reconstructed.decision,
+      });
+      if (requirement !== "none" && !this.isRepoMasterAdviceFresh(persistedAdvice)) {
+        try {
+          const refreshed = this.consultRepoMaster(activeRun.id, reconstructed.decision, reconstructed.goal);
+          decision = buildCanonicalRoutingDecision({
+            runId: activeRun.id,
+            decision: reconstructed.decision,
+            goal: reconstructed.goal,
+            lastUserMessageHash: reconstructed.lastUserMessageHash,
+            directory: this.directory,
+            repoMasterAdvice: refreshed.advice,
+          });
+          this.runtime.routingDecisionRepository.saveDecision(decision);
+          plan = specialistPlanFromRoutingDecision(decision);
+        } catch (error) {
+          // Required consultation failure is explicit in durable dispatch behavior; no stale
+          // or invented repository evidence may be used to launch specialists.
+          console.warn("[FlowDeckLifecycleAdapter] specialist dispatch blocked:", error);
+          return false;
+        }
+      }
+    }
     if (!plan || plan.specs.length === 0 || plan.rejectedReason) return false;
 
     const children = this.runtime.childExecutionLifecycleService.listChildExecutionsForRun(activeRun.id);
@@ -886,7 +961,20 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
       validateAuthority: () => {
         const current = this.runtime.routingDecisionRepository.getLatestDecisionForRun(activeRun.id);
         const currentPlan = current ? specialistPlanFromRoutingDecision(current) : null;
-        return Boolean(currentPlan && currentPlan.runId === activeRun.id && currentPlan.specs.some(spec => spec.specialistId === ready[0]?.specialistId));
+        const currentAdvice = current ? repoMasterAdviceFromRoutingDecision(current) : null;
+        const currentRoute = current ? reconstructRouterDecision(current) : null;
+        const currentRequirement = currentRoute
+          ? repoMasterConsultationRequirement({
+              goal: currentRoute.goal,
+              executionMode: currentRoute.decision.executionMode ?? executionModeForClass(currentRoute.decision.executionClass),
+              decision: currentRoute.decision,
+            })
+          : "required";
+        const currentAdviceAllowed = currentRequirement === "required"
+          ? Boolean(currentAdvice && this.isRepoMasterAdviceFresh(currentAdvice))
+          : !currentAdvice || this.isRepoMasterAdviceFresh(currentAdvice);
+        const currentDeferred = this.runtime.deferredReplacementRepo.findCurrentForSession(sessionId);
+        return Boolean(!currentDeferred && currentAdviceAllowed && currentPlan && currentPlan.runId === activeRun.id && currentPlan.specs.some(spec => spec.specialistId === ready[0]?.specialistId));
       },
     });
     return dispatched.dispatched;

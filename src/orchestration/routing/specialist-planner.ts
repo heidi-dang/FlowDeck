@@ -10,6 +10,7 @@ import {
   type RouterDecision,
   type SpecialistDomain,
 } from "../../services/heidi-fast-router"
+import type { RepoMasterAdvice } from "../repository/repo-master"
 
 export const SPECIALIST_PLAN_VERSION = "1.0.0"
 export const DEFAULT_MAX_SPECIALISTS = 3
@@ -74,6 +75,8 @@ export interface SpecialistPlannerInput {
   candidates?: SpecialistCandidate[]
   policy?: SpecialistPlanningPolicy
   callerDepth?: number
+  /** Bounded repository evidence from Repo Master; it never supplies agents, models, or execution authority. */
+  repositoryAdvice?: Pick<RepoMasterAdvice, "scope" | "relevantFiles" | "architecturalConstraints" | "requestId">
 }
 
 function stableId(input: string): string {
@@ -120,7 +123,7 @@ function validateDependencyGraph(specs: readonly SpecialistSpec[]): void {
   for (const spec of specs) visit(spec.specialistId)
 }
 
-function candidatesFromDecision(decision: RouterDecision, goal: string): SpecialistCandidate[] {
+function candidatesFromDecision(decision: RouterDecision, goal: string, repositoryAdvice?: SpecialistPlannerInput["repositoryAdvice"]): SpecialistCandidate[] {
   const domains = decision.specialists ?? []
   const agents = decision.suggestedAgents ?? []
   return domains.flatMap((capability, index) => {
@@ -128,12 +131,14 @@ function candidatesFromDecision(decision: RouterDecision, goal: string): Special
     if (!targetAgent) return []
     const id = `${capability.toLowerCase()}-${targetAgent}`
     const architectureId = "architecture-architect"
+    const repositoryScope = repositoryAdvice?.scope.slice(0, 4) ?? []
+    const constraint = repositoryAdvice?.architecturalConstraints.slice(0, 1).join(" ")
     return [{
       id,
       capability,
       targetAgent,
-      objective: `Provide focused ${capability.toLowerCase()} evidence for: ${compactGoal(goal)}`,
-      scope: [capability.toLowerCase()],
+      objective: `Provide focused ${capability.toLowerCase()} evidence for: ${compactGoal(goal)}${constraint ? ` Constraint: ${constraint}` : ""}`,
+      scope: [capability.toLowerCase(), ...repositoryScope],
       dependsOn: decision.reasonCode === "MULTI_DEEP_MIGRATION" && capability === "REVIEW" ? [architectureId] : [],
       required: true,
       priority: "normal",
@@ -172,7 +177,7 @@ export function buildSpecialistPlan(input: SpecialistPlannerInput): SpecialistPl
     }
   }
 
-  const rawCandidates = input.candidates ?? candidatesFromDecision(input.decision, input.goal)
+  const rawCandidates = input.candidates ?? candidatesFromDecision(input.decision, input.goal, input.repositoryAdvice)
   const unique = new Map<string, SpecialistCandidate>()
   let deduplicated = 0
   for (const candidate of rawCandidates) {

@@ -91,6 +91,7 @@ import type { IsolatedWorkstreamExecutor } from "./execution/worktree-executor";
 import type { CommandRegistry } from "./commands/domain/command-registry";
 import type { DurableCommandExecutor, CommandFaultHook } from "./commands/services/durable-command-executor";
 import { createCoreCommandRuntime } from "./commands/services/command-runtime";
+import { RepoMaster } from "./repository/repo-master";
 
 export interface ProductionOrchestrationRuntime {
   db: Database;
@@ -133,6 +134,8 @@ export interface ProductionOrchestrationRuntime {
   continuationDispatcher: ContinuationDispatcher;
   routingDecisionRepository: SqliteRoutingDecisionRepository;
   routingRevisionService: RoutingRevisionService;
+  /** Advisory repository intelligence; it has no execution, verification, or completion authority. */
+  repoMaster?: RepoMaster;
   metrics: OrchestrationMetrics;
   executionRepository: SqliteExecutionRepository;
   executionScheduler: ExecutionScheduler;
@@ -788,7 +791,7 @@ function safeParseJSON(raw: string): Record<string, unknown> {
 
 // ── Production composition factory ─────────────────────────────────────
 
-export function createProductionOrchestrationRuntime(db: Database, options: { repositoryPath?: string; worktreeRoot?: string; routingMode?: () => string; budgetState?: () => Record<string, unknown>; fdxHealth?: () => Record<string, unknown>; agentExecutor?: IsolatedWorkstreamExecutor; faultHook?: CommandFaultHook } = {}): ProductionOrchestrationRuntime {
+export function createProductionOrchestrationRuntime(db: Database, options: { repositoryPath?: string; worktreeRoot?: string; routingMode?: () => string; budgetState?: () => Record<string, unknown>; fdxHealth?: () => Record<string, unknown>; agentExecutor?: IsolatedWorkstreamExecutor; faultHook?: CommandFaultHook; repoMaster?: RepoMaster } = {}): ProductionOrchestrationRuntime {
   const executionRegistry = new ExecutionRegistry();
   const unitOfWork = new SqliteUnitOfWork(db);
   const txManager = createTransactionManager(db);
@@ -817,6 +820,7 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
   const sessionTurnRepo = new SessionTurnRepository(db, txManager);
   const routingDecisionRepository = new SqliteRoutingDecisionRepository(db, txManager);
   const routingRevisionService = new RoutingRevisionService(routingDecisionRepository);
+  const repoMaster = options.repoMaster ?? new RepoMaster(options.repositoryPath ?? process.cwd());
   const metrics = new OrchestrationMetrics();
   const executionRepository = new SqliteExecutionRepository(db, txManager, metrics);
   executionRepository.reconcileIntegratedAttempts();
@@ -859,7 +863,8 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
     assignmentRepo,
     nativeChildRepo,
     progressObservationService,
-    sessionRepo
+    sessionRepo,
+    repoMaster
   );
   const transitionEngine = new RunTransitionEngine(
     db,
@@ -939,6 +944,7 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
     router,
     routingDecisionRepository,
     routingRevisionService,
+    repoMaster,
     childExecutionLifecycleService,
     progressObservationService,
     orchestrationSnapshotService,

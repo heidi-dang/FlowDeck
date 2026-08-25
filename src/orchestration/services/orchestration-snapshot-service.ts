@@ -20,7 +20,8 @@ import type { ProgressObservationService } from "./progress-observation-service"
 import type { SqliteSessionRepository } from "../persistence/repositories/session";
 import type { OrchestrationPhase } from "../types/runs";
 import type { AssignmentStatus } from "../types/assignments";
-import { specialistPlanFromRoutingDecision } from "../routing/fast-router-adapter";
+import { repoMasterAdviceFromRoutingDecision, specialistPlanFromRoutingDecision } from "../routing/fast-router-adapter";
+import type { RepoMaster } from "../repository/repo-master";
 
 export interface WorkItemSnapshot {
   id: string;
@@ -84,6 +85,13 @@ export interface OrchestrationSnapshot {
     cancellationPending: boolean;
     unresolvedDeferredReplacement: boolean;
   };
+  /** Aggregate advisory diagnostics only; never exposes repository paths, prompts, models, or source content. */
+  repoMaster: {
+    status: "none" | "invalid" | "fresh" | "stale" | "unavailable";
+    generatedAt?: string;
+    lastRefreshAt?: string;
+    relevantScopeCount?: number;
+  };
   verificationState?: {
     lastVerificationHash?: string;
   };
@@ -102,6 +110,7 @@ export class OrchestrationSnapshotService {
     private readonly nativeChildRepo: SqliteNativeChildExecutionRepository,
     private readonly progressService: ProgressObservationService,
     private readonly sessionRepo: SqliteSessionRepository,
+    private readonly repoMaster?: RepoMaster,
   ) {}
 
   computeStateFingerprint(runId: string, sessionId?: string): string | null {
@@ -176,6 +185,21 @@ export class OrchestrationSnapshotService {
     const decision = this.routingDecisionRepo.getLatestDecisionForRun(runId);
     const executionClass = decision?.strategy;
     const specialistPlan = decision ? specialistPlanFromRoutingDecision(decision) : null;
+    const rawRepoMasterAdvice = decision?.assessment?.evidence.find(item => item.signal === "repoMasterAdvice")?.value;
+    const repoMasterAdvice = decision ? repoMasterAdviceFromRoutingDecision(decision) : null;
+    const repoMasterDiagnostics = repoMasterAdvice ? this.repoMaster?.diagnostics() : undefined;
+    const repoMaster = !rawRepoMasterAdvice
+      ? { status: "none" as const }
+      : !repoMasterAdvice
+        ? { status: "invalid" as const }
+        : !this.repoMaster
+          ? { status: "unavailable" as const, generatedAt: repoMasterAdvice.generatedAt, relevantScopeCount: repoMasterAdvice.scope.length }
+          : {
+              status: repoMasterDiagnostics?.repository.repositoryId === repoMasterAdvice.repository.repositoryId && repoMasterDiagnostics.repository.fingerprint === repoMasterAdvice.repository.fingerprint ? "fresh" as const : "stale" as const,
+              generatedAt: repoMasterAdvice.generatedAt,
+              lastRefreshAt: repoMasterDiagnostics?.lastRefreshAt,
+              relevantScopeCount: repoMasterAdvice.scope.length,
+            };
 
     // 3. Resolve Work Items (Assignments)
     const assignmentRows = this.db.query("SELECT * FROM assignments WHERE run_id = ? ORDER BY created_at ASC, id ASC").all(runId) as Record<string, unknown>[];
@@ -370,6 +394,7 @@ export class OrchestrationSnapshotService {
         cancellationPending: childCancelRequested > 0,
         unresolvedDeferredReplacement,
       },
+      repoMaster,
       verificationState: {
         lastVerificationHash: undefined,
       },
