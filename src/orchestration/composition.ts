@@ -45,6 +45,7 @@ import {
   SessionTurnRepository,
   TaskRunsRepository,
   SqliteDeferredReplacementRepository,
+  InternalMessageProvenanceRepository,
 } from "./persistence/repositories";
 import type {
   IRunRepository,
@@ -104,6 +105,7 @@ export interface ProductionOrchestrationRuntime {
   contextItemRepo: SqliteContextItemRepository;
   consumerOffsetRepo: SqliteConsumerOffsetRepository;
   sessionTurnRepo: SessionTurnRepository;
+  internalMessageProvenanceRepo: InternalMessageProvenanceRepository;
   taskRunsRepo: TaskRunsRepository;
   deferredReplacementRepo: SqliteDeferredReplacementRepository;
   services: {
@@ -818,6 +820,7 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
   const contextItemRepo = new SqliteContextItemRepository(db, txManager);
   const consumerOffsetRepo = new SqliteConsumerOffsetRepository(db, txManager);
   const sessionTurnRepo = new SessionTurnRepository(db, txManager);
+  const internalMessageProvenanceRepo = new InternalMessageProvenanceRepository(db, txManager);
   const routingDecisionRepository = new SqliteRoutingDecisionRepository(db, txManager);
   const routingRevisionService = new RoutingRevisionService(routingDecisionRepository);
   const repoMaster = options.repoMaster ?? new RepoMaster(options.repositoryPath ?? process.cwd());
@@ -920,7 +923,7 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
   const router = createRouterWithControllers(services);
   const commands = createCoreCommandRuntime(db, txManager, {
     db, executionRegistry, unitOfWork, eventBus, deliverySink, outboxWorker,
-    sessionRepo, contextItemRepo, consumerOffsetRepo, sessionTurnRepo, taskRunsRepo, deferredReplacementRepo, services, router,
+    sessionRepo, contextItemRepo, consumerOffsetRepo, sessionTurnRepo, internalMessageProvenanceRepo, taskRunsRepo, deferredReplacementRepo, services, router,
     routingDecisionRepository, routingRevisionService, childExecutionLifecycleService, progressObservationService, orchestrationSnapshotService, transitionEngine, completionPolicy, continuationPolicy, continuationDispatcher, metrics, executionRepository, executionScheduler,
     worktreeExecutionService, performanceRepository, authoritativeRouting,
     worktreeManager, integrationService, agentExecutor: options.agentExecutor,
@@ -938,6 +941,7 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
     contextItemRepo,
     consumerOffsetRepo,
     sessionTurnRepo,
+    internalMessageProvenanceRepo,
     taskRunsRepo,
     deferredReplacementRepo,
     services,

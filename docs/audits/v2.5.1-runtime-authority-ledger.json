@@ -1,0 +1,106 @@
+{
+  "audit": "FlowDeck v2.5.1 runtime-authority hotfix",
+  "baseline": {
+    "revision": "6bdcf24",
+    "releaseTag": "v2.5.0",
+    "branch": "hotfix/v2.5.1-runtime-authority",
+    "runtime": {
+      "os": "Linux 6.1.102 x86_64 GNU/Linux",
+      "node": "v22.13.0",
+      "npm": "10.9.2",
+      "bun": "1.3.11",
+      "cargo": "1.85.1"
+    }
+  },
+  "externalCandidateReview": {
+    "pullRequest": "https://github.com/heidi-dang/FlowDeck/pull/134",
+    "head": "e67ce4e41019c5bf29eb3b5c3dd634f28d3e17e1",
+    "decision": "NOT ADOPTED",
+    "reason": "The candidate classifies internal traffic from a fixed text-prefix list, which contradicts the requirement that text alone must never determine internal provenance. It also fails independent marker-text regression coverage and its lint gate."
+  },
+  "findings": [
+    {
+      "bugId": "FD-RA-001",
+      "severity": "P1",
+      "status": "FIXED_FOCUSED_VERIFIED",
+      "title": "Synthetic FlowDeck prompt transported as a user-role message increments user authority after Stop",
+      "reproduction": {
+        "command": "bun test tests/orchestration-production-wiring.test.ts --test-name-pattern='internal-user-role-message-does-not-resurrect-a-stopped-run'",
+        "preFixExitCode": 1,
+        "preFixObserved": "Expected durable user turn version 2 after genuine Stop; received 3 after a synthetic specialist-dispatch event."
+      },
+      "rootCause": {
+        "path": "src/runtime/flowdeck-opencode-adapter.ts",
+        "lines": "191-198 at baseline",
+        "detail": "onChatMessage incremented SessionTurnRepository before semantic provenance was established, so every non-empty Heidi/orchestrator message was treated as a genuine user turn."
+      },
+      "impact": "An internally generated prompt could re-enter ordinary routing after Stop and create new autonomous authority.",
+      "repair": "V16 persists FlowDeck-owned OpenCode message IDs and their provenance. ContinuationDispatcher passes a reserved messageID to promptAsync and invokes a final pre-native reservation hook. The adapter suppresses a message only when that durable session/message-ID association exists; raw text and role never determine provenance.",
+      "filesChanged": [
+        "src/orchestration/persistence/migrations/migration-v16-message-provenance-authority.ts",
+        "src/orchestration/persistence/migrations/migration-registry.ts",
+        "src/orchestration/persistence/repositories/internal-message-provenance.ts",
+        "src/orchestration/persistence/repositories/index.ts",
+        "src/orchestration/composition.ts",
+        "src/orchestration/services/continuation-policy.ts",
+        "src/runtime/flowdeck-opencode-adapter.ts",
+        "tests/orchestration-production-wiring.test.ts"
+      ],
+      "tests": [
+        "80. internal-user-role-message-does-not-resurrect-a-stopped-run",
+        "81. marker-text-from-a-real-user-remains-genuine-intent",
+        "82. native-prompt-message-id-provenance-survives-user-role-echo"
+      ],
+      "fixCommit": null
+    },
+    {
+      "bugId": "FD-FDX-001",
+      "severity": "P3",
+      "status": "FIXED_FOCUSED_VERIFIED",
+      "title": "FDX strict Clippy gate fails on needless explicit lifetimes and an empty documentation line",
+      "reproduction": {
+        "command": "PATH=/usr/lib/rust-1.85/bin:$PATH /usr/bin/cargo-1.85 clippy --all-targets --all-features -- -D warnings",
+        "preFixExitCode": 101
+      },
+      "rootCause": {
+        "path": "crates/fdx/src/reader/code/prototype.rs and crates/fdx/src/main.rs",
+        "detail": "Clippy detected unnecessary explicit lifetimes and an empty line following a documentation comment."
+      },
+      "impact": "The required native FDX static-analysis gate could not pass.",
+      "repair": "Elided the two inferable lifetimes and removed the empty documentation line without changing behavior.",
+      "filesChanged": [
+        "crates/fdx/src/reader/code/prototype.rs",
+        "crates/fdx/src/main.rs"
+      ],
+      "tests": [
+        "cargo clippy --all-targets --all-features -- -D warnings"
+      ],
+      "fixCommit": null
+    },
+    {
+      "bugId": "FD-FDX-002",
+      "severity": "P1",
+      "status": "FIXED_FOCUSED_VERIFIED",
+      "title": "FDX self-test recursively launched unbounded cargo test processes",
+      "reproduction": {
+        "command": "cargo test -p fdx at baseline",
+        "preFixObserved": "The test_test_cargo integration test invoked fdx test cargo from the FDX crate, which recursively launched its own integration suite and exhausted sandbox memory."
+      },
+      "rootCause": {
+        "path": "crates/fdx/tests/test_test_runner.rs and crates/fdx/src/reader/test_runner.rs",
+        "detail": "The Cargo wrapper inherited no recursion sentinel, so the wrapper's own integration test could re-enter the same cargo test command indefinitely."
+      },
+      "impact": "A local FDX self-test or direct fdx test cargo invocation from the FDX checkout could consume unbounded processes and memory.",
+      "repair": "The Cargo wrapper now propagates FDX_TEST_RUNNER_ACTIVE to its child cargo test and rejects a nested wrapper invocation before process launch.",
+      "filesChanged": [
+        "crates/fdx/src/reader/test_runner.rs",
+        "crates/fdx/tests/test_test_runner.rs"
+      ],
+      "tests": [
+        "cargo test --test test_test_runner",
+        "cargo test"
+      ],
+      "fixCommit": null
+    }
+  ]
+}

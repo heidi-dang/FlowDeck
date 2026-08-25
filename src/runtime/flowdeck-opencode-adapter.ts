@@ -36,6 +36,7 @@ import {
   getMutationTargetFingerprint,
 } from "./mutation-observation-adapter";
 import type { NativeChildControlPort } from "../orchestration/services/child-execution-lifecycle-service";
+import type { InternalMessageProvenance } from "../orchestration/persistence/repositories/internal-message-provenance";
 import { ContinuationDispatcher, type ContinuationToken, getContinuationPrompt } from "../orchestration/services/continuation-policy";
 import { readySpecialistSpecs } from "../orchestration/routing/specialist-planner";
 import { repoMasterConsultationRequirement, type RepoMasterAdvice } from "../orchestration/repository/repo-master";
@@ -136,6 +137,19 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
     return this.runtime.sessionTurnRepo.getTurnVersion(sessionId);
   }
 
+  private reserveInternalPrompt(input: {
+    sessionId: string;
+    messageId: string;
+    provenance: InternalMessageProvenance;
+    dispatchIdentity: string;
+  }): boolean {
+    return this.runtime.internalMessageProvenanceRepo.reserve(input);
+  }
+
+  private newInternalPromptMessageId(): string {
+    return `flowdeck-internal-${randomUUID()}`;
+  }
+
   private getPathFingerprint(relPath: string): string {
     return getMutationTargetFingerprint(this.directory, [relPath]);
   }
@@ -189,6 +203,15 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
         .join("\n");
 
       if (!text.trim()) return;
+
+      // OpenCode transports FlowDeck promptAsync traffic as role=user. Semantic
+      // provenance is therefore recovered exclusively from FlowDeck's durable
+      // native message-ID reservation; prompt text and transport role never grant
+      // or remove user authority.
+      if (this.runtime.internalMessageProvenanceRepo.isInternal(input.sessionID, input.messageID)) {
+        noteInternalContinuation(input.sessionID);
+        return;
+      }
 
       const msgHash = stableHash(text);
       const _currentTurn = this.runtime.sessionTurnRepo?.incrementTurnVersion({
@@ -973,9 +996,18 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
       ...ready.map(spec => `- targetAgent=${spec.targetAgent}; description=[FlowDeck specialist:${spec.specialistId}] ${spec.role}; prompt=[FlowDeck specialist:${spec.specialistId}] Objective: ${spec.objective}; Scope: ${spec.scope.join(", ")}; Required evidence: ${spec.expectedEvidence.join(", ")}.`),
     ].join("\n");
 
+    const internalMessageId = this.newInternalPromptMessageId();
+    const dispatchIdentity = this.continuationDispatcher.computeTokenIdentity(token);
     const dispatched = await this.continuationDispatcher.dispatch(token, {
       client: this.client,
       promptText,
+      messageId: internalMessageId,
+      beforeNativeDispatch: () => this.reserveInternalPrompt({
+        sessionId,
+        messageId: internalMessageId,
+        provenance: "FLOWDECK_SPECIALIST_DISPATCH",
+        dispatchIdentity,
+      }),
       validateAuthority: () => {
         const current = this.runtime.routingDecisionRepository.getLatestDecisionForRun(activeRun.id);
         const currentPlan = current ? specialistPlanFromRoutingDecision(current) : null;
@@ -992,7 +1024,18 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
           ? Boolean(currentAdvice && this.isRepoMasterAdviceFresh(currentAdvice))
           : !currentAdvice || this.isRepoMasterAdviceFresh(currentAdvice);
         const currentDeferred = this.runtime.deferredReplacementRepo.findCurrentForSession(sessionId);
-        return Boolean(!currentDeferred && currentAdviceAllowed && currentPlan && currentPlan.runId === activeRun.id && currentPlan.specs.some(spec => spec.specialistId === ready[0]?.specialistId));
+        const currentRun = this.runtime.taskRunsRepo.findById(activeRun.id);
+        return Boolean(
+          currentRun
+          && !isTerminalRunStatus(currentRun.state as Run["status"])
+          && currentRun.aggregateVersion === token.runAggregateVersion
+          && this.runtime.sessionTurnRepo.getTurnVersion(sessionId) === token.userTurnVersion
+          && !currentDeferred
+          && currentAdviceAllowed
+          && currentPlan
+          && currentPlan.runId === activeRun.id
+          && currentPlan.specs.some(spec => spec.specialistId === ready[0]?.specialistId)
+        );
       },
     });
     return dispatched.dispatched;
@@ -1176,10 +1219,19 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
         blockerReason: transition.blockerReason,
       });
 
+      const internalMessageId = this.newInternalPromptMessageId();
+      const dispatchIdentity = this.continuationDispatcher.computeTokenIdentity(token);
       const dispatchRes = await this.continuationDispatcher.dispatch(token, {
         statePort,
         client: this.client,
         promptText,
+        messageId: internalMessageId,
+        beforeNativeDispatch: () => this.reserveInternalPrompt({
+          sessionId: sessionID,
+          messageId: internalMessageId,
+          provenance: "FLOWDECK_CONTINUATION",
+          dispatchIdentity,
+        }),
       });
 
       if (dispatchRes.dispatched) {
@@ -1301,11 +1353,20 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
       };
 
       noteInternalContinuation(parentSessionId);
+      const internalMessageId = this.newInternalPromptMessageId();
+      const dispatchIdentity = this.continuationDispatcher.computeTokenIdentity(token);
       const promptText = `[Continuation] Resume the deferred user goal now that prior native child termination has been confirmed: "${current.effectiveGoal}". Do not repeat the previous cancelled work.`;
 
       const dispatchRes = await this.continuationDispatcher.dispatch(token, {
         client: this.client,
         promptText,
+        messageId: internalMessageId,
+        beforeNativeDispatch: () => this.reserveInternalPrompt({
+          sessionId: parentSessionId,
+          messageId: internalMessageId,
+          provenance: "FLOWDECK_RECOVERY",
+          dispatchIdentity,
+        }),
         validateAuthority: () => {
           const fresh = this.runtime.deferredReplacementRepo.findById(current.id);
           if (!fresh) return false;
@@ -1390,11 +1451,20 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
       };
 
       noteInternalContinuation(parentSessionId);
+      const internalMessageId = this.newInternalPromptMessageId();
+      const dispatchIdentity = this.continuationDispatcher.computeTokenIdentity(token);
       const promptText = `[Continuation] Resume the deferred user goal now that prior native child termination has been confirmed: "${current.effectiveGoal}". Use the already persisted FlowDeck routing/run state. Do not repeat the previous cancelled work.`;
 
       const dispatchRes = await this.continuationDispatcher.dispatch(token, {
         client: this.client,
         promptText,
+        messageId: internalMessageId,
+        beforeNativeDispatch: () => this.reserveInternalPrompt({
+          sessionId: parentSessionId,
+          messageId: internalMessageId,
+          provenance: "FLOWDECK_RECOVERY",
+          dispatchIdentity,
+        }),
         validateAuthority: () => {
           const fresh = this.runtime.deferredReplacementRepo.findById(current.id);
           if (!fresh) return false;

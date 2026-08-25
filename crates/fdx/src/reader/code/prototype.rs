@@ -14,7 +14,7 @@ const CONTAINER_KINDS: &[&str] = &[
     "interface_declaration",
 ];
 
-fn unwrap_export<'a>(node: Node<'a>) -> Node<'a> {
+fn unwrap_export(node: Node<'_>) -> Node<'_> {
     if node.kind() == "export_statement" || node.kind() == "export_default_declaration" {
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
@@ -32,7 +32,7 @@ fn unwrap_export<'a>(node: Node<'a>) -> Node<'a> {
     node
 }
 
-fn collect_container_members<'a>(node: Node<'a>) -> Vec<Node<'a>> {
+fn collect_container_members(node: Node<'_>) -> Vec<Node<'_>> {
     let mut members = Vec::new();
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {

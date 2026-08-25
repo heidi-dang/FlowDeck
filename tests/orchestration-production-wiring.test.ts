@@ -1524,7 +1524,7 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
 
     // 1. Run migrations up to v12 (simulate historical database that has v12 ledger)
     runMigrations(db);
-    expect(getCurrentVersion(db)).toBe(15);
+    expect(getCurrentVersion(db)).toBe(16);
 
     // 2. Now test upgrade from exact historical v12 state:
     const db2 = new Database(":memory:");
@@ -1551,9 +1551,9 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
       )
     `).run();
 
-    // Run migrations to apply V13 and the forward-only V14 follow-up.
-    runMigrations(db2);
-    expect(getCurrentVersion(db2)).toBe(15);
+    // Run migrations through the current forward-only V16 ledger.
+    runMigrations(db2)
+    expect(getCurrentVersion(db2)).toBe(16);
 
     // Assert attempt_count=2 and last_attempt_at='2026-08-20T10:05:00Z' were preserved!
     const row = db2.query("SELECT * FROM continuation_dispatches WHERE identity = 'id-v12-existing'").get() as any;
@@ -2113,9 +2113,9 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
       ) VALUES ('id-legacy', 'run-leg', 'sess-leg', 1, 1, 'PROGRESS_CONFIRMED', 'as-1', 'fp-leg', 'dispatched', '2026-08-01T10:00:00Z')
     `).run();
 
-    // Run migrations (applies V12 historical, V13, and the V14 follow-up).
+    // Run migrations through the current forward-only V16 ledger.
     runMigrations(db);
-    expect(getCurrentVersion(db)).toBe(15);
+    expect(getCurrentVersion(db)).toBe(16);
 
     const row = db.query("SELECT * FROM continuation_dispatches WHERE identity = 'id-legacy'").get() as any;
     expect(row.attempt_count).toBe(1);
@@ -2801,7 +2801,7 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     // 3. Verifies tamper with ledger throws MigrationChecksumError
     const db = new Database(":memory:");
     runMigrations(db);
-    expect(getCurrentVersion(db)).toBe(15);
+    expect(getCurrentVersion(db)).toBe(16);
 
     db.query("UPDATE schema_migrations SET checksum = 'tampered_v13_checksum' WHERE version = 13").run();
     expect(() => {
@@ -3413,6 +3413,111 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     const resumedDef = ctx.runtime.deferredReplacementRepo.findById(savedDef!.id);
     expect(resumedDef?.status).toBe("resumed");
     expect(resumedDef?.replacementRunId).toBeUndefined();
+
+    await releaseProjectRuntime(testDir);
+  });
+
+  // 80. internal-user-role-message-does-not-resurrect-a-stopped-run
+  it("80. internal-user-role-message-does-not-resurrect-a-stopped-run", async () => {
+    const promptAsyncMock = mock(() => Promise.resolve(true));
+    const mockClient = { session: { abort: mock(() => Promise.resolve(true)), promptAsync: promptAsyncMock } };
+    const ctx = acquireProjectRuntime(testDir, mockClient);
+    const sessionID = "sess-internal-provenance-stop";
+
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "m-genuine-user-1" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repositories", id: "1", sessionID, messageID: "m-genuine-user-1" }] }
+    );
+    expect(ctx.runtime.sessionTurnRepo.getTurnVersion(sessionID)).toBe(1);
+
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "m-genuine-user-stop" },
+      { message: {} as any, parts: [{ type: "text", text: "Stop", id: "2", sessionID, messageID: "m-genuine-user-stop" }] }
+    );
+    expect(ctx.runtime.sessionTurnRepo.getTurnVersion(sessionID)).toBe(2);
+    expect(await ctx.adapter.resolveActiveRunForSession(sessionID)).toBeNull();
+
+    // OpenCode transports FlowDeck-generated prompts through a user-role chat
+    // event. Only a prior durable native message-ID reservation may establish
+    // internal provenance; the raw role and text remain insufficient.
+    const internalMessageID = "m-flowdeck-specialist-dispatch";
+    expect(ctx.runtime.internalMessageProvenanceRepo.reserve({
+      sessionId: sessionID,
+      messageId: internalMessageID,
+      provenance: "FLOWDECK_SPECIALIST_DISPATCH",
+      dispatchIdentity: "test-specialist-dispatch",
+    })).toBe(true);
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: internalMessageID },
+      { message: {} as any, parts: [{ type: "text", text: "[FlowDeck Specialist Dispatch] Use OpenCode native Task/subagent calls only for the following ready specialist assignments.", id: "3", sessionID, messageID: internalMessageID }] }
+    );
+
+    expect(ctx.runtime.sessionTurnRepo.getTurnVersion(sessionID)).toBe(2);
+    expect(await ctx.adapter.resolveActiveRunForSession(sessionID)).toBeNull();
+    expect(promptAsyncMock).toHaveBeenCalledTimes(0);
+
+    await releaseProjectRuntime(testDir);
+  });
+
+  // 81. marker-text-from-a-real-user-remains-genuine-intent
+  it("81. marker-text-from-a-real-user-remains-genuine-intent", async () => {
+    const ctx = acquireProjectRuntime(testDir);
+    const sessionID = "sess-genuine-marker-text";
+    const messageID = "m-genuine-marker-text";
+
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID },
+      { message: {} as any, parts: [{ type: "text", text: "[FlowDeck Specialist Dispatch] Coordinate the frontend authentication redesign and backend API changes together.", id: "1", sessionID, messageID }] }
+    );
+
+    expect(ctx.runtime.sessionTurnRepo.findBySessionId(sessionID)?.lastUserMessageId).toBe(messageID);
+    expect(await ctx.adapter.resolveActiveRunForSession(sessionID)).not.toBeNull();
+
+    await releaseProjectRuntime(testDir);
+  });
+
+  // 82. native-prompt-message-id-provenance-survives-user-role-echo
+  it("82. native-prompt-message-id-provenance-survives-user-role-echo", async () => {
+    const promptAsyncMock = mock(() => Promise.resolve(true));
+    const ctx = acquireProjectRuntime(testDir, { session: { promptAsync: promptAsyncMock } });
+    const sessionID = "sess-native-provenance-echo";
+    const messageID = "m-native-provenance-echo";
+    const dispatcher = new ContinuationDispatcher(ctx.runtime.db);
+    const token = {
+      runId: "run-native-provenance-echo",
+      sessionId: sessionID,
+      userTurnVersion: 1,
+      runAggregateVersion: 1,
+      transitionReason: "PROGRESS_CONFIRMED" as const,
+      currentWorkItemId: "work-native-provenance-echo",
+      stateFingerprint: "fp-native-provenance-echo",
+    };
+    const dispatchIdentity = dispatcher.computeTokenIdentity(token);
+
+    const dispatched = await dispatcher.dispatch(token, {
+      currentTurnVersion: 1,
+      currentAggregateVersion: 1,
+      client: { session: { promptAsync: promptAsyncMock } },
+      messageId: messageID,
+      promptText: "A user may legitimately send this exact text.",
+      beforeNativeDispatch: () => ctx.runtime.internalMessageProvenanceRepo.reserve({
+        sessionId: sessionID,
+        messageId: messageID,
+        provenance: "FLOWDECK_CONTINUATION",
+        dispatchIdentity,
+      }),
+    });
+
+    expect(dispatched.dispatched).toBe(true);
+    expect(promptAsyncMock).toHaveBeenCalledWith(expect.objectContaining({
+      body: expect.objectContaining({ messageID }),
+    }));
+
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID },
+      { message: {} as any, parts: [{ type: "text", text: "A user may legitimately send this exact text.", id: "1", sessionID, messageID }] }
+    );
+    expect(ctx.runtime.sessionTurnRepo.findBySessionId(sessionID)).toBeNull();
 
     await releaseProjectRuntime(testDir);
   });
