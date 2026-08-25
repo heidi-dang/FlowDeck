@@ -50,7 +50,7 @@ export function acquireProjectRuntime(directory: string, client?: any): ProjectR
 
   const dbPath = join(dotFlowDeck, "flowdeck.db");
   const initResult = initializeDatabase({ path: dbPath });
-  const runtime = createProductionOrchestrationRuntime(initResult.db);
+  const runtime = createProductionOrchestrationRuntime(initResult.db, { repositoryPath: canonicalDir });
   const adapter = new FlowDeckLifecycleAdapter(canonicalDir, runtime, client);
 
   const context: ProjectRuntimeContext = {

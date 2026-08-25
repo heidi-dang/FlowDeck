@@ -2,16 +2,18 @@
 
 ## [2.5.0] - FlowDeck v2.5.0 — Bounded Repository Intelligence for Adaptive Orchestration
 
-### Added
-- **Advisory Repo Master**: Added bounded, deterministic repository intelligence that reuses the existing FDX workspace index and repository hot-context primitives. It produces compact scope, dependency, risk, test, and capability evidence without becoming an execution engine, model selector, scheduler, verifier, or completion authority.
-- **Adaptive Specialist Integration**: Non-direct Heidi routes may consult Repo Master according to deterministic policy. Advice is serialized only as bounded canonical routing evidence and can inform SpecialistPlan objectives and scope; Heidi routing and SpecialistPlan retain specialist, fan-out, deduplication, and model-policy authority.
-- **Freshness and Isolation**: Repository advice is bound to canonical root identity, HEAD, branch, dirty state, package manifests, and FlowDeck configuration. Shared Repo Master state contains metadata only; run-specific advice stays with its owning routing decision and cannot cross repository or run boundaries.
-- **Observability**: Added aggregate-only Repo Master cache, refresh, freshness, and latency metrics plus compact read-only snapshot diagnostics without repository path, prompt, model, or run labels.
-
-### Reliability and Qualification
-- **Fail-Closed Lifecycle Boundaries**: Required repository-significant consultations fail explicitly instead of inventing evidence. Dispatch revalidates required advice and cancellation, replacement, modification, and restart paths cannot resurrect superseded advice.
-- **Bounded Persistence**: State writes are atomic and uniquely staged, corruption is recovered fail-closed, and user-authored `.flowdeck` content remains a meaningful freshness signal while generated Repo Master metadata is ignored.
-- **Qualification Coverage**: Added production-path, restart, cancellation, replacement, malformed-state, multi-repository isolation, minimal/large fixture, direct/single/multi mode, cache/refresh, resource-bound, metrics, FDX-parity, schema, persistence, lint, build, and normal-suite coverage.
+### Added & Changed
+- **Advisory Repo Master**: Introduced bounded, deterministic repository intelligence wrapping the FDX workspace index and repository hot-context cache. Provides compact file scope, dependency graphs, risk analysis, test targeting, and capability evidence for repository-significant tasks without execution, model selection, or completion authority.
+- **Adaptive Task Routing (DIRECT / SINGLE_SPECIALIST / MULTI_SPECIALIST)**: Deterministic task routing by Heidi evaluates complexity and risk to dispatch lean direct workflows for simple edits, single-specialist subagents for focused tasks, or multi-specialist plans with Repo Master advisory consultation for cross-cutting features.
+- **Dynamic Specialists & OpenCode Integration**: Capability-driven specialist subagents execute natively within OpenCode's subagent Task lifecycle. The immutable `SpecialistPlan` manages candidate validation, deduplication, acyclic dependency ordering (`dependsOn`), bounded fan-out caps (default max: 3), and strict global model policy inheritance without recursive delegation.
+- **Durable Orchestration & Reliability**: State engine backed by local SQLite persistence provides crash resilience, restart recovery, transactional run/assignment writes, idempotent state transitions, convergence enforcement, strategy exhaustion detection, clean cancellation, dynamic assignment replacement/modification (MODIFY), and fail-closed handling for continuation ambiguity or storage corruption.
+- **VerificationService & CompletionPolicy Authorities**: Enforced strict separation of output, verification, and completion:
+  - `VerificationService` serves as the sole verification authority, objectively evaluating test runs, typechecks, and linter outputs against success criteria.
+  - `CompletionPolicy` acts as the exclusive terminal completion gatekeeper. Specialist prose claims or advisory hints have zero completion authority.
+- **FDX Hardening & Parsed-Diff Safety**: Rust-native code intelligence in `crates/fdx` hardened for high-speed AST parsing, dependency mapping, robust multi-file Git diff parsing, and ANSI forced-colour terminal resilience (`color.ui = always`), backed by TypeScript fallbacks.
+- **Final Runtime Consolidation**: Reconciled orchestrator event pipelines, metrics collection, and OpenCode adapter bridges for seamless, reproducible execution.
+- **README Rewrite & Documentation**: Completely rewritten user documentation detailing authority boundaries, execution models, diagnostic commands, and configuration.
+- **Full Qualification & Platform Matrix**: Verified 100% passing test suites, schema integrity, Rust clippy/tests, FDX parity, and cross-platform verification across Ubuntu Linux, macOS, and Windows.
 
 
 ## [2.4.1] - FlowDeck v2.4.1 — Security Containment & Reliability Patch
