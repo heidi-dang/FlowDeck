@@ -23,7 +23,7 @@ import { execFile, execFileSync } from "node:child_process"
 import { existsSync, readFileSync, statSync } from "node:fs"
 import { resolve } from "node:path"
 import { createHash, randomUUID } from "node:crypto"
-import { resolveFdxBinaryPath } from "../tools/fdx-shared"
+import { resolveFdxBinaryPath, invalidateFdxCache } from "../tools/fdx-shared"
 import {
   FDX_PROTOCOL_VERSION,
   FDX_GRAPH_SCHEMA_VERSION,
@@ -463,6 +463,7 @@ export async function queryFdxCapabilities(
 export function invalidateCapabilityCache(): void {
   _capabilitySnapshot = null
   _snapshotWorkspace = null
+  invalidateFdxCache()
 }
 
 /** Backward-compatible alias for invalidateCapabilityCache */
