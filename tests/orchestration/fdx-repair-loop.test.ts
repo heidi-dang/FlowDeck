@@ -35,6 +35,7 @@ const mockPlan = (overrides: Partial<FdxVerificationPlan> = {}): FdxVerification
   m11OverlayApplied: false,
   m11CandidatesAvailable: [],
   providerState: "typescript_fallback",
+  assurance: "EXACT",
   ...overrides,
 })
 
