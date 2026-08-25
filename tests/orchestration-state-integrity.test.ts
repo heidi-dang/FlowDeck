@@ -469,12 +469,14 @@ describe("Orchestration State Integrity & Deterministic Progress Tests", () => {
   it("12. canonical-verification-observation: improvement counts as progress, regression does not", async () => {
     const ctx = acquireProjectRuntime(projectDir);
     const sessionID = "sess-ver-canon";
-    await ctx.adapter.onChatMessage(
-      { sessionID, agent: "heidi" },
-      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m12" }] }
-    );
-    const run = await ctx.adapter.resolveActiveRunForSession(sessionID);
-    const runId = run!.id;
+    const run = await ctx.runtime.services.runService.createRun({
+      runType: "autonomous-execution",
+      correlationId: "canonical-verification-observation",
+      sessionId: sessionID,
+      agentId: "heidi",
+      metadata: { goal: "Refactor backend telemetry services across repos" },
+    });
+    const runId = run.id;
 
     // 1. Initial test run: 5 failures
     const obs1 = ctx.runtime.progressObservationService.recordVerificationObservation({
