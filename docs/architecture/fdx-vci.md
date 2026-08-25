@@ -189,12 +189,13 @@ Escalation expands verification to the smallest boundary known to contain the un
 
 ## 7. Versioning & Compatibility Contracts
 
-The system decouples versioning across four independent dimensions:
+The system decouples versioning and local capability authority across five independent dimensions:
 
 1. **`FDX_PROTOCOL_VERSION`** (Current: `2`): Wire format between client/tools and daemon.
-2. **`FDX_GRAPH_SCHEMA_VERSION`** (Current: `2`): Physical SQLite relational schema. v2 adds provider-owned semantic node provenance (provider, provider_fingerprint, generation, source_hash, stale), semantic generation/occurrence metadata on edges, and the typed `semantic_providers` registry table (migrated transactionally from v1).
+2. **`FDX_GRAPH_SCHEMA_VERSION`** (Current: `10`): Physical SQLite relational schema. M12 uses the existing v10 M11 policy-application persistence and introduces no v11 migration.
 3. **`FDX_SELECTION_POLICY_VERSION`** (Current: `1`): Verification selection and escalation heuristics.
-4. **`FDX_ATTESTATION_PREDICATE_VERSION`** (Current: `1`): Attestation cryptographic signature format.
+4. **Default `FDX_ATTESTATION_PREDICATE_VERSION`** (Current: `1`): Frozen Predicate v1 remains the default. M12 additionally supports content-bound Predicate v2 for exact M11 application provenance.
+5. **Capability contract** (Current: `1`): The deterministic local `fdx capabilities --format json` document declares supported predicate, calibration, policy, graph read/write, platform, privacy, and local-execution semantics.
 
 A selection policy update invalidates cached plans without requiring re-indexing. A schema update triggers an in-place SQLite migration without changing the wire protocol.
 
