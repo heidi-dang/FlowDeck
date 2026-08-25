@@ -69,4 +69,14 @@ describe("Continuation dispatch durability", () => {
     expect(result.reason).toBe("dispatch_outcome_unknown");
     expect(ctx.runtime.db.query("SELECT status FROM continuation_dispatches WHERE identity = ?").get(identity)).toEqual({ status: "outcome_unknown" });
   });
+
+  it("terminal release finalizes prepared statements instead of deferring database handles to garbage collection", async () => {
+    const ctx = acquireProjectRuntime(TEST_DIR);
+    const statement = ctx.runtime.db.prepare("SELECT 1 AS value");
+    expect(statement.get()).toEqual({ value: 1 });
+
+    await releaseProjectRuntime(TEST_DIR);
+
+    expect(() => statement.get()).toThrow("Database has closed");
+  });
 });

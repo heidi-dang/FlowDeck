@@ -84,11 +84,20 @@ export function openConnection(config: DatabaseConfig): Database {
 export function closeConnection(path: string): void {
   const key = resolve(path)
   const db = CONNECTIONS.get(key)
-  if (db) { db.close(); CONNECTIONS.delete(key) }
+  if (db) {
+    // Runtime disposal is a terminal ownership boundary. `close(true)` finalizes
+    // any application-created prepared statements, releasing the underlying
+    // SQLite file handle immediately instead of leaving Windows cleanup to GC.
+    db.close(true)
+    CONNECTIONS.delete(key)
+  }
 }
 
 export function closeAllConnections(): void {
-  for (const [, db] of CONNECTIONS) db.close()
+  for (const [, db] of CONNECTIONS) {
+    // See closeConnection: a bulk teardown has the same terminal semantics.
+    db.close(true)
+  }
   CONNECTIONS.clear()
 }
 
