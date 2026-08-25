@@ -116,21 +116,27 @@ function shutdownWal(db: Database): Error | null {
 async function removeTarget(target: string, opts: { recursive?: boolean }): Promise<Error | null> {
   if (!existsSync(target)) return null;
   const started = Date.now();
-  const rmOpts = { force: true, maxRetries: 10, retryDelay: 100, ...opts } as const;
-  try {
-    await rm(target, rmOpts);
-    return null;
-  } catch (error) {
-    const err = error as NodeJS.ErrnoException;
-    const code = err.code ?? "";
-    const errno = err.errno ?? "";
-    const syscall = err.syscall ?? "";
-    const path = err.path ?? target;
-    const elapsed = Date.now() - started;
-    return new Error(
-      `[file-remove] target=${target} code=${code} errno=${errno} syscall=${syscall} path=${path} elapsed=${elapsed}ms ${err.message ?? ""}`,
-    );
+  for (let attempt = 0; attempt < 10; attempt++) {
+    try {
+      await rm(target, { force: true, ...opts });
+      return null;
+    } catch (error) {
+      const err = error as NodeJS.ErrnoException;
+      const code = err.code ?? "";
+      if (attempt < 9 && (code === "EBUSY" || code === "EPERM" || code === "EACCES")) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        continue;
+      }
+      const errno = err.errno ?? "";
+      const syscall = err.syscall ?? "";
+      const path = err.path ?? target;
+      const elapsed = Date.now() - started;
+      return new Error(
+        `[file-remove] target=${target} code=${code} errno=${errno} syscall=${syscall} path=${path} elapsed=${elapsed}ms ${err.message ?? ""}`,
+      );
+    }
   }
+  return null;
 }
 
 export async function deterministicCleanup(ctx: CleanupContext): Promise<void> {

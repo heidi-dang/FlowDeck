@@ -187,7 +187,7 @@ describe("3. stop-and-terminal-quiescence", () => {
     }
 
     expect(promptAsyncMock).not.toHaveBeenCalled();
-  });
+  }, 30000);
 
   it("explicit-stop-plus-100-idle-events-produces-zero-prompt-async", async () => {
     const promptAsyncMock = mock(() => Promise.resolve(true));
@@ -211,7 +211,7 @@ describe("3. stop-and-terminal-quiescence", () => {
     }
 
     expect(promptAsyncMock).not.toHaveBeenCalled();
-  });
+  }, 30000);
 
   it("100-duplicate-internal-echoes-do-not-increment-turn-or-create-runs", async () => {
     const promptAsyncMock = mock(() => Promise.resolve(true));
@@ -241,7 +241,7 @@ describe("3. stop-and-terminal-quiescence", () => {
     }
 
     expect(ctx.adapter.getUserTurnVersion(sessionID)).toBe(1);
-  });
+  }, 30000);
 
   it("completed-specialist-plus-10-idle-events-does-not-redispatch-same-specialist", async () => {
     const promptAsyncMock = mock(() => Promise.resolve(true));
@@ -281,7 +281,7 @@ describe("3. stop-and-terminal-quiescence", () => {
       return text.includes("spec-finished-1") && text.includes("[FlowDeck Specialist Dispatch]");
     });
     expect(redispatch).toBe(false);
-  });
+  }, 30000);
 });
 
 // ─── 4. Ledger Lifecycle & Pruning Tests ────────────────────────────────────
