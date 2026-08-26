@@ -24,37 +24,41 @@
  */
 
 // ─── Frozen FDX M12 Protocol Constants ──────────────────────────────────────
-// These must match crates/fdx/src/protocol.rs exactly.
+// The generated artifact is derived from Rust source by
+// scripts/generate-fdx-vci-contract.mjs. Heidi owns transport validation, not
+// the protocol values themselves.
+
+import { FDX_NATIVE_CONTRACT } from "../generated/fdx-vci-contract"
 
 /** FDX JSON-lines IPC protocol version. Frozen at M12. */
-export const FDX_PROTOCOL_VERSION = 2 as const
+export const FDX_PROTOCOL_VERSION = FDX_NATIVE_CONTRACT.protocolVersion
 
 /** FDX EvidenceGraph SQLite schema version. Frozen at M12. */
-export const FDX_GRAPH_SCHEMA_VERSION = 10 as const
+export const FDX_GRAPH_SCHEMA_VERSION = FDX_NATIVE_CONTRACT.graphSchemaVersion
 
 /** Minimum graph schema version this code can read. */
-export const FDX_GRAPH_SCHEMA_MIN_READABLE = 1 as const
+export const FDX_GRAPH_SCHEMA_MIN_READABLE = FDX_NATIVE_CONTRACT.graphSchemaMinimumReadable
 
 /** Version of the local capability document used for authority-bearing negotiation. */
-export const FDX_CAPABILITY_CONTRACT_VERSION = 1 as const
+export const FDX_CAPABILITY_CONTRACT_VERSION = FDX_NATIVE_CONTRACT.capabilityContractVersion
 
 /** M10 shadow calibration evidence contract version. */
-export const FDX_CALIBRATION_CONTRACT_VERSION = 2 as const
+export const FDX_CALIBRATION_CONTRACT_VERSION = FDX_NATIVE_CONTRACT.calibrationContractVersion
 
 /** M11 learned-policy contract version. */
-export const FDX_POLICY_CONTRACT_VERSION = 1 as const
+export const FDX_POLICY_CONTRACT_VERSION = FDX_NATIVE_CONTRACT.policyContractVersion
 
 /** Selection/escalation algorithm policy version. */
-export const FDX_SELECTION_POLICY_VERSION = 1 as const
+export const FDX_SELECTION_POLICY_VERSION = FDX_NATIVE_CONTRACT.selectionPolicyVersion
 
 /** Verification predicate versions produced by this FDX binary. */
-export const FDX_PREDICATE_VERSIONS = ["v1", "v2"] as const
+export const FDX_PREDICATE_VERSIONS = FDX_NATIVE_CONTRACT.predicateVersions
 
 /** FDX never makes network calls (compile-time guarantee). */
-export const FDX_NETWORK_ACCESS = false as const
+export const FDX_NETWORK_ACCESS = FDX_NATIVE_CONTRACT.networkAccess
 
 /** FDX never reports telemetry (compile-time guarantee). */
-export const FDX_TELEMETRY = false as const
+export const FDX_TELEMETRY = FDX_NATIVE_CONTRACT.telemetry
 
 // ─── Capability Classification Requirements ───────────────────────────────────
 // These define what capability fields must be satisfied for each provider state.
@@ -174,11 +178,19 @@ export function evaluateCapabilities(
   const canWrite = gs["can_write"]
   const canVerify = gs["can_verify"]
 
-  if (typeof maxWritable !== "number" || maxWritable < FDX_GRAPH_SCHEMA_VERSION) {
-    missing.push("graph_schema.maximum_writable")
+  if (typeof maxWritable !== "number" || maxWritable !== FDX_GRAPH_SCHEMA_VERSION) {
+    return {
+      providerState: "incompatible",
+      missingCapabilities: ["graph_schema.maximum_writable"],
+      reason: `Graph schema maximum_writable ${String(maxWritable)} is not supported (expected ${FDX_GRAPH_SCHEMA_VERSION}). Fail closed.`,
+    }
   }
-  if (typeof minReadable !== "number" || minReadable > FDX_GRAPH_SCHEMA_MIN_READABLE) {
-    missing.push("graph_schema.minimum_readable")
+  if (typeof minReadable !== "number" || minReadable !== FDX_GRAPH_SCHEMA_MIN_READABLE) {
+    return {
+      providerState: "incompatible",
+      missingCapabilities: ["graph_schema.minimum_readable"],
+      reason: `Graph schema minimum_readable ${String(minReadable)} is not supported (expected ${FDX_GRAPH_SCHEMA_MIN_READABLE}). Fail closed.`,
+    }
   }
   if (canRead !== true) missing.push("graph_schema.can_read")
   if (canWrite !== true) missing.push("graph_schema.can_write")

@@ -65,10 +65,6 @@ export async function runFdxChecks(directory: string): Promise<CheckResult[]> {
     }
   }
 
-  // FDX TypeScript fallback check
-  const fdxTsFallbackPath = join(directory, "src", "tools", "fdx-shared.ts")
-  const hasTsFallback = existsSync(fdxTsFallbackPath) || existsSync(join(pkgDir, "dist", "index.js"))
-
   if (fdxRuns) {
     checks.push({
       id: "fdx.native_binary",
@@ -83,20 +79,6 @@ export async function runFdxChecks(directory: string): Promise<CheckResult[]> {
       affectsRuntime: false,
       repairability: "not-applicable",
     })
-  } else if (hasTsFallback) {
-    checks.push({
-      id: "fdx.native_binary",
-      title: "FDX Native Engine",
-      category: "fdx",
-      severity: "medium",
-      status: "warning",
-      detected: "Native FDX binary missing or not executable (TS fallback active)",
-      expected: "Native FDX binary executable",
-      recommendation: "Build native FDX binary via `cargo build --manifest-path crates/fdx/Cargo.toml` or reinstall",
-      autoFixAvailable: false,
-      affectsRuntime: true,
-      repairability: "manual",
-    })
   } else {
     checks.push({
       id: "fdx.native_binary",
@@ -104,9 +86,9 @@ export async function runFdxChecks(directory: string): Promise<CheckResult[]> {
       category: "fdx",
       severity: "high",
       status: "error",
-      detected: "Neither native FDX binary nor TS fallback found",
-      expected: "FDX native binary or TS fallback available",
-      recommendation: "Run './install.sh' or build from source: 'cargo build -p fdx --release'",
+      detected: "Native FDX binary missing or not executable; TypeScript fallback cannot qualify VCI authority",
+      expected: "Native FDX binary executable",
+      recommendation: "Build native FDX binary via `cargo build --manifest-path crates/fdx/Cargo.toml --release` or reinstall",
       autoFixAvailable: false,
       affectsRuntime: true,
       repairability: "manual",
@@ -310,8 +292,8 @@ export async function runFdxChecks(directory: string): Promise<CheckResult[]> {
       id: "fdx.vci_protocol_compat",
       title: "FDX VCI Protocol Compatibility",
       category: "fdx",
-      severity: protocolCompatible ? "info" : "medium",
-      status: protocolCompatible ? "pass" : "warning",
+      severity: protocolCompatible ? "info" : "high",
+      status: protocolCompatible ? "pass" : "error",
       detected: protocolCompatible ? `Protocol v${FDX_PROTOCOL_VERSION} confirmed` : "Protocol version mismatch or unknown",
       expected: `FDX protocol version ${FDX_PROTOCOL_VERSION}`,
       recommendation: protocolCompatible

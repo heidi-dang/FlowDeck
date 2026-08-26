@@ -112,13 +112,23 @@ describe("Strict Capability Parsing & Provider Classification", () => {
     expect(res.missingCapabilities).toContain("capability_contract_version")
   })
 
-  it("rejects graph schema max_writable < 10 as not full authority", () => {
+  it("rejects stale graph schema v9 as incompatible", () => {
     const schema9 = {
       ...validCanonicalCap,
       graph_schema: { ...validCanonicalCap.graph_schema, maximum_writable: 9 },
     }
     const res = evaluateCapabilities(schema9)
-    expect(res.providerState).toBe("native_vci_partial")
+    expect(res.providerState).toBe("incompatible")
+    expect(res.missingCapabilities).toContain("graph_schema.maximum_writable")
+  })
+
+  it("rejects newer unrecognized graph schema versions as incompatible", () => {
+    const schema11 = {
+      ...validCanonicalCap,
+      graph_schema: { ...validCanonicalCap.graph_schema, maximum_writable: 11 },
+    }
+    const res = evaluateCapabilities(schema11)
+    expect(res.providerState).toBe("incompatible")
     expect(res.missingCapabilities).toContain("graph_schema.maximum_writable")
   })
 

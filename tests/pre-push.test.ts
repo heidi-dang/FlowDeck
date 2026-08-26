@@ -424,9 +424,10 @@ refs/heads/feature-b CCC CCC refs/heads/feature-b DDD
   // ── getFullModeSteps ─────────────────────────────────────────────────────────
 
   describe("getFullModeSteps & Rust Command Assembly", () => {
-    it("returns 9 standard steps when no Rust changes detected", () => {
+    it("returns 10 standard steps with native contract freshness first when no Rust changes are detected", () => {
       const steps = getFullModeSteps(false, false)
-      expect(steps).toHaveLength(9)
+      expect(steps).toHaveLength(10)
+      expect(steps[0]).toEqual({ name: "Native Contract Freshness", cmd: "npm run check:fdx-vci-contract" })
       expect(steps.some((s) => s.name.startsWith("Rust"))).toBe(false)
       // Coverage must be in full mode
       expect(steps.some((s) => s.name === "Coverage")).toBe(true)
@@ -434,7 +435,7 @@ refs/heads/feature-b CCC CCC refs/heads/feature-b DDD
 
     it("adds all four Rust commands when Rust changes are detected and Cargo is available", () => {
       const steps = getFullModeSteps(true, true)
-      expect(steps).toHaveLength(13)
+      expect(steps).toHaveLength(14)
       const rustSteps = steps.filter((s) => s.name.startsWith("Rust"))
       expect(rustSteps).toHaveLength(4)
       expect(rustSteps[0].name).toBe("Rust Formatting")

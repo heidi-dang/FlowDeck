@@ -92,8 +92,83 @@ export async function runFdxVerification(
   const now = new Date().toISOString()
   const emit = options.onProgress ?? (() => undefined)
 
-  // Step 1: Execute verification (M7) via native FDX or fallback
-  emit("[FDX Verify] Starting verification execution...")
+  // Step 1: Native FDX is the sole authority for completion-grade VCI evidence.
+  // General FlowDeck tooling may expose a typed fallback, but this provider must
+  // never execute it or convert it into a completion result.
+  if (capabilities.providerState !== "native_vci_full" || !capabilities.binaryPath) {
+    const reason = `Native FDX authority unavailable: ${capabilities.providerState}`
+    const plan: FdxVerificationPlan = {
+      planId: sessionId,
+      runId,
+      basePlanDigest: "",
+      effectivePlanDigest: "",
+      digestAuthority: "fdx_native",
+      checks: [],
+      m11OverlayApplied: false,
+      m11CandidatesAvailable: [],
+      providerState: capabilities.providerState,
+      assurance: "UNVERIFIED",
+    }
+    const evidence: FdxRuntimeEvidence = {
+      runId,
+      verificationRunId: sessionId,
+      stateFingerprint: changeIntelligence.stateFingerprint,
+      outcome: "incomplete",
+      assurance: "UNVERIFIED",
+      checksPassed: 0,
+      checksFailed: 0,
+      checksSkipped: 0,
+      mandatoryPassed: false,
+      mandatoryFailed: true,
+      failureReasons: [reason],
+      evidenceDigest: "",
+      persistenceFailed: true,
+      persistenceError: reason,
+      checkResults: [],
+      unresolvedObligations: ["native_fdx_authority_required"],
+      providerState: capabilities.providerState,
+    }
+    const session: FdxVerificationSession = {
+      sessionId,
+      runId,
+      stateVersion: changeIntelligence.stateVersion,
+      stateFingerprint: changeIntelligence.stateFingerprint,
+      targetSha: changeIntelligence.headSha,
+      basePlanDigest: "",
+      effectivePlanDigest: "",
+      plan,
+      evidence,
+      blockers: [{
+        kind: capabilities.providerState === "incompatible" ? "incompatible_capabilities" : "provider_unavailable",
+        message: reason,
+        heidiCanRepairDirectly: false,
+        providerState: capabilities.providerState,
+      }],
+      status: "failed",
+      createdAt: now,
+      completedAt: new Date().toISOString(),
+    }
+    const result: VerificationResult = {
+      id: sessionId,
+      runId,
+      checkType: options.checkType ?? "fdx_vci",
+      status: VerificationStatus.ERROR,
+      correlationId,
+      causationId: options.causationId,
+      result: reason,
+      stateVersion: changeIntelligence.stateVersion,
+      stateFingerprint: changeIntelligence.stateFingerprint,
+      targetSha: changeIntelligence.headSha,
+      evidenceIds: [],
+      failureReasons: [reason],
+      createdAt: now,
+      updatedAt: new Date().toISOString(),
+    }
+    emit(`[FDX Complete] Verification blocked: ${reason}`)
+    return { result, session, blockers: session.blockers }
+  }
+
+  emit("[FDX Verify] Starting native FDX verification execution...")
   const { plan, evidence } = await executeNativeVerification(
     changeIntelligence,
     capabilities,
@@ -146,38 +221,15 @@ export async function runFdxVerification(
     return { result, session, blockers: [] }
   }
 
-  // Step 2: Generate attestation reference (M9)
-  const predicateVersion: "v1" | "v2" = plan.m11OverlayApplied ? "v2" : "v1"
-  emit(`[FDX Attestation] Generating ${predicateVersion} attestation...`)
-  const attestation = await createVerificationAttestation(
-    runId,
-    capabilities,
-    changeIntelligence.repositoryRoot,
-    { predicateVersion }
-  )
-  session.attestation = attestation
-
-  // Step 3: Classify failures into structured blockers
-  const blockers = classifyVerificationFailures(evidence, plan, capabilities)
-  session.blockers = blockers
-
-  // Step 4: Evaluate overall outcome
-  // Criteria for PASS:
-  //   1. evidence.outcome === "passed"
-  //   2. evidence.mandatoryPassed === true
-  //   3. evidence.persistenceFailed === false (M8 fail closed)
-  //   4. evidence.failureReasons.length === 0
-  //   5. native provenance valid & unmanipulated
-  //   6. neither plan nor evidence is UNVERIFIED
-  const isNative = capabilities.providerState === "native_vci_full" || capabilities.providerState === "native_vci_partial"
-  const nativeProvenanceValid = !isNative || (
+  // Step 2: Native evidence must be complete before M9 can create a statement.
+  // This prevents a failed or uncertain M8 write from ever producing a durable
+  // attestation that a later layer could mistake for completion evidence.
+  const nativeProvenanceValid =
     plan.digestAuthority === "fdx_native" &&
     plan.basePlanDigest.length > 0 &&
     plan.effectivePlanDigest.length > 0 &&
     (!plan.m11OverlayApplied || (!!plan.policySnapshotDigest && !!plan.policyApplicationDigest))
-  )
-
-  const passed =
+  const evidenceEligibleForAttestation =
     evidence.outcome === "passed" &&
     evidence.mandatoryPassed &&
     !evidence.persistenceFailed &&
@@ -185,6 +237,43 @@ export async function runFdxVerification(
     nativeProvenanceValid &&
     plan.assurance !== "UNVERIFIED" &&
     evidence.assurance !== "UNVERIFIED"
+  const predicateVersion: "v1" | "v2" = plan.m11OverlayApplied ? "v2" : "v1"
+  if (evidenceEligibleForAttestation) {
+    emit(`[FDX Attestation] Generating ${predicateVersion} attestation...`)
+  }
+  const attestation: FdxAttestationReference = evidenceEligibleForAttestation
+    ? await createVerificationAttestation(evidence.verificationRunId, capabilities, changeIntelligence.repositoryRoot, { predicateVersion })
+    : {
+      attestationId: "",
+      predicate: predicateVersion,
+      evidenceDigest: "",
+      runId,
+      verificationRunId: evidence.verificationRunId,
+      createdAt: new Date().toISOString(),
+      verified: false,
+      providerState: capabilities.providerState,
+    }
+  session.attestation = attestation
+
+  // Step 3: Classify failures into structured blockers
+  const blockers = classifyVerificationFailures(evidence, plan, capabilities)
+  if (!attestation.verified) {
+    blockers.push({
+      kind: "attestation_failure",
+      message: evidenceEligibleForAttestation
+        ? "M9 native attestation was not verified"
+        : "M9 native attestation was withheld because M7/M8 evidence was not completion-eligible",
+      heidiCanRepairDirectly: false,
+      providerState: capabilities.providerState,
+    })
+  }
+  session.blockers = blockers
+
+  // Step 4: Evaluate overall outcome. A verified native M9 statement is required
+  // in addition to successful M7 execution and M8 persistence.
+  const passed =
+    evidenceEligibleForAttestation &&
+    attestation.verified
 
   session.status = passed ? "passed" : "failed"
   session.completedAt = new Date().toISOString()
@@ -199,8 +288,10 @@ export async function runFdxVerification(
     result: passed
       ? `FDX VCI verification passed. ${evidence.checksPassed}/${plan.checks.length} checks passed. Attestation: ${attestation.predicate} (${attestation.attestationId.slice(0, 8)})`
       : `FDX VCI verification failed: ${evidence.failureReasons.join(", ")}`,
-    evidenceIds: [evidence.evidenceDigest, attestation.attestationId],
-    failureReasons: evidence.failureReasons,
+    evidenceIds: passed ? [evidence.evidenceDigest, attestation.attestationId] : [],
+    failureReasons: passed
+      ? evidence.failureReasons
+      : [...evidence.failureReasons, ...blockers.filter(blocker => blocker.kind === "attestation_failure").map(blocker => blocker.message)],
     stateVersion: changeIntelligence.stateVersion,
     stateFingerprint: changeIntelligence.stateFingerprint,
     targetSha: changeIntelligence.headSha,

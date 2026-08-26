@@ -431,6 +431,7 @@ export function routeFastChecks(changedFiles) {
  */
 export function getFullModeSteps(rustChanged, hasCargo) {
   const steps = [
+    { name: "Native Contract Freshness", cmd: "npm run check:fdx-vci-contract" },
     { name: "Lint", cmd: "npm run lint" },
     { name: "Typecheck", cmd: "npm run typecheck" },
     { name: "Test", cmd: "npm test" },
