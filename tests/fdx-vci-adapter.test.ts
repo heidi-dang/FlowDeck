@@ -8,15 +8,28 @@
  * Tests pure logic functions that don't require a live FDX binary.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "bun:test"
+import { describe, it, expect, beforeEach, afterEach, afterAll } from "bun:test"
+import { execFileSync } from "node:child_process"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import {
   invalidateFdxCapabilitySnapshot,
   classifyTaskMutation,
 } from "../src/services/fdx-vci-adapter"
 
-// Control binary discovery via env var — "invalid-fdx-binary" won't be found
+// Control binary discovery via env var — "invalid-fdx-binary" won't be found.
+// The workspace remains a real Git repository because repository identity must
+// fail closed rather than invent a time-based fingerprint for non-repositories.
 const ABSENT_BINARY_PATH = "/tmp/fdx-not-found-" + Date.now()
-const MOCK_WORKSPACE = "/tmp/test-workspace-" + Date.now()
+const MOCK_WORKSPACE = mkdtempSync(join(tmpdir(), "fdx-adapter-test-"))
+execFileSync("git", ["init"], { cwd: MOCK_WORKSPACE, stdio: "ignore" })
+execFileSync("git", ["config", "user.name", "FDX Test"], { cwd: MOCK_WORKSPACE, stdio: "ignore" })
+execFileSync("git", ["config", "user.email", "fdx-test@flowdeck.dev"], { cwd: MOCK_WORKSPACE, stdio: "ignore" })
+writeFileSync(join(MOCK_WORKSPACE, "README.md"), "# FDX adapter test\n")
+execFileSync("git", ["add", "README.md"], { cwd: MOCK_WORKSPACE, stdio: "ignore" })
+execFileSync("git", ["commit", "-m", "fixture"], { cwd: MOCK_WORKSPACE, stdio: "ignore" })
+afterAll(() => rmSync(MOCK_WORKSPACE, { recursive: true, force: true }))
 
 describe("FdxVciAdapter — capability negotiation (binary absent)", () => {
   let origEnv: string | undefined
@@ -146,14 +159,14 @@ describe("FdxVciAdapter — degraded fallback behavior", () => {
     expect(plan.m11OverlayApplied).toBe(false)
   })
 
-  it("fallback evidence is not represented as native FDX evidence", async () => {
-    const { queryFdxCapabilities, deriveChangeIntelligence, generateVerificationPlan, persistRuntimeEvidence } = await import("../src/services/fdx-vci-adapter")
+  it("fallback mode cannot fabricate native runtime evidence", async () => {
+    const { queryFdxCapabilities, deriveChangeIntelligence } = await import("../src/services/fdx-vci-adapter")
+    const { runFdxVerification } = await import("../src/orchestration/verification/fdx-verification-provider")
     const caps = await queryFdxCapabilities(MOCK_WORKSPACE)
     const intel = await deriveChangeIntelligence("run-001", MOCK_WORKSPACE, caps)
-    const plan = await generateVerificationPlan(intel, caps)
-    const evidence = await persistRuntimeEvidence(plan, [], caps)
-    expect(evidence.providerState).toBe("typescript_fallback")
-    expect(evidence.providerState).not.toBe("native_vci_full")
+    const { result, session } = await runFdxVerification("run-001", intel, caps)
+    expect(result.evidenceIds).toEqual([])
+    expect(session.evidence?.persistenceFailed).toBe(true)
   })
 })
 
@@ -208,26 +221,22 @@ describe("FdxVciAdapter — attestation predicate", () => {
     else delete process.env.FDX_BINARY_PATH
   })
 
-  it("no-policy verification uses predicate v1", async () => {
-    const { queryFdxCapabilities, deriveChangeIntelligence, generateVerificationPlan, persistRuntimeEvidence, generateAttestationReference } = await import("../src/services/fdx-vci-adapter")
+  it("no-policy attestation refuses to fabricate predicate v1", async () => {
+    const { queryFdxCapabilities, createVerificationAttestation } = await import("../src/services/fdx-vci-adapter")
     const caps = await queryFdxCapabilities(MOCK_WORKSPACE)
-    const intel = await deriveChangeIntelligence("run-001", MOCK_WORKSPACE, caps)
-    const plan = await generateVerificationPlan(intel, caps)
-    const evidence = await persistRuntimeEvidence(plan, [], caps)
-    const attestation = await generateAttestationReference(evidence, plan, caps)
+    const attestation = await createVerificationAttestation("run-001", caps, MOCK_WORKSPACE, { predicateVersion: "v1" })
     expect(attestation.predicate).toBe("v1")
-    expect(attestation.policyId).toBeUndefined()
+    expect(attestation.verified).toBe(false)
+    expect(attestation.attestationId).toBe("")
   })
 
-  it("policy-overlay verification uses predicate v2", async () => {
-    const { queryFdxCapabilities, deriveChangeIntelligence, generateVerificationPlan, persistRuntimeEvidence, generateAttestationReference } = await import("../src/services/fdx-vci-adapter")
+  it("policy-overlay attestation refuses to fabricate predicate v2", async () => {
+    const { queryFdxCapabilities, createVerificationAttestation } = await import("../src/services/fdx-vci-adapter")
     const caps = await queryFdxCapabilities(MOCK_WORKSPACE)
-    const intel = await deriveChangeIntelligence("run-001", MOCK_WORKSPACE, caps)
-    const basePlan = await generateVerificationPlan(intel, caps)
-    const planWithOverlay = { ...basePlan, m11OverlayApplied: true, policySnapshotDigest: "abc123" }
-    const evidence = await persistRuntimeEvidence(basePlan, [], caps)
-    const attestation = await generateAttestationReference(evidence, planWithOverlay, caps)
+    const attestation = await createVerificationAttestation("run-001", caps, MOCK_WORKSPACE, { predicateVersion: "v2" })
     expect(attestation.predicate).toBe("v2")
+    expect(attestation.verified).toBe(false)
+    expect(attestation.attestationId).toBe("")
   })
 })
 

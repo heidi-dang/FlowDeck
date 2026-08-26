@@ -20,8 +20,8 @@
  */
 
 import { execFile, execFileSync } from "node:child_process"
-import { existsSync, readFileSync, statSync } from "node:fs"
-import { resolve } from "node:path"
+import { closeSync, existsSync, openSync, readSync, statSync } from "node:fs"
+import { isAbsolute, relative, resolve } from "node:path"
 import { createHash, randomUUID } from "node:crypto"
 import { resolveFdxBinaryPath, invalidateFdxCache } from "../tools/fdx-shared"
 import {
@@ -1036,7 +1036,7 @@ export async function executeNativeVerification(
         mandatoryPassed: false,
         mandatoryFailed: false,
         failureReasons: ["CANCELLED: verification aborted by signal"],
-        evidenceDigest: computeDigest("cancelled"),
+        evidenceDigest: "",
         persistenceFailed: false,
         checkResults: [],
         unresolvedObligations: ["CANCELLED"],
@@ -1045,8 +1045,13 @@ export async function executeNativeVerification(
       return { plan, evidence }
     }
 
-    if (!execRes.stdout) {
-      emit(`[FDX Native] Verification execution failed: ${execRes.error?.message ?? "empty output"}`)
+    // A native process failure is never recoverable from stdout. In particular,
+    // do not accept a partial JSON response produced before the CLI exits nonzero.
+    if (execRes.exitCode !== 0 || !execRes.stdout) {
+      const diagnostic = execRes.exitCode !== 0
+        ? `native FDX exited with code ${execRes.exitCode}${execRes.error?.message ? `: ${execRes.error.message}` : ""}`
+        : (execRes.error?.message ?? "empty output")
+      emit(`[FDX Native] Verification execution failed: ${diagnostic}`)
       const plan = await generateVerificationPlan(changeIntelligence, capabilities)
       const evidence: FdxRuntimeEvidence = {
         runId: changeIntelligence.runId,
@@ -1059,8 +1064,8 @@ export async function executeNativeVerification(
         checksSkipped: 0,
         mandatoryPassed: false,
         mandatoryFailed: true,
-        failureReasons: [`FDX execution error: ${execRes.error?.message ?? "native process failed"}`],
-        evidenceDigest: computeDigest("exec_error"),
+        failureReasons: [`FDX execution error: ${diagnostic}`],
+        evidenceDigest: "",
         persistenceFailed: true,
         persistenceError: "FDX process execution failed",
         checkResults: [],
@@ -1072,6 +1077,18 @@ export async function executeNativeVerification(
 
     try {
       const rawRun = JSON.parse(execRes.stdout) as Record<string, unknown>
+      if (!rawRun || Array.isArray(rawRun) || typeof rawRun !== "object") {
+        throw new Error("Native FDX verification response must be a JSON object")
+      }
+      const nativeRunId = typeof rawRun["run_id"] === "string" ? rawRun["run_id"] : ""
+      const nativeOutcome = rawRun["outcome"]
+      if (!nativeRunId) throw new Error("Native FDX verification response is missing run_id")
+      if (nativeOutcome !== "passed" && nativeOutcome !== "failed" && nativeOutcome !== "incomplete") {
+        throw new Error("Native FDX verification response has an unknown outcome")
+      }
+      if (!Array.isArray(rawRun["checks"])) {
+        throw new Error("Native FDX verification response is missing checks")
+      }
       const planObj = (rawRun["plan"] as Record<string, unknown>) ?? {}
       const checksRaw = (planObj["selected_checks"] as unknown[]) ?? []
       const parsedChecks = parsePlannedChecks(checksRaw)
@@ -1128,7 +1145,7 @@ export async function executeNativeVerification(
           mandatoryPassed: false,
           mandatoryFailed: true,
           failureReasons: ["missing_native_plan_digest: FDX native plan digest or policy overlay provenance missing"],
-          evidenceDigest: computeDigest("missing_native_digest"),
+          evidenceDigest: "",
           persistenceFailed: true,
           persistenceError: "Missing native authoritative plan digest",
           checkResults: [],
@@ -1154,12 +1171,22 @@ export async function executeNativeVerification(
       }
 
       // Parse executed checks from VerificationRun.checks
-      const executedChecksRaw = (rawRun["checks"] as Array<Record<string, unknown>>) ?? []
+      const executedChecksRaw = rawRun["checks"] as Array<Record<string, unknown>>
+      const allowedCheckStatuses = new Set<FdxCheckExecutionResult["status"]>([
+        "passed", "failed", "timed_out", "output_limit_exceeded", "spawn_failed", "unsupported", "skipped", "cancelled",
+      ])
       const checkResults: FdxCheckExecutionResult[] = executedChecksRaw.map(c => {
-        const status = String(c["status"] ?? "pending") as FdxCheckExecutionResult["status"]
+        if (!c || typeof c !== "object") throw new Error("Native FDX check result must be an object")
+        const checkId = typeof c["check_id"] === "string" ? c["check_id"] : ""
+        const rawStatus = c["status"]
+        if (!checkId) throw new Error("Native FDX check result is missing check_id")
+        if (typeof rawStatus !== "string" || !allowedCheckStatuses.has(rawStatus as FdxCheckExecutionResult["status"])) {
+          throw new Error(`Native FDX check ${checkId} has an unknown status`)
+        }
+        const status = rawStatus as FdxCheckExecutionResult["status"]
         const passed = status === "passed"
         return {
-          checkId: String(c["check_id"] ?? ""),
+          checkId,
           kind: c["kind"] as string | undefined,
           status,
           executionId: c["execution_id"] as string | undefined,
@@ -1179,6 +1206,21 @@ export async function executeNativeVerification(
         }
       })
 
+      const expectedCheckIds = new Set(plan.checks.map(check => check.checkId))
+      const observedCheckIds = new Set<string>()
+      for (const check of checkResults) {
+        if (!expectedCheckIds.has(check.checkId) || observedCheckIds.has(check.checkId)) {
+          throw new Error("Native FDX verification response has an unexpected or duplicate check result")
+        }
+        observedCheckIds.add(check.checkId)
+      }
+      if (observedCheckIds.size !== expectedCheckIds.size) {
+        throw new Error("Native FDX verification response does not cover every selected check")
+      }
+      if (nativeOutcome === "passed" && checkResults.some(check => !check.passed)) {
+        throw new Error("Native FDX verification response reports passed with a non-passing check")
+      }
+
       const passedCount = checkResults.filter(c => c.passed).length
       const failedCount = checkResults.filter(c => !c.passed && c.status === "failed").length
       const skippedCount = checkResults.filter(c => c.status === "skipped").length
@@ -1189,31 +1231,34 @@ export async function executeNativeVerification(
 
       // Check persistence status (M8 fail closed)
       const persistenceStatus = rawRun["persistence_status"] as Record<string, unknown> | undefined
+      const persistedStatus = persistenceStatus?.["status"] === "persisted"
       let persistenceFailed = persistenceStatus?.["status"] === "failed"
       let persistenceError = persistenceFailed ? String(persistenceStatus?.["reason"] ?? "M8 persistence failed") : undefined
-      const persistedPath = persistenceStatus?.["status"] === "persisted" ? String(persistenceStatus["path"]) : undefined
+      const rawPersistedPath = persistedStatus && typeof persistenceStatus?.["path"] === "string"
+        ? persistenceStatus["path"]
+        : undefined
+      const persistedPath = rawPersistedPath
+        ? (isAbsolute(rawPersistedPath) ? rawPersistedPath : resolve(changeIntelligence.repositoryRoot, rawPersistedPath))
+        : undefined
 
-      // Reopen and query exact persisted artifact bytes
+      // Completion-grade native evidence must be re-opened from the exact native
+      // artifact. A process response, local digest, or uncertain persistence state
+      // is never a substitute for M8 durable bytes.
       let evidenceDigest = ""
       if (persistedPath && existsSync(persistedPath)) {
         try {
-          const rawBytes = readFileSync(persistedPath)
-          evidenceDigest = createHash("sha256").update(rawBytes).digest("hex")
+          evidenceDigest = sha256File(persistedPath)
         } catch {
           evidenceDigest = ""
         }
       }
 
-      if (capabilities.providerState === "native_vci_full" && !evidenceDigest && !options.noPersist) {
+      if (!options.noPersist && (!persistedStatus || !persistedPath || !evidenceDigest)) {
         persistenceFailed = true
-        persistenceError = "M8 persisted artifact missing or unreadable on disk"
+        persistenceError ??= "M8 persisted artifact missing, unreadable, or not confirmed by native FDX"
       }
 
-      if (!evidenceDigest) {
-        evidenceDigest = computeDigest(JSON.stringify(rawRun))
-      }
-
-      const outcome = (persistenceFailed ? "incomplete" : String(rawRun["outcome"] ?? (failedCount > 0 ? "failed" : "passed"))) as "passed" | "failed" | "incomplete"
+      const outcome = (persistenceFailed ? "incomplete" : nativeOutcome) as "passed" | "failed" | "incomplete"
 
       const failureReasons: string[] = []
       for (const c of checkResults) {
@@ -1264,7 +1309,7 @@ export async function executeNativeVerification(
         mandatoryPassed: false,
         mandatoryFailed: true,
         failureReasons: [`JSON parse error: ${e instanceof Error ? e.message : String(e)}`],
-        evidenceDigest: computeDigest("parse_error"),
+        evidenceDigest: "",
         persistenceFailed: true,
         persistenceError: "Could not parse VerificationRun output",
         checkResults: [],
@@ -1389,23 +1434,8 @@ export async function createVerificationAttestation(
 ): Promise<FdxAttestationReference> {
   const predicate = options.predicateVersion ?? "v1"
 
-  if (
-    capabilities.providerState === "typescript_fallback" ||
-    capabilities.providerState === "unavailable" ||
-    capabilities.providerState === "incompatible" ||
-    !capabilities.binaryPath
-  ) {
-    const attestationId = computeDigest(JSON.stringify({ runId, predicate, fallback: true }))
-    return {
-      attestationId,
-      predicate,
-      evidenceDigest: computeDigest(runId),
-      runId,
-      verificationRunId: runId,
-      createdAt: new Date().toISOString(),
-      verified: false,
-      providerState: "typescript_fallback",
-    }
+  if (capabilities.providerState !== "native_vci_full" || !capabilities.binaryPath) {
+    return unverifiedAttestationReference(runId, predicate, capabilities.providerState)
   }
 
   const binary = capabilities.binaryPath
@@ -1413,29 +1443,30 @@ export async function createVerificationAttestation(
   const execRes = await runFdxAsync(binary, attestArgs, QUERY_TIMEOUT_MS, repositoryRoot)
 
   if (execRes.exitCode !== 0 || !execRes.stdout) {
-    const attestationId = computeDigest(JSON.stringify({ runId, predicate, error: "attest_create_failed" }))
-    return {
-      attestationId,
-      predicate,
-      evidenceDigest: computeDigest(runId),
-      runId,
-      verificationRunId: runId,
-      createdAt: new Date().toISOString(),
-      verified: false,
-      providerState: capabilities.providerState,
-    }
+    return unverifiedAttestationReference(runId, predicate, capabilities.providerState)
   }
 
   try {
     const parsed = JSON.parse(execRes.stdout) as Record<string, unknown>
-    const sha256 = String(parsed["attestation_sha256"] ?? parsed["sha256"] ?? "")
-    const path = parsed["path"] as string | undefined
-    const artifactSha = (parsed["artifact_sha256"] as string | undefined) ?? (parsed["artifact_sha"] as string | undefined)
+    const sha256 = typeof parsed["attestation_sha256"] === "string" ? parsed["attestation_sha256"] : ""
+    const rawPath = typeof parsed["path"] === "string" ? parsed["path"] : ""
+    const artifactSha = typeof parsed["artifact_sha256"] === "string"
+      ? parsed["artifact_sha256"]
+      : typeof parsed["artifact_sha"] === "string"
+      ? parsed["artifact_sha"]
+      : undefined
+    const attestationFilePath = rawPath
+      ? (isAbsolute(rawPath) ? rawPath : resolve(repositoryRoot, rawPath))
+      : ""
+
+    if (!isSha256(sha256) || !attestationFilePath || !existsSync(attestationFilePath) || sha256File(attestationFilePath) !== sha256) {
+      return unverifiedAttestationReference(runId, predicate, capabilities.providerState)
+    }
 
     return {
-      attestationId: sha256 || computeDigest(execRes.stdout),
+      attestationId: sha256,
       predicate,
-      attestationFilePath: path,
+      attestationFilePath,
       artifactSha256: artifactSha,
       evidenceDigest: artifactSha ?? sha256,
       runId,
@@ -1445,17 +1476,24 @@ export async function createVerificationAttestation(
       providerState: capabilities.providerState,
     }
   } catch {
-    const attestationId = computeDigest(JSON.stringify({ runId, predicate, parseError: true }))
-    return {
-      attestationId,
-      predicate,
-      evidenceDigest: computeDigest(runId),
-      runId,
-      verificationRunId: runId,
-      createdAt: new Date().toISOString(),
-      verified: false,
-      providerState: capabilities.providerState,
-    }
+    return unverifiedAttestationReference(runId, predicate, capabilities.providerState)
+  }
+}
+
+function unverifiedAttestationReference(
+  runId: string,
+  predicate: "v1" | "v2",
+  providerState: FdxProviderState
+): FdxAttestationReference {
+  return {
+    attestationId: "",
+    predicate,
+    evidenceDigest: "",
+    runId,
+    verificationRunId: runId,
+    createdAt: new Date().toISOString(),
+    verified: false,
+    providerState,
   }
 }
 
@@ -1498,66 +1536,6 @@ export async function verifyAttestationFile(
     }
   } catch {
     return { verified: false, message: "Could not parse attestation verification output" }
-  }
-}
-
-/** Legacy wrapper for generateAttestationReference */
-export async function generateAttestationReference(
-  evidence: FdxRuntimeEvidence,
-  plan: FdxVerificationPlan,
-  capabilities: FdxCapabilitySnapshot,
-  repositoryRoot = "."
-): Promise<FdxAttestationReference> {
-  const predicate: "v1" | "v2" = plan.m11OverlayApplied ? "v2" : "v1"
-  const ref = await createVerificationAttestation(evidence.runId, capabilities, repositoryRoot, { predicateVersion: predicate })
-  return {
-    ...ref,
-    policyId: plan.m11OverlayApplied ? (plan.policySnapshotDigest ?? "snap-001") : undefined,
-    policySnapshotDigest: plan.policySnapshotDigest,
-    policyApplicationDigest: plan.policyApplicationDigest,
-  }
-}
-
-/** Legacy wrapper for persistRuntimeEvidence */
-export async function persistRuntimeEvidence(
-  plan: FdxVerificationPlan,
-  checkResults: Array<{ checkId: string; passed: boolean; output?: string }>,
-  capabilities: FdxCapabilitySnapshot
-): Promise<FdxRuntimeEvidence> {
-  const passed = checkResults.filter(r => r.passed).length
-  const failed = checkResults.filter(r => !r.passed).length
-  const mandatoryIds = new Set(plan.checks.filter(c => c.mandatory).map(c => c.checkId))
-  const mandatoryFailedList = checkResults.filter(r => mandatoryIds.has(r.checkId) && !r.passed)
-
-  const evidenceDigest = computeDigest(JSON.stringify({
-    planId: plan.planId,
-    effectivePlanDigest: plan.effectivePlanDigest,
-    results: checkResults.map(r => ({ checkId: r.checkId, passed: r.passed })),
-  }))
-
-  return {
-    runId: plan.runId,
-    verificationRunId: randomUUID(),
-    stateFingerprint: evidenceDigest,
-    outcome: failed > 0 ? "failed" : "passed",
-    assurance: plan.assurance,
-    checksPassed: passed,
-    checksFailed: failed,
-    checksSkipped: plan.checks.length - passed - failed,
-    mandatoryPassed: mandatoryFailedList.length === 0,
-    mandatoryFailed: mandatoryFailedList.length > 0,
-    failureReasons: mandatoryFailedList.map(r => `check ${r.checkId} failed`),
-    evidenceDigest,
-    persistenceFailed: false,
-    checkResults: checkResults.map(r => ({
-      checkId: r.checkId,
-      status: r.passed ? "passed" : "failed",
-      command: [],
-      durationMs: 0,
-      passed: r.passed,
-    })),
-    unresolvedObligations: [],
-    providerState: capabilities.providerState,
   }
 }
 
@@ -1710,60 +1688,47 @@ export function getVciStatus(): FdxVciStatus {
  */
 export function computeRepoStateFingerprint(repositoryRoot: string): string {
   try {
-    const head = execFileSync("git", ["rev-parse", "HEAD"], {
+    const git = (args: string[]) => execFileSync("git", args, {
       cwd: repositoryRoot,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
-      timeout: 3_000,
-    }).trim()
-
-    const statusOutput = execFileSync("git", ["status", "--porcelain=v1", "-uall"], {
+      timeout: 10_000,
+      maxBuffer: 32 * 1024 * 1024,
+    })
+    const head = git(["rev-parse", "HEAD"]).trim()
+    const stagedDiff = git(["diff", "--binary", "--no-ext-diff", "--cached", "HEAD"])
+    const workingDiff = git(["diff", "--binary", "--no-ext-diff", "HEAD"])
+    const untracked = execFileSync("git", ["ls-files", "--others", "--exclude-standard", "-z"], {
       cwd: repositoryRoot,
-      encoding: "utf8",
+      encoding: "buffer",
       stdio: ["ignore", "pipe", "ignore"],
-      timeout: 5_000,
+      timeout: 10_000,
+      maxBuffer: 32 * 1024 * 1024,
     })
 
     const hasher = createHash("sha256")
     hasher.update(`HEAD:${head}\n`)
-    hasher.update(`STATUS:${statusOutput}\n`)
+    hasher.update("STAGED_DIFF\n")
+    hasher.update(stagedDiff)
+    hasher.update("WORKING_DIFF\n")
+    hasher.update(workingDiff)
+    hasher.update("UNTRACKED\0")
 
-    // Hash actual bytes of modified and untracked files
-    const lines = statusOutput.split("\n").filter(l => l.trim().length > 0)
-    for (const line of lines) {
-      const code = line.slice(0, 2)
-      let filePath = line.slice(3).trim()
-      // Handle rename: "R  old -> new"
-      if (filePath.includes(" -> ")) {
-        filePath = filePath.split(" -> ")[1].trim()
+    const resolvedRoot = resolve(repositoryRoot)
+    for (const relativePath of untracked.toString("utf8").split("\0").filter(Boolean)) {
+      const fullPath = resolve(resolvedRoot, relativePath)
+      const relation = relative(resolvedRoot, fullPath)
+      if (!relation || relation.startsWith("..") || isAbsolute(relation)) {
+        throw new Error(`Git returned an unsafe untracked path: ${relativePath}`)
       }
-      // Remove quotes if present
-      if (filePath.startsWith('"') && filePath.endsWith('"')) {
-        filePath = filePath.slice(1, -1)
-      }
-
-      const fullPath = resolve(repositoryRoot, filePath)
-      if (existsSync(fullPath)) {
-        try {
-          const stat = statSync(fullPath)
-          if (stat.isFile()) {
-            hasher.update(`FILE:${filePath}:${code}:${stat.size}\n`)
-            // Read file content bytes (bounded to 4MB per file for performance)
-            const content = readFileSync(fullPath)
-            hasher.update(content.subarray(0, 4 * 1024 * 1024))
-          }
-        } catch {
-          // If unreadable, include path in fingerprint so change is detected
-          hasher.update(`UNREADABLE:${filePath}\n`)
-        }
-      } else {
-        hasher.update(`DELETED:${filePath}\n`)
-      }
+      hasher.update(`PATH:${relativePath}\0`)
+      hasher.update(sha256File(fullPath))
     }
 
     return hasher.digest("hex").slice(0, 32)
-  } catch {
-    return createHash("sha256").update(String(Date.now())).digest("hex").slice(0, 32)
+  } catch (error: unknown) {
+    const detail = error instanceof Error ? error.message : String(error)
+    throw new Error(`Unable to compute deterministic repository state fingerprint: ${detail}`)
   }
 }
 
@@ -1771,6 +1736,31 @@ export function computeRepoStateFingerprint(repositoryRoot: string): string {
 
 function computeDigest(data: string): string {
   return createHash("sha256").update(data).digest("hex").slice(0, 32)
+}
+
+function isSha256(value: string): boolean {
+  return /^[a-f0-9]{64}$/.test(value)
+}
+
+function sha256File(filePath: string): string {
+  const stat = statSync(filePath)
+  if (!stat.isFile()) throw new Error(`Expected a regular file: ${filePath}`)
+
+  const descriptor = openSync(filePath, "r")
+  const hasher = createHash("sha256")
+  const buffer = Buffer.allocUnsafe(64 * 1024)
+  try {
+    let offset = 0
+    for (;;) {
+      const bytesRead = readSync(descriptor, buffer, 0, buffer.length, offset)
+      if (bytesRead === 0) break
+      hasher.update(buffer.subarray(0, bytesRead))
+      offset += bytesRead
+    }
+  } finally {
+    closeSync(descriptor)
+  }
+  return hasher.digest("hex")
 }
 
 function buildFallbackPlan(intel: FdxChangeIntelligence): FdxVerificationCheck[] {

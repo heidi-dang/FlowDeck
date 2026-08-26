@@ -36,7 +36,13 @@ import { VerificationStatus } from "../src/orchestration/types"
 import type { FdxCapabilitySnapshot } from "../src/services/fdx-vci-adapter"
 import { buildCalibrationSignal } from "../src/orchestration/verification/fdx-recovery"
 
-const NATIVE_BIN = process.env.FDX_BINARY_PATH || join(process.cwd(), "target/release/fdx")
+const NATIVE_BIN = process.env.FDX_BINARY_PATH || join(
+  process.cwd(),
+  "native",
+  "fdx",
+  `${process.platform}-${process.arch}`,
+  process.platform === "win32" ? "fdx.exe" : "fdx"
+)
 process.env.FDX_BINARY_PATH = NATIVE_BIN
 
 describe("Native FDX Authority — Real Binary Operations", () => {
@@ -62,8 +68,11 @@ describe("Native FDX Authority — Real Binary Operations", () => {
     } catch {}
   })
 
+  it("requires a bundled or explicitly supplied native FDX binary", () => {
+    expect(existsSync(NATIVE_BIN)).toBe(true)
+  })
+
   it("queries native capabilities and confirms protocol 2 and schema 10", async () => {
-    if (!existsSync(NATIVE_BIN)) return
     process.env.FDX_BINARY_PATH = NATIVE_BIN
     const caps = await queryFdxCapabilities(tmpRepo, true)
     expect(caps.providerState).toBe("native_vci_full")
@@ -76,7 +85,6 @@ describe("Native FDX Authority — Real Binary Operations", () => {
   })
 
   it("M6: native FDX generates plan with exact native digest passthrough (raw CLI == FlowDeck consumed)", async () => {
-    if (!existsSync(NATIVE_BIN)) return
     process.env.FDX_BINARY_PATH = NATIVE_BIN
     const caps = await queryFdxCapabilities(tmpRepo, true)
     const intel = await deriveChangeIntelligence("run-m6", tmpRepo, caps)
@@ -99,7 +107,6 @@ describe("Native FDX Authority — Real Binary Operations", () => {
   })
 
   it("M11: policy overlay passes through exact native application and snapshot digests", async () => {
-    if (!existsSync(NATIVE_BIN)) return
     process.env.FDX_BINARY_PATH = NATIVE_BIN
     execFileSync(NATIVE_BIN, ["index"], { cwd: tmpRepo, stdio: "ignore" })
     const caps = await queryFdxCapabilities(tmpRepo, true)
@@ -173,7 +180,6 @@ describe("Native FDX Authority — Real Binary Operations", () => {
   })
 
   it("Hostile Test 2: FlowDeck consumes exact native digest and never uses locally computed hash", async () => {
-    if (!existsSync(NATIVE_BIN)) return
     process.env.FDX_BINARY_PATH = NATIVE_BIN
     const caps = await queryFdxCapabilities(tmpRepo, true)
     const intel = await deriveChangeIntelligence("run-h2", tmpRepo, caps)
@@ -264,7 +270,6 @@ describe("Native FDX Authority — Real Binary Operations", () => {
   })
 
   it("M7 + M8: native FDX executes verification directly (not Node execFile)", async () => {
-    if (!existsSync(NATIVE_BIN)) return
     process.env.FDX_BINARY_PATH = NATIVE_BIN
     const caps = await queryFdxCapabilities(tmpRepo, true)
     const intel = await deriveChangeIntelligence("run-m7", tmpRepo, caps)
@@ -274,6 +279,151 @@ describe("Native FDX Authority — Real Binary Operations", () => {
     expect(evidence.providerState).toBe("native_vci_full")
     expect(rawRun).toBeDefined()
     expect(rawRun?.["run_id"]).toBeDefined()
+  })
+
+  it("M7 hostile: a nonzero native exit with JSON output is incomplete and cannot persist evidence", async () => {
+    const failingBinary = join(tmpRepo, "fdx-nonzero-json")
+    writeFileSync(failingBinary, `#!/usr/bin/env node
+const command = process.argv[2]
+if (command === "plan") {
+  console.log(JSON.stringify({
+    base_plan_digest: "a".repeat(64),
+    effective_plan_digest: "b".repeat(64),
+    selected_checks: [{ check_id: "check:one", display_name: "one", kind: "unit_test", mandatory: true, reason: "fixture", scope: "fixture" }]
+  }))
+  process.exit(0)
+}
+console.log(JSON.stringify({ run_id: "partial-native-output", outcome: "passed", persistence_status: { status: "persisted", path: ".fdx/runs/partial.json" } }))
+process.exit(23)
+`, { mode: 0o755 })
+    const caps: FdxCapabilitySnapshot = {
+      snapshotId: "s-nonzero-json",
+      capturedAt: new Date().toISOString(),
+      providerState: "native_vci_full",
+      binaryPath: failingBinary,
+      verificationPredicateVersions: ["v1", "v2"],
+      calibrationContractVersions: [2],
+      policyContractVersions: [1],
+      assuranceLevels: ["EXACT"],
+      networkAccess: false,
+      telemetry: false,
+      platformLimitations: [],
+      missingCapabilities: [],
+    }
+    const intel = await deriveChangeIntelligence("run-nonzero-json", tmpRepo, caps, { changedFiles: ["README.md"] })
+    const { evidence } = await executeNativeVerification(intel, caps, { noPersist: false })
+
+    expect(evidence.outcome).toBe("incomplete")
+    expect(evidence.persistenceFailed).toBe(true)
+    expect(evidence.failureReasons.join(" ")).toContain("exited with code 23")
+    expect(evidence.evidenceDigest).toBe("")
+  })
+
+  it("M7 hostile: an unknown native check status is rejected as malformed output", async () => {
+    const malformedBinary = join(tmpRepo, "fdx-unknown-status")
+    writeFileSync(malformedBinary, `#!/usr/bin/env node
+const command = process.argv[2]
+const plan = {
+  base_plan_digest: "a".repeat(64),
+  effective_plan_digest: "b".repeat(64),
+  selected_checks: [{ check_id: "check:one", display_name: "one", kind: "unit_test", mandatory: true, reason: "fixture", scope: "fixture" }]
+}
+if (command === "plan") { console.log(JSON.stringify(plan)); process.exit(0) }
+console.log(JSON.stringify({
+  ...plan,
+  run_id: "unknown-status-run",
+  outcome: "passed",
+  checks: [{ check_id: "check:one", status: "mystery_status" }],
+  persistence_status: { status: "persisted", path: ".fdx/runs/unknown-status.json" }
+}))
+`, { mode: 0o755 })
+    const caps: FdxCapabilitySnapshot = {
+      snapshotId: "s-unknown-status",
+      capturedAt: new Date().toISOString(),
+      providerState: "native_vci_full",
+      binaryPath: malformedBinary,
+      verificationPredicateVersions: ["v1", "v2"],
+      calibrationContractVersions: [2],
+      policyContractVersions: [],
+      assuranceLevels: ["EXACT"],
+      networkAccess: false,
+      telemetry: false,
+      platformLimitations: [],
+      missingCapabilities: [],
+    }
+    const { evidence } = await executeNativeVerification({
+      runId: "run-unknown-status",
+      repositoryRoot: tmpRepo,
+      stateFingerprint: "fp-unknown-status",
+      stateVersion: 1,
+      changedFiles: ["README.md"],
+      impactedFiles: ["README.md"],
+      impactedPackages: [],
+      uncertainFiles: [],
+      assuranceLevel: "EXACT",
+      providerState: "native_vci_full",
+    }, caps, { noPersist: false, policyOverlay: false })
+
+    expect(evidence.outcome).toBe("incomplete")
+    expect(evidence.persistenceFailed).toBe(true)
+    expect(evidence.failureReasons.join(" ")).toContain("unknown status")
+    expect(evidence.evidenceDigest).toBe("")
+  })
+
+  it("M8→M9: failed native persistence withholds attestation and all completion evidence", async () => {
+    const persistenceBinary = join(tmpRepo, "fdx-persistence-failure")
+    const attestationMarker = join(tmpRepo, "attestation-should-not-run")
+    writeFileSync(persistenceBinary, `#!/usr/bin/env node
+const fs = require("fs")
+const command = process.argv[2]
+const plan = {
+  base_plan_digest: "a".repeat(64),
+  effective_plan_digest: "b".repeat(64),
+  selected_checks: [{ check_id: "check:one", display_name: "one", kind: "unit_test", mandatory: true, reason: "fixture", scope: "fixture" }]
+}
+if (command === "plan") { console.log(JSON.stringify(plan)); process.exit(0) }
+if (command === "attest") { fs.writeFileSync(${JSON.stringify(attestationMarker)}, "unexpected M9 invocation"); process.exit(77) }
+console.log(JSON.stringify({
+  ...plan,
+  run_id: "persist-failure-run",
+  outcome: "passed",
+  checks: [{ check_id: "check:one", status: "passed", command: ["node"], duration_ms: 1 }],
+  persistence_status: { status: "failed", reason: "fixture disk failure" }
+}))
+`, { mode: 0o755 })
+    const caps: FdxCapabilitySnapshot = {
+      snapshotId: "s-persist-failure",
+      capturedAt: new Date().toISOString(),
+      providerState: "native_vci_full",
+      binaryPath: persistenceBinary,
+      verificationPredicateVersions: ["v1", "v2"],
+      calibrationContractVersions: [2],
+      policyContractVersions: [],
+      assuranceLevels: ["EXACT"],
+      networkAccess: false,
+      telemetry: false,
+      platformLimitations: [],
+      missingCapabilities: [],
+    }
+    const { result, session } = await runFdxVerification("run-persist-failure", {
+      runId: "run-persist-failure",
+      repositoryRoot: tmpRepo,
+      stateFingerprint: "fp-persist-failure",
+      stateVersion: 1,
+      changedFiles: ["README.md"],
+      impactedFiles: ["README.md"],
+      impactedPackages: [],
+      uncertainFiles: [],
+      assuranceLevel: "EXACT",
+      providerState: "native_vci_full",
+    }, caps, { policyOverlay: false })
+
+    expect(result.status).toBe(VerificationStatus.FAILED)
+    expect(result.evidenceIds).toEqual([])
+    expect(session.attestation?.verified).toBe(false)
+    expect(session.blockers.some(blocker => blocker.kind === "persistence_failure")).toBe(true)
+    expect(session.blockers.some(blocker => blocker.kind === "attestation_failure")).toBe(true)
+    expect(existsSync(attestationMarker)).toBe(false)
   })
 
   it("M8: persistence failure fails closed and blocks verification PASS", async () => {
@@ -314,7 +464,6 @@ describe("Native FDX Authority — Real Binary Operations", () => {
   })
 
   it("M9: real Predicate v1 and v2 attestation creation & verification", async () => {
-    if (!existsSync(NATIVE_BIN)) return
     process.env.FDX_BINARY_PATH = NATIVE_BIN
     const caps = await queryFdxCapabilities(tmpRepo, true)
     // Run verification with persistence to create a historical run
@@ -388,6 +537,24 @@ describe("Content-Bound Repository State Fingerprint (Workstream D)", () => {
     expect(staleCheck).toBe(true)
   })
 
+  it("returns to the identical fingerprint when repository content is restored", () => {
+    const clean = computeRepoStateFingerprint(tmpRepo)
+    writeFileSync(join(tmpRepo, "src.ts"), "const x = 'temporary';\n")
+    expect(computeRepoStateFingerprint(tmpRepo)).not.toBe(clean)
+
+    writeFileSync(join(tmpRepo, "src.ts"), "const x = 1;\n")
+    expect(computeRepoStateFingerprint(tmpRepo)).toBe(clean)
+  })
+
+  it("fails closed with an explicit classification outside a Git repository", () => {
+    const nonRepository = mkdtempSync(join(tmpdir(), "fdx-not-a-repo-"))
+    try {
+      expect(() => computeRepoStateFingerprint(nonRepository)).toThrow(/Unable to compute deterministic repository state fingerprint/)
+    } finally {
+      rmSync(nonRepository, { recursive: true, force: true })
+    }
+  })
+
   it("binds relevant untracked file content changes to the fingerprint", () => {
     const fpClean = computeRepoStateFingerprint(tmpRepo)
 
@@ -402,6 +569,40 @@ describe("Content-Bound Repository State Fingerprint (Workstream D)", () => {
     const fpUntrackedModified = computeRepoStateFingerprint(tmpRepo)
 
     expect(fpWithUntracked).not.toBe(fpUntrackedModified)
+  })
+
+  it("detects same-size byte changes beyond four mebibytes", () => {
+    const largePath = join(tmpRepo, "large.bin")
+    const bytes = Buffer.alloc(4 * 1024 * 1024 + 64, 0x61)
+    bytes[bytes.length - 1] = 0x31
+    writeFileSync(largePath, bytes)
+    const fpA = computeRepoStateFingerprint(tmpRepo)
+
+    bytes[bytes.length - 1] = 0x32
+    writeFileSync(largePath, bytes)
+    const fpB = computeRepoStateFingerprint(tmpRepo)
+
+    expect(fpA).not.toBe(fpB)
+  })
+
+  it("binds staged, unstaged, deletion, and rename state", () => {
+    const source = join(tmpRepo, "src.ts")
+    writeFileSync(source, "const x = 'staged';\n")
+    execFileSync("git", ["add", "src.ts"], { cwd: tmpRepo, stdio: "ignore" })
+    const staged = computeRepoStateFingerprint(tmpRepo)
+
+    writeFileSync(source, "const x = 'staged-and-unstaged';\n")
+    const stagedAndUnstaged = computeRepoStateFingerprint(tmpRepo)
+    expect(stagedAndUnstaged).not.toBe(staged)
+
+    execFileSync("git", ["add", "src.ts"], { cwd: tmpRepo, stdio: "ignore" })
+    execFileSync("git", ["commit", "-m", "staged fixture"], { cwd: tmpRepo, stdio: "ignore" })
+    execFileSync("git", ["mv", "src.ts", "renamed.ts"], { cwd: tmpRepo, stdio: "ignore" })
+    const renamed = computeRepoStateFingerprint(tmpRepo)
+
+    execFileSync("git", ["rm", "-f", "renamed.ts"], { cwd: tmpRepo, stdio: "ignore" })
+    const deleted = computeRepoStateFingerprint(tmpRepo)
+    expect(renamed).not.toBe(deleted)
   })
 })
 
@@ -518,6 +719,68 @@ describe("Milestone 10: Exact Per-Check Truth (Workstream E)", () => {
     const signal = buildCalibrationSignal(sessionWithoutCheckResults)
     expect(signal).toBeNull()
   })
+
+  it("refuses calibration when any planned check is unknown, duplicated, or inconsistent", () => {
+    const plan = {
+      planId: "p-exact",
+      runId: "r-exact",
+      basePlanDigest: "bp-exact",
+      effectivePlanDigest: "ep-exact",
+      checks: [{ checkId: "check-1", command: "test", args: [], rationale: "", mandatory: true, policyAdded: false }],
+      m11OverlayApplied: false,
+      m11CandidatesAvailable: [],
+      providerState: "native_vci_full" as const,
+      assurance: "EXACT",
+    }
+    const baseSession = {
+      sessionId: "s-exact",
+      runId: "r-exact",
+      stateVersion: 1,
+      stateFingerprint: "fp-exact",
+      basePlanDigest: "bp-exact",
+      effectivePlanDigest: "ep-exact",
+      plan,
+      blockers: [],
+      status: "failed" as const,
+      createdAt: new Date().toISOString(),
+    }
+    const evidence = {
+      runId: "r-exact",
+      verificationRunId: "vr-exact",
+      stateFingerprint: "fp-exact",
+      outcome: "incomplete" as const,
+      assurance: "EXACT",
+      checksPassed: 0,
+      checksFailed: 0,
+      checksSkipped: 1,
+      mandatoryPassed: false,
+      mandatoryFailed: true,
+      failureReasons: ["unknown check result"],
+      evidenceDigest: "ev-exact",
+      persistenceFailed: false,
+      checkResults: [{ checkId: "check-1", status: "skipped" as const, command: ["test"], durationMs: 1, passed: false }],
+      unresolvedObligations: ["check-1"],
+      providerState: "native_vci_full" as const,
+    }
+
+    expect(buildCalibrationSignal({ ...baseSession, evidence })).toBeNull()
+    expect(buildCalibrationSignal({
+      ...baseSession,
+      evidence: {
+        ...evidence,
+        outcome: "failed",
+        checkResults: [{ checkId: "check-1", status: "passed", command: ["test"], durationMs: 1, passed: false }],
+      },
+    })).toBeNull()
+    expect(buildCalibrationSignal({
+      ...baseSession,
+      evidence: {
+        ...evidence,
+        outcome: "failed",
+        checkResults: [{ checkId: "check-1", status: "failed", command: ["test"], durationMs: 1, passed: false }, { checkId: "check-1", status: "failed", command: ["test"], durationMs: 1, passed: false }],
+      },
+    })).toBeNull()
+  })
 })
 
 describe("Cancellation, Restart & Concurrency Idempotency (Workstreams K & L)", () => {
@@ -535,19 +798,16 @@ describe("Cancellation, Restart & Concurrency Idempotency (Workstreams K & L)", 
     try { rmSync(tmpRepo, { recursive: true, force: true }) } catch {}
   })
 
-  it("cancellation produces CANCELLED/INCOMPLETE status and never a false PASS", async () => {
-    const caps: FdxCapabilitySnapshot = { snapshotId: "s-cancel", capturedAt: new Date().toISOString(), providerState: "typescript_fallback", verificationPredicateVersions: [], calibrationContractVersions: [], policyContractVersions: [], assuranceLevels: [], networkAccess: false, telemetry: false, platformLimitations: [], missingCapabilities: [] }
-    const intel = await deriveChangeIntelligence("run-cancel", tmpRepo, caps)
-    const controller = new AbortController()
-    controller.abort() // Immediately aborted
+  it("fallback capability state is rejected before it can create completion evidence", async () => {
+    const caps: FdxCapabilitySnapshot = { snapshotId: "s-fallback", capturedAt: new Date().toISOString(), providerState: "typescript_fallback", verificationPredicateVersions: [], calibrationContractVersions: [], policyContractVersions: [], assuranceLevels: [], networkAccess: false, telemetry: false, platformLimitations: [], missingCapabilities: [] }
+    const intel = await deriveChangeIntelligence("run-fallback", tmpRepo, caps)
 
-    const { result, session } = await runFdxVerification("run-cancel", intel, caps, {
-      signal: controller.signal,
-    })
+    const { result, session, blockers } = await runFdxVerification("run-fallback", intel, caps)
 
-    expect(session.status).toBe("cancelled")
-    expect(result.failureReasons).toContain("CANCELLED")
-    expect(result.status).not.toBe(VerificationStatus.PASSED)
+    expect(session.status).toBe("failed")
+    expect(result.status).toBe(VerificationStatus.ERROR)
+    expect(result.evidenceIds).toEqual([])
+    expect(blockers[0]?.kind).toBe("provider_unavailable")
   })
 
   it("20x duplicate triggers produce identical deterministic state identity", async () => {
@@ -565,7 +825,6 @@ describe("Cancellation, Restart & Concurrency Idempotency (Workstreams K & L)", 
     expect(fingerprints[0]).toBe(intel1.stateFingerprint)
   })
   it("single-flight verification coalesces concurrent identical requests into one execution", async () => {
-    if (!existsSync(NATIVE_BIN)) return
     process.env.FDX_BINARY_PATH = NATIVE_BIN
     const caps = await queryFdxCapabilities(tmpRepo, true)
     const intel = await deriveChangeIntelligence("run-sf", tmpRepo, caps)

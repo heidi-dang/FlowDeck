@@ -1,28 +1,40 @@
 /**
  * Heidi FDX VCI Integration E2E Test
  *
- * Covers the 16 mandatory E2E scenarios from the integration spec.
- * Uses environment variables to control FDX binary discovery.
+ * Covers non-accepting orchestration and degraded-mode scenarios from the integration spec.
+ * Native qualification is intentionally separate: this file forces an absent binary and
+ * must never be used as evidence of native-authority completion.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "bun:test"
+import { describe, it, expect, beforeEach, afterEach, afterAll } from "bun:test"
+import { execFileSync } from "node:child_process"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import {
   queryFdxCapabilities,
   invalidateFdxCapabilitySnapshot,
   classifyTaskMutation,
   deriveChangeIntelligence,
   generateVerificationPlan,
-  persistRuntimeEvidence,
-  generateAttestationReference,
+  createVerificationAttestation,
 } from "../../src/services/fdx-vci-adapter"
-import { isFdxEvidenceStale } from "../../src/orchestration/verification/fdx-verification-provider"
+import { isFdxEvidenceStale, runFdxVerification } from "../../src/orchestration/verification/fdx-verification-provider"
+import { VerificationStatus } from "../../src/orchestration/types"
 import {
   createRecoveryState,
   classifyRepairStrategy,
 } from "../../src/orchestration/verification/fdx-recovery"
 
 const ABSENT_BINARY = "/tmp/fdx-not-found-e2e-" + Date.now()
-const WS = "/tmp/e2e-test-ws-" + Date.now()
+const WS = mkdtempSync(join(tmpdir(), "fdx-e2e-test-"))
+execFileSync("git", ["init"], { cwd: WS, stdio: "ignore" })
+execFileSync("git", ["config", "user.name", "FDX E2E Test"], { cwd: WS, stdio: "ignore" })
+execFileSync("git", ["config", "user.email", "fdx-e2e-test@flowdeck.dev"], { cwd: WS, stdio: "ignore" })
+writeFileSync(join(WS, "README.md"), "# FDX E2E test\n")
+execFileSync("git", ["add", "README.md"], { cwd: WS, stdio: "ignore" })
+execFileSync("git", ["commit", "-m", "fixture"], { cwd: WS, stdio: "ignore" })
+afterAll(() => rmSync(WS, { recursive: true, force: true }))
 
 let origEnv: string | undefined
 
@@ -48,22 +60,19 @@ describe("E2E Scenario 1: Non-code task bypass", () => {
   })
 })
 
-describe("E2E Scenario 2: Simple code mutation → pass", () => {
-  it("simple mutation produces valid verification path", async () => {
+describe("E2E Scenario 2: Simple code mutation requires native authority", () => {
+  it("does not create a verification completion result when FDX is unavailable", async () => {
     const caps = await makeCapabilities()
     const intel = await deriveChangeIntelligence("run-e2e-2", WS, caps, {
       changedFiles: ["src/utils.ts"],
     })
-    const plan = await generateVerificationPlan(intel, caps)
-    const results = plan.checks.map(c => ({ checkId: c.checkId, passed: true, output: "ok" }))
-    const evidence = await persistRuntimeEvidence(plan, results, caps)
-    const attestation = await generateAttestationReference(evidence, plan, caps)
-    expect(evidence.providerState).toBe("typescript_fallback")
-    expect(attestation.predicate).toBe("v1")
+    const { result } = await runFdxVerification("run-e2e-2", intel, caps)
+    expect(result.status).toBe(VerificationStatus.ERROR)
+    expect(result.evidenceIds).toEqual([])
   })
 })
 
-describe("E2E Scenario 3: Complex mutation → pass", () => {
+describe("Simulation Scenario 3: Complex mutation planning (non-accepting)", () => {
   it("complex multi-file mutation produces full VCI path", async () => {
     const caps = await makeCapabilities()
     const intel = await deriveChangeIntelligence("run-e2e-3", WS, caps, {
@@ -72,6 +81,7 @@ describe("E2E Scenario 3: Complex mutation → pass", () => {
     expect(intel.changedFiles.length).toBeGreaterThan(0)
     const plan = await generateVerificationPlan(intel, caps)
     expect(plan.checks.length).toBeGreaterThan(0)
+    expect(plan.providerState).toBe("typescript_fallback")
   })
 })
 
@@ -106,7 +116,7 @@ describe("E2E Scenario 5: Verification fail → specialist repair → pass", () 
   })
 })
 
-describe("E2E Scenario 6: Policy ADD_CHECK applied", () => {
+describe("Simulation Scenario 6: Policy ADD_CHECK shape (non-accepting)", () => {
   it("policy overlay adds checks without removing base checks", async () => {
     const caps = await makeCapabilities()
     const intel = await deriveChangeIntelligence("run-e2e-6", WS, caps)
@@ -140,7 +150,7 @@ describe("E2E Scenario 7: State mutation invalidates previous PASS", () => {
   })
 })
 
-describe("E2E Scenario 8: FDX absent → fallback/degraded", () => {
+describe("Simulation Scenario 8: FDX absent → fallback/degraded (non-accepting)", () => {
   it("FDX absent produces typed fallback, not crash", async () => {
     const caps = await makeCapabilities()
     expect(caps.providerState).toBe("typescript_fallback")
@@ -148,41 +158,34 @@ describe("E2E Scenario 8: FDX absent → fallback/degraded", () => {
   })
 })
 
-describe("E2E Scenario 11: Cancellation during verification", () => {
-  it("empty results are not a false PASS", async () => {
+describe("E2E Scenario 11: Degraded execution containment", () => {
+  it("does not create local runtime evidence when native FDX is unavailable", async () => {
     const caps = await makeCapabilities()
     const intel = await deriveChangeIntelligence("run-e2e-11", WS, caps)
-    const plan = await generateVerificationPlan(intel, caps)
-    const evidence = await persistRuntimeEvidence(plan, [], caps)
-    // If checks exist, all skipped — not a false PASS
-    if (plan.checks.length > 0) {
-      const totalAccounted = evidence.checksPassed + evidence.checksFailed + evidence.checksSkipped
-      expect(totalAccounted).toBe(plan.checks.length)
-    }
+    const { result, session } = await runFdxVerification("run-e2e-11", intel, caps)
+    expect(result.status).toBe(VerificationStatus.ERROR)
+    expect(session.evidence?.persistenceFailed).toBe(true)
+    expect(result.evidenceIds).toEqual([])
   })
 })
 
 describe("E2E Scenario 14: v1 attestation no-policy", () => {
-  it("no-policy verification uses predicate v1", async () => {
+  it("does not fabricate a v1 attestation when native FDX is unavailable", async () => {
     const caps = await makeCapabilities()
-    const intel = await deriveChangeIntelligence("run-e2e-14", WS, caps)
-    const plan = await generateVerificationPlan(intel, caps)
-    const evidence = await persistRuntimeEvidence(plan, [], caps)
-    const attestation = await generateAttestationReference(evidence, plan, caps)
+    const attestation = await createVerificationAttestation("run-e2e-14", caps, WS, { predicateVersion: "v1" })
     expect(attestation.predicate).toBe("v1")
+    expect(attestation.verified).toBe(false)
+    expect(attestation.attestationId).toBe("")
   })
 })
 
 describe("E2E Scenario 15: v2 attestation policy-overlay", () => {
-  it("policy-overlay verification uses predicate v2", async () => {
+  it("does not fabricate a v2 attestation when native FDX is unavailable", async () => {
     const caps = await makeCapabilities()
-    const intel = await deriveChangeIntelligence("run-e2e-15", WS, caps)
-    const basePlan = await generateVerificationPlan(intel, caps)
-    const planWithOverlay = { ...basePlan, m11OverlayApplied: true, policySnapshotDigest: "snap-001" }
-    const evidence = await persistRuntimeEvidence(basePlan, [], caps)
-    const attestation = await generateAttestationReference(evidence, planWithOverlay, caps)
+    const attestation = await createVerificationAttestation("run-e2e-15", caps, WS, { predicateVersion: "v2" })
     expect(attestation.predicate).toBe("v2")
-    expect(attestation.policySnapshotDigest).toBe("snap-001")
+    expect(attestation.verified).toBe(false)
+    expect(attestation.attestationId).toBe("")
   })
 })
 
