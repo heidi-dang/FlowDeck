@@ -494,9 +494,8 @@ fn handle_why_v1(
         .and_then(|v| v.as_u64())
         .map(|v| v as usize);
 
-    match crate::intelligence::change::traverse::explain_why_target(
-        root, target, base, head, depth,
-    ) {
+    match crate::intelligence::change::traverse::explain_why_target(root, target, base, head, depth)
+    {
         Ok(res) => match serde_json::to_value(&res) {
             Ok(v) => format_ok(id, v),
             Err(e) => format_err(id, format!("serialization error: {}", e)),
@@ -587,9 +586,8 @@ fn handle_semantic_status_v1(
         Err(e) => return format_err(id, format!("semantic status error: {}", e)),
     };
     let registry = crate::intelligence::semantic::registry::ProviderRegistry::new();
-    let states = crate::intelligence::semantic::state::evaluate_effective_states(
-        &repo_root, &registry, persisted,
-    );
+    let states =
+        crate::intelligence::semantic::state::evaluate_effective_states(root, &registry, persisted);
     let (nodes, edges) =
         crate::intelligence::semantic::state::count_semantic_evidence(&db).unwrap_or_default();
     let providers: Vec<serde_json::Value> = states
@@ -659,7 +657,9 @@ fn process_request(req: ServeRequest, cache: &AstCache, root: &Path) -> Option<S
         "impact" => handle_impact(&req.id, &req.args, cache, root),
         "evidence-graph-v1" => handle_evidence_graph_v1(&req.id, &req.args, cache, root),
         "semantic-status-v1" => handle_semantic_status_v1(&req.id, &req.args, cache, root),
-        "build-status-v1" | "build-status" => handle_build_status_v1(&req.id, &req.args, cache, root),
+        "build-status-v1" | "build-status" => {
+            handle_build_status_v1(&req.id, &req.args, cache, root)
+        }
         "build-graph-v1" | "build-graph" => handle_build_graph_v1(&req.id, &req.args, cache, root),
         "impact-v2" => handle_impact_v2(&req.id, &req.args, cache, root),
         "why-v1" | "why" => handle_why_v1(&req.id, &req.args, cache, root),
@@ -671,10 +671,14 @@ fn process_request(req: ServeRequest, cache: &AstCache, root: &Path) -> Option<S
 /// writes responses to stdout until EOF using a bounded worker pool.
 pub fn run(root_opt: Option<PathBuf>) {
     let raw_root = root_opt.unwrap_or_else(|| PathBuf::from("."));
-    let canonical_root = match std::fs::canonicalize(&raw_root) {
-        Ok(p) => p,
+    let canonical_working_dir = match std::fs::canonicalize(&raw_root) {
+        Ok(path) => path,
         Err(_) => std::env::current_dir().unwrap_or(raw_root),
     };
+    // Bind every daemon request to the same canonical repository identity used by
+    // the CLI, even when the daemon is launched from a nested working directory.
+    let canonical_root =
+        crate::paths::find_repository_root(&canonical_working_dir).unwrap_or(canonical_working_dir);
     let root = Arc::new(canonical_root);
 
     let stdin = std::io::stdin();
