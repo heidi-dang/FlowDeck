@@ -27,22 +27,18 @@ const CURRENT_CAPABILITIES = {
 
 describe("Doctor FDX Checks", () => {
   let tmpDir: string
-  let previousBinaryPath: string | undefined
 
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "fdx-checks-test-"))
-    previousBinaryPath = process.env.FDX_BINARY_PATH
   })
 
   afterEach(() => {
-    if (previousBinaryPath === undefined) delete process.env.FDX_BINARY_PATH
-    else process.env.FDX_BINARY_PATH = previousBinaryPath
     try {
       rmSync(tmpDir, { recursive: true, force: true })
     } catch {}
   })
 
-  function installNativeFixture(capabilities: unknown): void {
+  function installNativeFixture(capabilities: unknown): string {
     const binary = join(tmpDir, process.platform === "win32" ? "fdx.exe" : "fdx")
     const serialized = JSON.stringify(capabilities)
     writeFileSync(binary, `#!/usr/bin/env node
@@ -58,7 +54,7 @@ if (command === "serve") {
 process.exit(0)
 `, { mode: 0o755 })
     chmodSync(binary, 0o755)
-    process.env.FDX_BINARY_PATH = binary
+    return binary
   }
 
   function checkById(checks: Awaited<ReturnType<typeof runFdxChecks>>, id: string) {
@@ -78,10 +74,18 @@ process.exit(0)
     expect(indexCheck.detected).toContain(".flowdeck/fdx-index.json present")
   })
 
-  it("reports a current native FDX protocol and exact graph schema as healthy", async () => {
-    installNativeFixture(CURRENT_CAPABILITIES)
+  it("treats a missing native binary as an authority error in a repository-like environment", async () => {
+    const missing = join(tmpDir, "missing-fdx")
+    const checks = await runFdxChecks(tmpDir, { nativeBinaryPath: missing })
+    const binaryCheck = checkById(checks, "fdx.native_binary")
+    expect(binaryCheck.status).toBe("error")
+    expect(binaryCheck.detected).toContain("cannot qualify VCI authority")
+  })
 
-    const checks = await runFdxChecks(tmpDir)
+  it("reports a current native FDX protocol and exact graph schema as healthy", async () => {
+    const binary = installNativeFixture(CURRENT_CAPABILITIES)
+
+    const checks = await runFdxChecks(tmpDir, { nativeBinaryPath: binary })
     expect(checkById(checks, "fdx.native_binary").status).toBe("pass")
     expect(checkById(checks, "fdx.vci_capability_contract").status).toBe("pass")
     expect(checkById(checks, "fdx.vci_protocol_compat").status).toBe("pass")
@@ -89,44 +93,44 @@ process.exit(0)
   })
 
   it("rejects stale protocol v1 rather than reporting a healthy capability contract", async () => {
-    installNativeFixture({ ...CURRENT_CAPABILITIES, fdx_protocol_version: 1 })
+    const binary = installNativeFixture({ ...CURRENT_CAPABILITIES, fdx_protocol_version: 1 })
 
-    const checks = await runFdxChecks(tmpDir)
+    const checks = await runFdxChecks(tmpDir, { nativeBinaryPath: binary })
     expect(checkById(checks, "fdx.vci_capability_contract").status).toBe("error")
     expect(checkById(checks, "fdx.vci_protocol_compat").status).toBe("error")
   })
 
   it("rejects newer unsupported protocol versions", async () => {
-    installNativeFixture({ ...CURRENT_CAPABILITIES, fdx_protocol_version: 3 })
+    const binary = installNativeFixture({ ...CURRENT_CAPABILITIES, fdx_protocol_version: 3 })
 
-    const checks = await runFdxChecks(tmpDir)
+    const checks = await runFdxChecks(tmpDir, { nativeBinaryPath: binary })
     expect(checkById(checks, "fdx.vci_capability_contract").status).toBe("error")
     expect(checkById(checks, "fdx.vci_protocol_compat").status).toBe("error")
   })
 
   it("fails closed for malformed capability JSON", async () => {
-    installNativeFixture("not-a-capability-document")
+    const binary = installNativeFixture("not-a-capability-document")
 
-    const checks = await runFdxChecks(tmpDir)
+    const checks = await runFdxChecks(tmpDir, { nativeBinaryPath: binary })
     expect(checkById(checks, "fdx.vci_capability_contract").status).toBe("error")
     expect(checkById(checks, "fdx.vci_protocol_compat").status).toBe("error")
     expect(checkById(checks, "fdx.vci_graph_schema").status).toBe("error")
   })
 
   it("rejects stale and newer graph schemas rather than treating max-write as a range", async () => {
-    installNativeFixture({
+    let binary = installNativeFixture({
       ...CURRENT_CAPABILITIES,
       graph_schema: { ...CURRENT_CAPABILITIES.graph_schema, maximum_writable: 9 },
     })
-    let checks = await runFdxChecks(tmpDir)
+    let checks = await runFdxChecks(tmpDir, { nativeBinaryPath: binary })
     expect(checkById(checks, "fdx.vci_capability_contract").status).toBe("error")
     expect(checkById(checks, "fdx.vci_graph_schema").status).toBe("error")
 
-    installNativeFixture({
+    binary = installNativeFixture({
       ...CURRENT_CAPABILITIES,
       graph_schema: { ...CURRENT_CAPABILITIES.graph_schema, maximum_writable: 11 },
     })
-    checks = await runFdxChecks(tmpDir)
+    checks = await runFdxChecks(tmpDir, { nativeBinaryPath: binary })
     expect(checkById(checks, "fdx.vci_capability_contract").status).toBe("error")
     expect(checkById(checks, "fdx.vci_graph_schema").status).toBe("error")
   })

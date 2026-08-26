@@ -306,7 +306,9 @@ describe("source-checkout regression", () => {
 
     const { report, exitCode } = await runPackedService(dir)
 
-    // Repo-only checks are active again — all present, so all pass
+    // Repo-only checks are active again — all present, so all pass. Native FDX
+    // is intentionally absent from this source fixture and must remain a visible
+    // non-qualifying VCI authority error rather than being silently downgraded.
     const repoOnly = report!.checks.filter(c =>
       ["config.tsconfig.json", "config.uninstall.sh", "security.gitignore"].includes(c.id),
     )
@@ -314,7 +316,9 @@ describe("source-checkout regression", () => {
     for (const check of repoOnly) {
       expect(check.status).toBe("pass")
     }
-    expect(exitCode).toBe(0)
+    const nativeFdx = report!.checks.find(c => c.id === "fdx.native_binary")
+    expect(nativeFdx?.status).toBe("error")
+    expect(exitCode).toBe(1)
   })
 
   it("surfaces missing repo-only files as real failures in a source checkout", async () => {
