@@ -137,7 +137,10 @@ describe("Strict closure", () => {
       expect(() => db.query("SELECT 1").get()).toThrow();
     } catch {
       // Some Bun versions reject close(true) with a held prepared statement.
-      if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+      // Windows may also retain the handle briefly, so cleanup remains best effort.
+      if (existsSync(dir)) {
+        try { rmSync(dir, { recursive: true, force: true }); } catch {}
+      }
     }
   });
 
