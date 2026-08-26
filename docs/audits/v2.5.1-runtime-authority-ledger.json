@@ -18,6 +18,47 @@
     "decision": "NOT ADOPTED",
     "reason": "The candidate classifies internal traffic from a fixed text-prefix list, which contradicts the requirement that text alone must never determine internal provenance. It also fails independent marker-text regression coverage and its lint gate."
   },
+  "finalQualification": {
+    "functionalCommit": "f98b737e70b45a694b4a03f6fe392995c2478b82",
+    "branch": "hotfix/v2.5.1-runtime-authority-provenance",
+    "pullRequest": "https://github.com/heidi-dang/FlowDeck/pull/135",
+    "status": "QUALIFIED_PENDING_REVIEW",
+    "repairs": [
+      {
+        "auditId": "AUDIT-251-001",
+        "status": "FIXED",
+        "summary": "Cleanup now constructs exact file-versus-directory rm options, eliminating recursive: undefined, and removes timer retries."
+      },
+      {
+        "auditId": "AUDIT-251-002",
+        "status": "FIXED",
+        "summary": "The lifecycle adapter now performs configurable, event-driven provenance pruning and exposes retention diagnostics without a background timer."
+      },
+      {
+        "auditId": "AUDIT-251-003",
+        "status": "FIXED",
+        "summary": "The explicit qualify:live-opencode-plugin command installs FlowDeck into an isolated OpenCode configuration, proves Heidi registration, and verifies exact msg_* user-role round-trip persistence."
+      }
+    ],
+    "verification": {
+      "focused": "84 pass, 0 fail",
+      "localFull": "2933 pass, 2 skip, 0 fail; complete verify:full gates passed",
+      "localForcedColorFull": "2933 pass, 2 skip, 0 fail; complete verify:full gates passed",
+      "freshClone": "f98b737e70b45a694b4a03f6fe392995c2478b82 after npm ci: 2930 pass, 5 native-daemon skips, 0 fail; complete verify:full gates passed",
+      "liveOpenCode": {
+        "runtime": "official OpenCode v1.18.19 Linux x64",
+        "command": "OPENCODE_BIN=/absolute/path/to/opencode npm run qualify:live-opencode-plugin",
+        "result": "FlowDeck local plugin installed; Heidi agent registered; exact generated msg_* accepted and persisted with role=user."
+      },
+      "remoteCI": "PR #135 functional head completed 21 successful, 0 failing, 0 pending checks across Ubuntu, macOS, and Windows."
+    },
+    "constraints": {
+      "merged": false,
+      "published": false,
+      "tagged": false,
+      "forcePushed": false
+    }
+  },
   "findings": [
     {
       "bugId": "FD-RA-001",
