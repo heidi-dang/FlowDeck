@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process;
 
@@ -770,6 +771,85 @@ fn main() {
             }
         }
         fdx::serve::run(root_path);
+        return;
+    }
+
+    // Native MCP mode owns one canonical repository root and never accepts
+    // shell commands. `fdx mcp` uses local stdio; `fdx mcp http` starts a
+    // loopback-only streaming-HTTP endpoint for a TLS/OAuth reverse proxy.
+    if args.get(1).is_some_and(|arg| arg == "mcp") {
+        let mut root_path = None;
+        let mut listen: SocketAddr = "127.0.0.1:8787".parse().expect("valid loopback socket");
+        let mut token_env = "FDX_MCP_BEARER_TOKEN".to_string();
+        let mut allowed_origins = Vec::new();
+        let mut iter = args.iter().skip(2);
+        let http_mode = args.get(2).is_some_and(|arg| arg == "http");
+        if http_mode {
+            iter.next();
+        }
+        while let Some(arg) = iter.next() {
+            if arg == "--root" {
+                if let Some(val) = iter.next() {
+                    root_path = Some(PathBuf::from(val));
+                }
+            } else if let Some(stripped) = arg.strip_prefix("--root=") {
+                root_path = Some(PathBuf::from(stripped));
+            } else if arg == "--listen" {
+                match iter
+                    .next()
+                    .and_then(|value| value.parse::<SocketAddr>().ok())
+                {
+                    Some(value) => listen = value,
+                    None => {
+                        eprintln!("fdx mcp http: --listen must be a socket address such as 127.0.0.1:8787");
+                        process::exit(2);
+                    }
+                }
+            } else if let Some(stripped) = arg.strip_prefix("--listen=") {
+                match stripped.parse::<SocketAddr>() {
+                    Ok(value) => listen = value,
+                    Err(_) => {
+                        eprintln!("fdx mcp http: --listen must be a socket address such as 127.0.0.1:8787");
+                        process::exit(2);
+                    }
+                }
+            } else if arg == "--token-env" {
+                if let Some(value) = iter.next() {
+                    token_env = value.to_string();
+                }
+            } else if let Some(stripped) = arg.strip_prefix("--token-env=") {
+                token_env = stripped.to_string();
+            } else if arg == "--allow-origin" {
+                if let Some(value) = iter.next() {
+                    allowed_origins.push(value.to_string());
+                }
+            } else if let Some(stripped) = arg.strip_prefix("--allow-origin=") {
+                allowed_origins.push(stripped.to_string());
+            }
+        }
+        if http_mode {
+            let bearer_token = match std::env::var(&token_env) {
+                Ok(token) => token,
+                Err(_) => {
+                    eprintln!(
+                        "fdx mcp http: set a nonempty bearer token in environment variable {}",
+                        token_env
+                    );
+                    process::exit(2);
+                }
+            };
+            let config = fdx::mcp::HttpServerConfig {
+                listen,
+                bearer_token,
+                allowed_origins,
+            };
+            if let Err(error) = fdx::mcp::run_http(root_path, config) {
+                eprintln!("fdx mcp http: {}", error);
+                process::exit(1);
+            }
+        } else {
+            fdx::mcp::run(root_path);
+        }
         return;
     }
 

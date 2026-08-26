@@ -3,6 +3,7 @@ pub mod cmd_semantic;
 pub mod commands;
 pub mod intelligence;
 pub mod locking;
+pub mod mcp;
 pub mod output;
 pub mod paths;
 pub mod pr_monitor;
