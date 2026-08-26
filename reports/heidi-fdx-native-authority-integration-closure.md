@@ -1,6 +1,6 @@
 # Heidi ↔ FDX Native-Authority Integration Closure
 
-**Status:** Locally qualified for normal push; GitHub CI and final remote parity are pending the final push recorded below.
+**Status:** Native-authority repair is locally qualified and normally pushed. Origin parity was verified at the functional evidence commit; required GitHub CI is not available to this task’s read-only upstream credential and is explicitly not claimed as green.
 
 **Functional source revision:** `fdbfa9e5d553ecdacfcfa6e0aff32452592b5df0`
 
@@ -82,7 +82,7 @@ The full local release-gate record is summarized below. The initial full test ru
 | Rust crate tests | Pass |
 | Rust release build | Pass |
 | H41 strict native qualification | Pass; 11/11, 10.0/10.0 on clean source `fdbfa9e5d553ecdacfcfa6e0aff32452592b5df0` |
-| CI enforcement | Added: generated-contract freshness in lint job; release-profile H41 in native parity job; GitHub result pending final push |
+| CI enforcement | Added: generated-contract freshness in lint job; release-profile H41 in native parity job. GitHub execution is **not run/verified**: no branch run was triggered and the authenticated account has read-only upstream permission, so PR creation was denied. |
 
 ## Scope, risks, and release conditions
 
@@ -90,7 +90,9 @@ The qualification is intentionally **platform-specific**. The tested release bin
 
 The regular repository test command intentionally skips two resident-daemon tests because their daemon binary is not available in this environment. These skips are unrelated to the native CLI authority path qualified by H41, but they are disclosed rather than converted into passing evidence. The strict H41 harness rejects missing binaries rather than skipping them.
 
-The remote branch was independently fetched and audited before this final increment. The earlier functional integration revisions remain intact; this final increment adds `b5af04901365bce8bd592228d5ec750862eda15a` for CI exact-contract/H41 enforcement and `fdbfa9e5d553ecdacfcfa6e0aff32452592b5df0` for doctor applicability and test isolation. The renewed H41 evidence is recorded next. A normal push, GitHub CI observation, and final remote-parity confirmation will be recorded after the evidence commit; no merge or force-push is used.
+The remote branch was independently fetched and audited before this final increment. The earlier functional integration revisions remain intact; this final increment adds `b5af04901365bce8bd592228d5ec750862eda15a` for CI exact-contract/H41 enforcement and `fdbfa9e5d553ecdacfcfa6e0aff32452592b5df0` for doctor applicability and test isolation. The functional evidence commit `434da6b8b591fd8fc23b1b4b28f888afe5e2e691` was normally pushed to `origin/feat/heidi-fdx-vci-integration`; the origin API and local head matched at that commit. No merge or force-push was used.
+
+The primary CI workflow runs on `main` pushes or pull requests. No branch workflow run was triggered. Opening a pull request to collect CI evidence was attempted, but GitHub returned `Resource not accessible by integration`; the authenticated account has read-only permission on the resolved upstream repository. Consequently, required CI remains a documented **external follow-up**, not a passing assertion in this report.
 
 ## Evidence references
 
