@@ -6,6 +6,7 @@ import { resolveFlowDeckPackageDir } from "../environment"
 import {
   FDX_PROTOCOL_VERSION,
   FDX_GRAPH_SCHEMA_VERSION,
+  FDX_GRAPH_SCHEMA_MIN_READABLE,
   FDX_CAPABILITY_CONTRACT_VERSION,
   FDX_CALIBRATION_CONTRACT_VERSION,
   FDX_POLICY_CONTRACT_VERSION,
@@ -263,7 +264,8 @@ export async function runFdxChecks(directory: string): Promise<CheckResult[]> {
     const capabilitiesOk = evalResult.providerState === "native_vci_full"
     const protocolCompatible = evalResult.parsed?.fdxProtocolVersion === FDX_PROTOCOL_VERSION
     const graphSchemaCompatible =
-      (evalResult.parsed?.graphSchemaMaxWritable ?? 0) >= FDX_GRAPH_SCHEMA_VERSION &&
+      evalResult.parsed?.graphSchemaMaxWritable === FDX_GRAPH_SCHEMA_VERSION &&
+      evalResult.parsed?.graphSchemaMinReadable === FDX_GRAPH_SCHEMA_MIN_READABLE &&
       evalResult.parsed?.graphCanRead === true &&
       evalResult.parsed?.graphCanWrite === true &&
       evalResult.parsed?.graphCanVerify === true
@@ -277,7 +279,7 @@ export async function runFdxChecks(directory: string): Promise<CheckResult[]> {
       title: "FDX VCI Capability Contract",
       category: "fdx",
       severity: capabilitiesOk ? "info" : "high",
-      status: capabilitiesOk ? "pass" : (evalResult.providerState === "incompatible" ? "error" : "warning"),
+      status: capabilitiesOk ? "pass" : "error",
       detected: capabilitiesOk ? capDetail : (evalResult.reason ?? capDetail),
       expected: `FDX capability contract v${FDX_CAPABILITY_CONTRACT_VERSION} with protocol v${FDX_PROTOCOL_VERSION} and schema ${FDX_GRAPH_SCHEMA_VERSION}`,
       recommendation: capabilitiesOk
@@ -311,9 +313,9 @@ export async function runFdxChecks(directory: string): Promise<CheckResult[]> {
       severity: graphSchemaCompatible ? "info" : "high",
       status: graphSchemaCompatible ? "pass" : "error",
       detected: graphSchemaCompatible
-        ? `Graph schema readable, writable, and verifiable (max write ${evalResult.parsed?.graphSchemaMaxWritable})`
+        ? `Graph schema readable, writable, and verifiable (read ${FDX_GRAPH_SCHEMA_MIN_READABLE}, write ${FDX_GRAPH_SCHEMA_VERSION})`
         : "Graph schema incompatible or unavailable",
-      expected: `Graph schema can_read=true, can_write=true, can_verify=true, max_writable>=${FDX_GRAPH_SCHEMA_VERSION}`,
+      expected: `Graph schema can_read=true, can_write=true, can_verify=true, minimum_readable=${FDX_GRAPH_SCHEMA_MIN_READABLE}, maximum_writable=${FDX_GRAPH_SCHEMA_VERSION}`,
       recommendation: graphSchemaCompatible
         ? "Graph schema compatible"
         : "Run `fdx index` to initialize the graph or rebuild FDX",
