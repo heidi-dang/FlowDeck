@@ -34,3 +34,4 @@ FlowDeck structures every feature through an **adaptive workflow cycle**. The pr
 - [Workflows](concepts/workflows.md) — Command cycle, adaptive routing, and checkpointing
 - [Getting Started → Installation](getting-started/installation.md)
 - [Quick Start → First 15 Minutes](getting-started/quick-start.md)
+- [FDX Intelligent MCP Server](reference/fdx-mcp.md) — repository-scoped ChatGPT tool integration
