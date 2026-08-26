@@ -86,7 +86,7 @@ The qualification is intentionally **platform-specific**. The tested release bin
 
 The regular repository test command intentionally skips five resident-daemon tests because their daemon binary is not available in this environment. These skips are unrelated to the native CLI authority path qualified by H41, but they are disclosed rather than converted into passing evidence. The strict H41 harness rejects missing binaries rather than skipping them.
 
-The remote branch was audited immediately before final push preparation: `origin/feat/heidi-fdx-vci-integration` was at `5b3e838cc6fbbc1b126604990e8e347e579cb20a`, while the functional integration revisions are `8ab68a5a49946972ce50ee3ad2b6b83f740301d2` and `a8aef3e16d5cda370e3886a8b45db89fef0bc376`. Normal push and post-push remote equality verification are required next; no merge or force-push is authorized by this report.
+The remote branch was audited immediately before push at `5b3e838cc6fbbc1b126604990e8e347e579cb20a`. The functional integration revisions are `8ab68a5a49946972ce50ee3ad2b6b83f740301d2` and `a8aef3e16d5cda370e3886a8b45db89fef0bc376`; the H41 evidence was recorded in `81bb9928787164811be2873288f4c1c21b165cb1`. A normal fast-forward push completed without merge or force-push, and the GitHub branch head was then verified equal to local `81bb9928787164811be2873288f4c1c21b165cb1`.
 
 ## Evidence references
 
