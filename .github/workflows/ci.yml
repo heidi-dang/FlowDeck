@@ -79,11 +79,12 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
+            native_authority: true
             fdx_binary: target/debug/fdx
           - os: macos-latest
-            fdx_binary: target/debug/fdx
+            native_authority: false
           - os: windows-latest
-            fdx_binary: target/debug/fdx.exe
+            native_authority: false
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -94,13 +95,19 @@ jobs:
         with:
           bun-version: "1.3.14"
       - uses: dtolnay/rust-toolchain@stable
+        if: matrix.native_authority
       - run: npm ci
       - run: npm run build
-      - name: Build platform-native FDX for authority tests
+      - name: Build Linux-native FDX for authority tests
+        if: matrix.native_authority
         run: cargo build --manifest-path crates/fdx/Cargo.toml
       - name: Run tests with native FDX authority enabled
+        if: matrix.native_authority
         env:
           FDX_BINARY_PATH: ${{ github.workspace }}/${{ matrix.fdx_binary }}
+        run: npm run test
+      - name: Run tests with native authority explicitly unavailable
+        if: ${{ !matrix.native_authority }}
         run: npm run test
 
 
