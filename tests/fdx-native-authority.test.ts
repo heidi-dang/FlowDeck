@@ -49,9 +49,12 @@ const BUNDLED_NATIVE_BIN = join(
 const NATIVE_BIN = process.env.FDX_BINARY_PATH && existsSync(process.env.FDX_BINARY_PATH)
   ? process.env.FDX_BINARY_PATH
   : BUNDLED_NATIVE_BIN
+const NATIVE_AUTHORITY_BINARY_AVAILABLE = existsSync(NATIVE_BIN)
 process.env.FDX_BINARY_PATH = NATIVE_BIN
 
-describe("Native FDX Authority — Real Binary Operations", () => {
+// This suite qualifies only an actually available native binary. An unavailable
+// platform bundle is explicitly non-qualifying; H41 supplies release acceptance.
+describe.skipIf(!NATIVE_AUTHORITY_BINARY_AVAILABLE)("Native FDX Authority — Real Binary Operations", () => {
   let tmpRepo: string
 
   beforeEach(() => {
@@ -795,6 +798,8 @@ describe("Cancellation, Restart & Concurrency Idempotency (Workstreams K & L)", 
   beforeEach(() => {
     tmpRepo = mkdtempSync(join(tmpdir(), "fdx-conc-test-"))
     execFileSync("git", ["init"], { cwd: tmpRepo, stdio: "ignore" })
+    execFileSync("git", ["config", "user.name", "Native Authority Test"], { cwd: tmpRepo, stdio: "ignore" })
+    execFileSync("git", ["config", "user.email", "native-authority@test.invalid"], { cwd: tmpRepo, stdio: "ignore" })
     writeFileSync(join(tmpRepo, "README.md"), "# Test\n")
     execFileSync("git", ["add", "."], { cwd: tmpRepo, stdio: "ignore" })
     execFileSync("git", ["commit", "-m", "init"], { cwd: tmpRepo, stdio: "ignore" })
