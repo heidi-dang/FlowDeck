@@ -2,10 +2,10 @@
   "harness": "H41",
   "purpose": "Strict native-only Heidi–FDX authority qualification",
   "acceptanceRule": "Every scenario must pass with a real release FDX binary. Fallback, simulation, seeded storage, skipped cases, and unavailable binaries are non-acceptance.",
-  "timestamp": "2026-08-26T05:28:04.236Z",
+  "timestamp": "2026-08-26T10:05:52.876Z",
   "platform": "linux-x64",
   "source": {
-    "head": "fdbfa9e5d553ecdacfcfa6e0aff32452592b5df0",
+    "head": "c95d7ed3beebd600979b46eec7dbde65ca50e81e",
     "cleanBeforeRun": true,
     "status": "clean"
   },
@@ -13,8 +13,8 @@
     "path": "/home/ubuntu/FlowDeck/target/release/fdx",
     "exists": true,
     "releaseProfilePath": true,
-    "sha256": "4878e5f5845c3b963cedafdfd253a668559aed2ae8a62dd66fa8beb149300031",
-    "sizeBytes": 18083176,
+    "sha256": "ac3dcd591cd9ecca979fcc6aee7d1cce380dd70f95475bbc4b0677337cf45981",
+    "sizeBytes": 18048624,
     "version": "fdx 0.1.0"
   },
   "nativeContract": {
@@ -75,10 +75,10 @@
         "path": "/home/ubuntu/FlowDeck/target/release/fdx",
         "exists": true,
         "releaseProfilePath": true,
-        "sha256": "4878e5f5845c3b963cedafdfd253a668559aed2ae8a62dd66fa8beb149300031",
-        "sizeBytes": 18083176,
+        "sha256": "ac3dcd591cd9ecca979fcc6aee7d1cce380dd70f95475bbc4b0677337cf45981",
+        "sizeBytes": 18048624,
         "version": "fdx 0.1.0",
-        "sourceHead": "fdbfa9e5d553ecdacfcfa6e0aff32452592b5df0",
+        "sourceHead": "c95d7ed3beebd600979b46eec7dbde65ca50e81e",
         "cleanBeforeRun": true
       }
     },
@@ -86,7 +86,7 @@
       "id": "H41-02",
       "title": "Exact native protocol and schema contract",
       "passed": true,
-      "durationMs": 3,
+      "durationMs": 4,
       "detail": {
         "capability_contract_version": 1,
         "fdx_protocol_version": 2,
@@ -140,10 +140,10 @@
       "id": "H41-03",
       "title": "Native capability negotiation without fallback",
       "passed": true,
-      "durationMs": 9,
+      "durationMs": 13,
       "detail": {
-        "snapshotId": "9e87a73c-7e50-4d32-8ac1-dd0792d06d4f",
-        "capturedAt": "2026-08-26T05:28:04.348Z",
+        "snapshotId": "2e3e21e4-d7e6-433f-b3b2-ddccb975ace6",
+        "capturedAt": "2026-08-26T10:05:53.005Z",
         "providerState": "native_vci_full",
         "capabilityContractVersion": 1,
         "fdxProtocolVersion": 2,
@@ -185,20 +185,20 @@
       "id": "H41-04",
       "title": "M1–M5 native change intelligence",
       "passed": true,
-      "durationMs": 16,
+      "durationMs": 17,
       "detail": {
         "providerState": "native_vci_full",
         "changedFiles": [
           "index.ts"
         ],
-        "stateFingerprint": "f9052dbdf447e70a9b532c2f672f604e"
+        "stateFingerprint": "186c29cb2754fe667d93970b1883eea4"
       }
     },
     {
       "id": "H41-05",
       "title": "M6 native plan with FDX-owned digests",
       "passed": true,
-      "durationMs": 21,
+      "durationMs": 22,
       "detail": {
         "basePlanDigest": "6e0c4217ce7a091d9d60275063e502cdb11a59d5be08926e22f4962ca0b46000",
         "effectivePlanDigest": "6e0c4217ce7a091d9d60275063e502cdb11a59d5be08926e22f4962ca0b46000",
@@ -213,12 +213,12 @@
       "id": "H41-06",
       "title": "M7 execution and M8 durable native artifact",
       "passed": true,
-      "durationMs": 427,
+      "durationMs": 493,
       "detail": {
-        "verificationRunId": "run_1787722084401_79e1392671d45cc8",
+        "verificationRunId": "run_1787738753063_7db7031657af8958",
         "outcome": "passed",
-        "persistedArtifactPath": "/tmp/fdx-h41-native-f985101a-7477-478d-8e44-9f9e5406b934/.fdx/runs/run_1787722084401_79e1392671d45cc8.json",
-        "evidenceDigest": "39fbf462727492207320f2962a29cb9db9f8a22981804527a2b84b95a4059f2a",
+        "persistedArtifactPath": "/tmp/fdx-h41-native-03f65262-377e-4987-9b7b-27853f30e36e/.fdx/runs/run_1787738753063_7db7031657af8958.json",
+        "evidenceDigest": "1121bc9b41686e87a50f8d61a0335f7bc248dde1b1a57fc2ce3dcbd893aee326",
         "checkStatuses": [
           {
             "checkId": "check:pkg:npm:.:lint",
@@ -239,11 +239,11 @@
       "id": "H41-07",
       "title": "M9 real v1 attestation and file verification",
       "passed": true,
-      "durationMs": 15,
+      "durationMs": 18,
       "detail": {
-        "attestationId": "c7ea743fb1f9071ceaf46d4813fb25f1241d889b459f5d725a09e5a75af106bc",
+        "attestationId": "ee6ef5ce6f1957e19e1424fefe84408f2a423ec4374c83d73b1fa13d7e6e1624",
         "predicate": "v1",
-        "attestationFilePath": "/tmp/fdx-h41-native-f985101a-7477-478d-8e44-9f9e5406b934/.fdx/attestations/run_1787722084401_79e1392671d45cc8.c7ea743fb1f9071ceaf46d4813fb25f1241d889b459f5d725a09e5a75af106bc.json",
+        "attestationFilePath": "/tmp/fdx-h41-native-03f65262-377e-4987-9b7b-27853f30e36e/.fdx/attestations/run_1787738753063_7db7031657af8958.ee6ef5ce6f1957e19e1424fefe84408f2a423ec4374c83d73b1fa13d7e6e1624.json",
         "verified": true,
         "verifierResult": true
       }
@@ -252,10 +252,10 @@
       "id": "H41-08",
       "title": "M10 exact native calibration with no synthesized check state",
       "passed": true,
-      "durationMs": 10,
+      "durationMs": 11,
       "detail": {
-        "calibrationId": "cal_d3e9a6d1788da0ca0efa3ef1b0784db9689e1c799c5aec8605a77a40d9cd7c2e",
-        "sourceRunId": "run_1787722084401_79e1392671d45cc8",
+        "calibrationId": "cal_fe7a3c158a6d31cbe13f7d5d6f9e2978feadd6ed6fc01293112cfe3a46cc3428",
+        "sourceRunId": "run_1787738753063_7db7031657af8958",
         "status": "complete",
         "checkCount": 3
       }
@@ -264,7 +264,7 @@
       "id": "H41-09",
       "title": "M11 native candidate evaluation remains separate from frozen M10",
       "passed": true,
-      "durationMs": 8,
+      "durationMs": 10,
       "detail": {
         "candidateCount": 0,
         "activePolicyCount": 0,
@@ -275,12 +275,12 @@
       "id": "H41-10",
       "title": "Production provider completion requires native M7/M8/M9 evidence",
       "passed": true,
-      "durationMs": 446,
+      "durationMs": 516,
       "detail": {
         "status": "passed",
         "evidenceIds": [
-          "227662e7450726ed0e08c9055cab5df67f6f8928ee0f4b98ca4a63d10190091b",
-          "f0fa221d1c223be4db3408d8c96e34aea8ddece3b8995910d8db34d062333d61"
+          "f32fa0a9ea561104370d455879ec8edd584b7fc99358ba9ee8faede153449a36",
+          "b1af13281a7325e16b047ad006ce9d22fbe4e79a6fe3a90753ad6f69d67b5012"
         ],
         "attestationVerified": true
       }
@@ -291,8 +291,8 @@
       "passed": true,
       "durationMs": 9,
       "detail": {
-        "before": "f9052dbdf447e70a9b532c2f672f604e",
-        "after": "7ce87120a7b4fa5bdfad2a7a9b12b43a"
+        "before": "186c29cb2754fe667d93970b1883eea4",
+        "after": "86e135292fceb954bc377be1a589794e"
       }
     }
   ],
