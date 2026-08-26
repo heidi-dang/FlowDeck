@@ -1,6 +1,6 @@
 {
   "name": "@heidi-dang/flowdeck",
-  "version": "2.5.0",
+  "version": "2.5.1",
   "description": "FlowDeck — production-grade multi-agent orchestration, governance, CI repair, and code intelligence for OpenCode",
   "type": "module",
   "main": "./dist/index.js",
@@ -52,6 +52,7 @@
     "prepublishOnly": "bun run clean && bun run build",
     "test": "bun test --path-ignore-patterns=\"**/orchestration/persistence/**\" --path-ignore-patterns=\"tests/live*\"",
     "test:live-acceptance": "node scripts/run-live-acceptance.mjs",
+    "qualify:live-opencode-plugin": "bun scripts/verify-live-opencode-plugin.ts",
     "test:fdx-parity": "node scripts/verify-fdx-parity.mjs",
     "test:coverage": "node scripts/check-coverage.mjs",
     "typecheck": "tsc --noEmit",

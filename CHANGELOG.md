@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.5.1] - Unreleased runtime-authority hotfix
+
+### Fixed
+- **Durable Internal Message Provenance**: FlowDeck now reserves and persists the exact OpenCode message ID for each internally generated specialist-dispatch, continuation, and recovery prompt. User-role transport metadata and prompt text no longer determine semantic authority, so genuine users may safely submit text resembling an internal prompt.
+- **Stop and Terminal Native-Side-Effect Barrier**: Continuation dispatches revalidate durable turn, run-version, and state-fingerprint authority immediately before native prompt injection. A cancelled or terminal run cannot be revived by a stale idle event.
+- **FDX Qualification and Test-Runner Safety**: Repaired strict Clippy findings and added a fail-closed guard preventing `fdx test cargo` from recursively launching the FDX integration suite.
+
+### Verification
+- Focused runtime authority, provenance, terminal-barrier, and genuine-user marker-text regressions pass.
+- Full FlowDeck unit suite: 2,920 pass / 0 fail.
+- FDX format, strict Clippy, and full Rust test suite pass.
+- Package tarball contents and an isolated local installation of v2.5.1 were validated. This entry does not imply npm publication.
+
 ## [2.5.0] - FlowDeck v2.5.0 — Bounded Repository Intelligence for Adaptive Orchestration
 
 ### Added & Changed

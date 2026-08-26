@@ -28,6 +28,27 @@ fn test_test_cargo() {
 }
 
 #[test]
+fn test_test_cargo_rejects_recursive_invocation() {
+    let output = Command::new(fdx_bin())
+        .args(["test", "cargo"])
+        .env("FDX_TEST_RUNNER_ACTIVE", "1")
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .expect("fdx recursive cargo test guard failed");
+
+    assert!(
+        !output.status.success(),
+        "recursive test invocation must fail closed"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("refusing recursive fdx test cargo invocation"),
+        "should explain the recursion guard: {}",
+        stderr
+    );
+}
+
+#[test]
 fn test_test_unsupported_runner() {
     let output = Command::new(fdx_bin())
         .args(["test", "unknown_runner"])

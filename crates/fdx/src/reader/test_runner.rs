@@ -1,4 +1,4 @@
-use crate::runner::{run, CommandOutput};
+use crate::runner::{run, run_with_env, CommandOutput};
 use crate::tee::save_tee;
 use anyhow::{bail, Result};
 
@@ -25,10 +25,14 @@ pub fn run_tests(runner: &str, args: &[String]) -> Result<CommandOutput> {
 }
 
 fn run_cargo_test(args: &[String]) -> Result<CommandOutput> {
+    if std::env::var_os("FDX_TEST_RUNNER_ACTIVE").is_some() {
+        bail!("refusing recursive fdx test cargo invocation");
+    }
+
     let mut cmd_args = vec!["test"];
     let extra: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
     cmd_args.extend(extra);
-    run("cargo", &cmd_args)
+    run_with_env("cargo", &cmd_args, &[("FDX_TEST_RUNNER_ACTIVE", "1")])
 }
 
 fn run_pytest(args: &[String]) -> Result<CommandOutput> {

@@ -160,7 +160,6 @@ enum Commands {
     },
 
     /// Lightweight cross-file dependency analysis
-
     ///
     /// Example: fdx impact src/payment/fee.rs --direction both
     Impact {

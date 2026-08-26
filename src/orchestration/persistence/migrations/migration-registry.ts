@@ -29,6 +29,11 @@ import {
   MIGRATION_V15_COMPLETION_POLICY_AUTHORITY_CHECKSUM_SOURCE,
   applyV15Migration,
 } from "./migration-v15-completion-policy-authority"
+import {
+  MIGRATION_V16_MESSAGE_PROVENANCE_AUTHORITY_SQL,
+  MIGRATION_V16_MESSAGE_PROVENANCE_AUTHORITY_CHECKSUM_SOURCE,
+  applyV16Migration,
+} from "./migration-v16-message-provenance-authority"
 
 export interface MigrationEntry {
   version: number
@@ -94,4 +99,5 @@ export const MIGRATIONS: MigrationEntry[] = [
   { version: 13, name: "convergence_integrity_v2.0.0-alpha", sql: MIGRATION_V13_CONVERGENCE_INTEGRITY_SQL, checksum: computeChecksum(MIGRATION_V13_CONVERGENCE_INTEGRITY_CHECKSUM_SOURCE), apply: applyV13Migration },
   { version: 14, name: "live_verification_authority_v2.0.0-alpha", sql: MIGRATION_V14_LIVE_VERIFICATION_AUTHORITY_SQL, checksum: computeChecksum(MIGRATION_V14_LIVE_VERIFICATION_AUTHORITY_CHECKSUM_SOURCE), apply: applyV14Migration },
   { version: 15, name: "completion_policy_authority_v2.0.0-alpha", sql: MIGRATION_V15_COMPLETION_POLICY_AUTHORITY_SQL, checksum: computeChecksum(MIGRATION_V15_COMPLETION_POLICY_AUTHORITY_CHECKSUM_SOURCE), apply: applyV15Migration },
+  { version: 16, name: "message_provenance_authority_v2.5.1", sql: MIGRATION_V16_MESSAGE_PROVENANCE_AUTHORITY_SQL, checksum: computeChecksum(MIGRATION_V16_MESSAGE_PROVENANCE_AUTHORITY_CHECKSUM_SOURCE), apply: applyV16Migration },
 ]

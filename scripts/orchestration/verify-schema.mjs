@@ -21,15 +21,16 @@ try {
   //   + v12/v13 runtime and convergence persistence (5 tables + 6 indexes)
   //   + v14 live verification authority (2 indexes; verification_results columns)
   //   + v15 CompletionPolicy authority (2 completion-review indexes)
-  // = 89 tables / 103 indexes / 38 triggers (the FTS virtual table is excluded by the count query).
+  //   + v16 message provenance authority (1 table + 1 index: flowdeck_internal_messages)
+  // = 90 tables / 104 indexes / 38 triggers (the FTS virtual table is excluded by the count query).
   // The frozen-schema gate (scripts/check-schema-generated.mjs) still asserts
   // ONLY the v1 counts and must not change.
   console.log(`Schema Validation:`);
-  console.log(`Tables: ${schemaV.cnt} (Expected: 89)`);
-  console.log(`Indexes: ${indexV.cnt} (Expected: 103)`);
+  console.log(`Tables: ${schemaV.cnt} (Expected: 90)`);
+  console.log(`Indexes: ${indexV.cnt} (Expected: 104)`);
   console.log(`Triggers: ${triggerV.cnt} (Expected: 38)`);
 
-  if (schemaV.cnt !== 89 || indexV.cnt !== 103 || triggerV.cnt !== 38) {
+  if (schemaV.cnt !== 90 || indexV.cnt !== 104 || triggerV.cnt !== 38) {
     console.error(`Schema invariants violated!`);
     process.exit(1);
   }

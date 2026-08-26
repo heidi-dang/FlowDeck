@@ -180,7 +180,11 @@ export class ContinuationDispatcher {
       currentAggregateVersion?: number;
       client?: any;
       promptText?: string;
+      /** OpenCode message ID reserved for semantic provenance before native prompt transport. */
+      messageId?: string;
       validateAuthority?: () => boolean | { valid: boolean; reason?: string };
+      /** Last safe hook after durable dispatch claim and authority revalidation, before promptAsync. */
+      beforeNativeDispatch?: () => boolean | { valid: boolean; reason?: string };
     }
   ): Promise<ContinuationDispatchResult> {
     const identity = this.computeTokenIdentity(token);
@@ -355,6 +359,23 @@ export class ContinuationDispatcher {
       }
     }
 
+    // 2.6 State-port continuations also need a final authority recheck after
+    // their durable claim and immediately before any native prompt side effect.
+    if (opts.statePort && !opts.validateAuthority) {
+      if (opts.statePort.getUserTurnVersion(token.sessionId) !== token.userTurnVersion) {
+        return this.failPendingAuthority(identity);
+      }
+      if (opts.statePort.getRunAggregateVersion(token.runId) !== token.runAggregateVersion) {
+        return this.failPendingAuthority(identity);
+      }
+      if (opts.statePort.computeStateFingerprint) {
+        const currentFingerprint = opts.statePort.computeStateFingerprint(token.runId, token.sessionId);
+        if (!currentFingerprint || currentFingerprint !== token.stateFingerprint) {
+          return this.failPendingAuthority(identity);
+        }
+      }
+    }
+
     // 3. Check native promptAsync availability
     if (!opts.client?.session?.promptAsync) {
       if (this.db) {
@@ -371,12 +392,31 @@ export class ContinuationDispatcher {
       return { dispatched: false, identity, reason: "native_dispatch_unavailable" };
     }
 
+    // 3.5 Reserve any caller-owned semantic provenance after the final
+    // authority validation and immediately before the external side effect.
+    if (opts.beforeNativeDispatch) {
+      const reservation = opts.beforeNativeDispatch();
+      const reserved = typeof reservation === "boolean" ? reservation : reservation.valid;
+      if (!reserved) {
+        if (this.db) {
+          const res = this.db.query(`
+            UPDATE continuation_dispatches
+            SET status = 'failed', error = 'authority_revoked_before_native_dispatch'
+            WHERE identity = ? AND status = 'pending'
+          `).run(identity);
+          if (res.changes === 0) return { dispatched: false, identity, reason: "dispatch_outcome_unknown" };
+        }
+        return { dispatched: false, identity, reason: "authority_revoked" };
+      }
+    }
+
     // 4. Invoke native OpenCode promptAsync
     try {
       const promptText = opts.promptText ?? getContinuationPrompt(token.transitionReason);
       const res = await opts.client.session.promptAsync({
         path: { id: token.sessionId },
         body: {
+          messageID: opts.messageId,
           parts: [{ type: "text", text: promptText }],
           agent: "heidi",
         },
@@ -444,6 +484,18 @@ export class ContinuationDispatcher {
     } catch {
       return 0;
     }
+  }
+
+  private failPendingAuthority(identity: string): ContinuationDispatchResult {
+    if (this.db) {
+      const res = this.db.query(`
+        UPDATE continuation_dispatches
+        SET status = 'failed', error = 'authority_revoked'
+        WHERE identity = ? AND status = 'pending'
+      `).run(identity);
+      if (res.changes === 0) return { dispatched: false, identity, reason: "dispatch_outcome_unknown" };
+    }
+    return { dispatched: false, identity, reason: "authority_revoked" };
   }
 
   private isCompatibleDurableClaim(row: Record<string, unknown>, token: ContinuationToken): boolean {

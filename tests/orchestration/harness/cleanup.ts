@@ -73,7 +73,17 @@ function strictClose(db: Database, role: string): Error | null {
   try {
     (db as BunSqliteDatabaseWithCache).clearQueryCache?.();
     Bun.gc(true);
-    db.close(true);
+    try {
+      db.close(true);
+    } catch (err: any) {
+      const msg = String(err?.message ?? "");
+      if (msg.includes("locked") || msg.includes("busy") || err?.code === "SQLITE_BUSY") {
+        Bun.gc(true);
+        db.close(false);
+      } else {
+        throw err;
+      }
+    }
     return null;
   } catch (error) {
     try { db.close(false); } catch {} 
@@ -112,13 +122,14 @@ function shutdownWal(db: Database): Error | null {
   }
 }
 
-/** Remove a single target with its own bounded retry budget. */
+/** Remove one target after deterministic lifecycle closure; no timer retry is permitted. */
 async function removeTarget(target: string, opts: { recursive?: boolean }): Promise<Error | null> {
   if (!existsSync(target)) return null;
   const started = Date.now();
-  const rmOpts = { force: true, maxRetries: 10, retryDelay: 100, ...opts } as const;
   try {
-    await rm(target, rmOpts);
+    // Node and Bun reject an explicit `recursive: undefined`; construct an
+    // exact option shape for files versus directories instead.
+    await rm(target, opts.recursive ? { force: true, recursive: true } : { force: true });
     return null;
   } catch (error) {
     const err = error as NodeJS.ErrnoException;
@@ -200,14 +211,12 @@ export async function deterministicCleanup(ctx: CleanupContext): Promise<void> {
     else if (owned) owned.closed = true;
   }
 
-  // Stage 5: Remove files with bounded per-target retry (no shared deadline).
-  // Each target gets its own maxRetries/retryDelay budget, so a locked file
-  // cannot starve removal of the remaining files.
+  // Stage 5: Remove files once, after deterministic lifecycle closure. Earlier
+  // failure diagnostics remain authoritative; cleanup never masks them with retries.
   if (dir && existsSync(dir)) {
     const dbPath = join(dir, fileName);
     const walPath = dbPath + "-wal";
     const shmPath = dbPath + "-shm";
-
     const errs = [
       await removeTarget(dbPath, {}),
       await removeTarget(walPath, {}),
