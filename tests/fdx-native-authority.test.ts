@@ -36,13 +36,19 @@ import { VerificationStatus } from "../src/orchestration/types"
 import type { FdxCapabilitySnapshot } from "../src/services/fdx-vci-adapter"
 import { buildCalibrationSignal } from "../src/orchestration/verification/fdx-recovery"
 
-const NATIVE_BIN = process.env.FDX_BINARY_PATH || join(
+const BUNDLED_NATIVE_BIN = join(
   process.cwd(),
   "native",
   "fdx",
   `${process.platform}-${process.arch}`,
   process.platform === "win32" ? "fdx.exe" : "fdx"
 )
+// Other suites deliberately point FDX_BINARY_PATH at an absent fixture. Honor an
+// externally supplied binary only when it exists; otherwise retain this suite's
+// required bundled native authority fixture.
+const NATIVE_BIN = process.env.FDX_BINARY_PATH && existsSync(process.env.FDX_BINARY_PATH)
+  ? process.env.FDX_BINARY_PATH
+  : BUNDLED_NATIVE_BIN
 process.env.FDX_BINARY_PATH = NATIVE_BIN
 
 describe("Native FDX Authority — Real Binary Operations", () => {
