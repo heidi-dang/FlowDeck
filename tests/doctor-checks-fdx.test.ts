@@ -25,7 +25,9 @@ const CURRENT_CAPABILITIES = {
   platform_limitations: [],
 }
 
-describe("Doctor FDX Checks", () => {
+// The fixture is a POSIX Node shebang executable; Windows native FDX is not
+// built in this matrix, and the Linux H41/native parity gates cover authority.
+describe.skipIf(process.platform === "win32")("Doctor FDX Checks", () => {
   let tmpDir: string
 
   beforeEach(() => {
