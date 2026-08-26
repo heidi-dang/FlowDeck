@@ -59,19 +59,31 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.14"
+      - uses: dtolnay/rust-toolchain@stable
       - run: npm ci
       - name: Build (dist required by packed-layout tests)
         run: npm run build
+      - name: Build native FDX for coverage execution
+        run: cargo build --manifest-path crates/fdx/Cargo.toml
       - name: Coverage check (unit tests)
         run: bun test tests/check-coverage.test.ts
-      - run: node scripts/check-coverage.mjs
+      - name: Run source coverage with native FDX authority enabled
+        env:
+          FDX_BINARY_PATH: ${{ github.workspace }}/target/debug/fdx
+        run: node scripts/check-coverage.mjs
   test-matrix:
     name: Test Matrix (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            fdx_binary: target/debug/fdx
+          - os: macos-latest
+            fdx_binary: target/debug/fdx
+          - os: windows-latest
+            fdx_binary: target/debug/fdx.exe
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -81,9 +93,15 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.14"
+      - uses: dtolnay/rust-toolchain@stable
       - run: npm ci
       - run: npm run build
-      - run: npm run test
+      - name: Build platform-native FDX for authority tests
+        run: cargo build --manifest-path crates/fdx/Cargo.toml
+      - name: Run tests with native FDX authority enabled
+        env:
+          FDX_BINARY_PATH: ${{ github.workspace }}/${{ matrix.fdx_binary }}
+        run: npm run test
 
 
   build:
