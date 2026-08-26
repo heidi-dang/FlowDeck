@@ -243,6 +243,42 @@ describe("3. stop-and-terminal-quiescence", () => {
     expect(ctx.adapter.getUserTurnVersion(sessionID)).toBe(1);
   }, 30000);
 
+  it("event-driven-maintenance-prunes-expired-settled-records-and-exposes-diagnostics", async () => {
+    const previousRetention = process.env.FLOWDECK_INTERNAL_MESSAGE_RETENTION_MS;
+    const previousInterval = process.env.FLOWDECK_INTERNAL_MESSAGE_MAINTENANCE_INTERVAL_MS;
+    process.env.FLOWDECK_INTERNAL_MESSAGE_RETENTION_MS = "60000";
+    process.env.FLOWDECK_INTERNAL_MESSAGE_MAINTENANCE_INTERVAL_MS = "0";
+    try {
+      const ctx = acquireProjectRuntime(testDir);
+      const sessionID = "sess-event-driven-prune";
+      const messageID = createOpenCodeMessageId("descending");
+      expect(ctx.runtime.internalMessageProvenanceRepo.reserve({
+        sessionId: sessionID,
+        messageId: messageID,
+        provenance: "FLOWDECK_CONTINUATION",
+        dispatchIdentity: "disp-event-prune",
+      })).toBe(true);
+      ctx.runtime.db.query(`
+        UPDATE flowdeck_internal_messages SET created_at = ? WHERE session_id = ? AND message_id = ?
+      `).run(new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(), sessionID, messageID);
+
+      await ctx.adapter.onSessionIdle(sessionID);
+
+      expect(ctx.runtime.internalMessageProvenanceRepo.find(sessionID, messageID)).toBeNull();
+      expect(ctx.adapter.getInternalMessageProvenanceDiagnostics()).toMatchObject({
+        retentionMs: 60000,
+        maintenanceIntervalMs: 0,
+        lastPrunedCount: 1,
+        totalCount: 0,
+      });
+    } finally {
+      if (previousRetention === undefined) delete process.env.FLOWDECK_INTERNAL_MESSAGE_RETENTION_MS;
+      else process.env.FLOWDECK_INTERNAL_MESSAGE_RETENTION_MS = previousRetention;
+      if (previousInterval === undefined) delete process.env.FLOWDECK_INTERNAL_MESSAGE_MAINTENANCE_INTERVAL_MS;
+      else process.env.FLOWDECK_INTERNAL_MESSAGE_MAINTENANCE_INTERVAL_MS = previousInterval;
+    }
+  }, 30000);
+
   it("completed-specialist-plus-10-idle-events-does-not-redispatch-same-specialist", async () => {
     const promptAsyncMock = mock(() => Promise.resolve(true));
     const ctx = acquireProjectRuntime(testDir, { session: { abort: mock(() => Promise.resolve(true)), promptAsync: promptAsyncMock } });

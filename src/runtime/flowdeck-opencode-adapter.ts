@@ -57,6 +57,9 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
   private startupReadyPromise: Promise<number | void> | null = null;
   /** Deferred recovery work must complete before terminal persistence shutdown. */
   private readonly lifecycleTasks = new Set<Promise<unknown>>();
+  /** Event-driven ledger maintenance state; no background timer is used. */
+  private lastInternalMessagePruneAt = 0;
+  private lastInternalMessagePruneCount = 0;
   public testHandoffFaultHook?: (type: "FAST_DIRECT" | "ORCHESTRATED", deferred: DeferredReplacementRecord, replacement?: Run) => Promise<void> | void;
 
   constructor(
@@ -151,6 +154,47 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
     return createOpenCodeMessageId("descending");
   }
 
+  private internalMessageRetentionMs(): number {
+    const configured = Number(process.env.FLOWDECK_INTERNAL_MESSAGE_RETENTION_MS);
+    // Default to seven days. Clamp external configuration to one minute through
+    // ninety days so malformed or extreme values cannot disable bounded cleanup.
+    if (!Number.isFinite(configured) || configured <= 0) return 7 * 24 * 60 * 60 * 1000;
+    return Math.min(90 * 24 * 60 * 60 * 1000, Math.max(60 * 1000, Math.floor(configured)));
+  }
+
+  private internalMessageMaintenanceIntervalMs(): number {
+    const configured = Number(process.env.FLOWDECK_INTERNAL_MESSAGE_MAINTENANCE_INTERVAL_MS);
+    // Event-driven maintenance runs at most once per minute by default. No timer
+    // is scheduled; the next normal adapter event performs the work when due.
+    if (!Number.isFinite(configured) || configured < 0) return 60 * 1000;
+    return Math.min(24 * 60 * 60 * 1000, Math.floor(configured));
+  }
+
+  private maintainInternalMessageProvenance(now = Date.now()): void {
+    if (now - this.lastInternalMessagePruneAt < this.internalMessageMaintenanceIntervalMs()) return;
+    this.lastInternalMessagePruneAt = now;
+    const cutoff = new Date(now - this.internalMessageRetentionMs()).toISOString();
+    this.lastInternalMessagePruneCount = this.runtime.internalMessageProvenanceRepo.pruneExpired(cutoff);
+  }
+
+  getInternalMessageProvenanceDiagnostics(): {
+    retentionMs: number;
+    maintenanceIntervalMs: number;
+    lastPrunedAt: string | null;
+    lastPrunedCount: number;
+    totalCount: number;
+    oldestCreatedAt: string | null;
+  } {
+    const stats = this.runtime.internalMessageProvenanceRepo.getStats();
+    return {
+      retentionMs: this.internalMessageRetentionMs(),
+      maintenanceIntervalMs: this.internalMessageMaintenanceIntervalMs(),
+      lastPrunedAt: this.lastInternalMessagePruneAt ? new Date(this.lastInternalMessagePruneAt).toISOString() : null,
+      lastPrunedCount: this.lastInternalMessagePruneCount,
+      ...stats,
+    };
+  }
+
   private getPathFingerprint(relPath: string): string {
     return getMutationTargetFingerprint(this.directory, [relPath]);
   }
@@ -197,6 +241,7 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
   ) {
     if (this.disposed) return;
     if (this.startupReadyPromise) await this.startupReadyPromise;
+    this.maintainInternalMessageProvenance();
     if (input.agent === "heidi" || input.agent === "orchestrator" || !input.agent) {
       const text = output.parts
         .filter((p): p is TextPart => p.type === "text")
@@ -1142,6 +1187,7 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
 
   async onSessionIdle(sessionID: string) {
     if (this.disposed) return;
+    this.maintainInternalMessageProvenance();
     // 1. Only retire the route if this session is currently in an active FAST_DIRECT turn token
     if (sessionID && this.pendingFastDirectTurns.has(sessionID)) {
       this.pendingFastDirectTurns.delete(sessionID);

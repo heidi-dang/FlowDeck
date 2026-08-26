@@ -122,32 +122,26 @@ function shutdownWal(db: Database): Error | null {
   }
 }
 
-/** Remove a single target with its own bounded retry budget. */
-async function removeTarget(target: string, opts: { recursive?: boolean; maxAttempts?: number }): Promise<Error | null> {
+/** Remove one target after deterministic lifecycle closure; no timer retry is permitted. */
+async function removeTarget(target: string, opts: { recursive?: boolean }): Promise<Error | null> {
   if (!existsSync(target)) return null;
   const started = Date.now();
-  const maxAttempts = opts.maxAttempts ?? 6;
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    try {
-      await rm(target, { force: true, recursive: opts.recursive });
-      return null;
-    } catch (error) {
-      const err = error as NodeJS.ErrnoException;
-      const code = err.code ?? "";
-      if (attempt < maxAttempts - 1 && (code === "EBUSY" || code === "EPERM" || code === "EACCES")) {
-        await new Promise((resolve) => setTimeout(resolve, 20));
-        continue;
-      }
-      const errno = err.errno ?? "";
-      const syscall = err.syscall ?? "";
-      const path = err.path ?? target;
-      const elapsed = Date.now() - started;
-      return new Error(
-        `[file-remove] target=${target} code=${code} errno=${errno} syscall=${syscall} path=${path} elapsed=${elapsed}ms ${err.message ?? ""}`,
-      );
-    }
+  try {
+    // Node and Bun reject an explicit `recursive: undefined`; construct an
+    // exact option shape for files versus directories instead.
+    await rm(target, opts.recursive ? { force: true, recursive: true } : { force: true });
+    return null;
+  } catch (error) {
+    const err = error as NodeJS.ErrnoException;
+    const code = err.code ?? "";
+    const errno = err.errno ?? "";
+    const syscall = err.syscall ?? "";
+    const path = err.path ?? target;
+    const elapsed = Date.now() - started;
+    return new Error(
+      `[file-remove] target=${target} code=${code} errno=${errno} syscall=${syscall} path=${path} elapsed=${elapsed}ms ${err.message ?? ""}`,
+    );
   }
-  return null;
 }
 
 export async function deterministicCleanup(ctx: CleanupContext): Promise<void> {
@@ -217,20 +211,17 @@ export async function deterministicCleanup(ctx: CleanupContext): Promise<void> {
     else if (owned) owned.closed = true;
   }
 
-  // Stage 5: Remove files with bounded per-target retry (no shared deadline).
-  // If earlier stages already recorded failures (e.g. active readers holding locks),
-  // use a single attempt per target to fail fast.
+  // Stage 5: Remove files once, after deterministic lifecycle closure. Earlier
+  // failure diagnostics remain authoritative; cleanup never masks them with retries.
   if (dir && existsSync(dir)) {
     const dbPath = join(dir, fileName);
     const walPath = dbPath + "-wal";
     const shmPath = dbPath + "-shm";
-    const rmOpts = failures.length > 0 ? { maxAttempts: 1 } : { maxAttempts: 6 };
-
     const errs = [
-      await removeTarget(dbPath, rmOpts),
-      await removeTarget(walPath, rmOpts),
-      await removeTarget(shmPath, rmOpts),
-      await removeTarget(dir, { ...rmOpts, recursive: true }),
+      await removeTarget(dbPath, {}),
+      await removeTarget(walPath, {}),
+      await removeTarget(shmPath, {}),
+      await removeTarget(dir, { recursive: true }),
     ];
     for (const e of errs) {
       if (e) {
