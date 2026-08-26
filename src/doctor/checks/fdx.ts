@@ -2,7 +2,7 @@ import { existsSync, statSync } from "node:fs"
 import { join } from "node:path"
 import { execFileSync } from "node:child_process"
 import type { CheckResult } from "../types"
-import { resolveFlowDeckPackageDir } from "../environment"
+import { classifyDoctorEnvironment, isRepoLikeEnvironment, resolveFlowDeckPackageDir } from "../environment"
 import {
   FDX_PROTOCOL_VERSION,
   FDX_GRAPH_SCHEMA_VERSION,
@@ -15,14 +15,21 @@ import {
 } from "../../services/fdx-vci-contracts"
 import { resolveFdxBinaryPath } from "../../tools/fdx-shared"
 
-export async function runFdxChecks(directory: string): Promise<CheckResult[]> {
+export interface RunFdxChecksOptions {
+  /** Explicit native binary for isolated validation; production uses normal discovery. */
+  nativeBinaryPath?: string
+}
+
+export async function runFdxChecks(directory: string, options: RunFdxChecksOptions = {}): Promise<CheckResult[]> {
   const pkgDir = resolveFlowDeckPackageDir(directory)
+  const nativeAuthorityRequired = isRepoLikeEnvironment(classifyDoctorEnvironment(directory))
   const checks: CheckResult[] = []
 
   const platformArchDir = `${process.platform}-${process.arch}`
   const binName = process.platform === "win32" ? "fdx.exe" : "fdx"
 
   const binaryCandidates = [
+    options.nativeBinaryPath,
     process.env["FDX_BINARY_PATH"],
     join(pkgDir, "target", "release", binName),
     join(pkgDir, "native", "fdx", platformArchDir, binName),
@@ -36,7 +43,7 @@ export async function runFdxChecks(directory: string): Promise<CheckResult[]> {
     join(directory, "crates", "fdx", "target", "debug", binName),
   ].filter(Boolean) as string[]
 
-  let nativeBinaryPath: string | null = resolveFdxBinaryPath()
+  let nativeBinaryPath: string | null = options.nativeBinaryPath ?? resolveFdxBinaryPath()
   if (!nativeBinaryPath) {
     for (const cand of binaryCandidates) {
       if (existsSync(cand)) {
@@ -85,13 +92,17 @@ export async function runFdxChecks(directory: string): Promise<CheckResult[]> {
       id: "fdx.native_binary",
       title: "FDX Native Engine",
       category: "fdx",
-      severity: "high",
-      status: "error",
-      detected: "Native FDX binary missing or not executable; TypeScript fallback cannot qualify VCI authority",
-      expected: "Native FDX binary executable",
-      recommendation: "Build native FDX binary via `cargo build --manifest-path crates/fdx/Cargo.toml --release` or reinstall",
+      severity: nativeAuthorityRequired ? "high" : "info",
+      status: nativeAuthorityRequired ? "error" : "info",
+      detected: nativeAuthorityRequired
+        ? "Native FDX binary missing or not executable; TypeScript fallback cannot qualify VCI authority"
+        : "Native FDX binary unavailable in this packed installation; native VCI authority is not qualified",
+      expected: "Native FDX binary executable for VCI authority",
+      recommendation: nativeAuthorityRequired
+        ? "Build native FDX binary via `cargo build --manifest-path crates/fdx/Cargo.toml --release` or reinstall"
+        : "Install a FlowDeck package with a supported native FDX binary before using VCI authority features",
       autoFixAvailable: false,
-      affectsRuntime: true,
+      affectsRuntime: nativeAuthorityRequired,
       repairability: "manual",
     })
   }
