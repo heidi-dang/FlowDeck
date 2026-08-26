@@ -12,7 +12,7 @@ describe("P2 Security: Installer argument safety & adversarial profile validatio
     try {
       const res = spawnSync("bash", [installScript, "--doctor", "--profile", "minimal"], {
         cwd: process.cwd(),
-        env: { ...process.env, HOME: tmpHome },
+        env: { ...process.env, HOME: tmpHome, FDX_BINARY_PATH: join(tmpHome, "missing-fdx-binary") },
         encoding: "utf-8",
       })
       expect(res.status).toBe(0)
