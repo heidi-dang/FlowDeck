@@ -735,8 +735,22 @@ struct DocPlan {
 }
 
 fn doc_language(doc: &ScipDocument) -> Result<LanguageId, IngestError> {
-    LanguageId::from_str_opt(&doc.language)
-        .ok_or_else(|| IngestError::UnknownLanguage(doc.language.clone()))
+    if let Some(language) = LanguageId::from_str_opt(&doc.language) {
+        return Ok(language);
+    }
+
+    if doc.language.trim().is_empty() {
+        if let Some(extension) = Path::new(&doc.relative_path)
+            .extension()
+            .and_then(|value| value.to_str())
+        {
+            if let Some(language) = LanguageId::from_str_opt(extension) {
+                return Ok(language);
+            }
+        }
+    }
+
+    Err(IngestError::UnknownLanguage(doc.language.clone()))
 }
 
 /// Jail a document path: rejects absolute paths, URL-ish paths, any ..
@@ -961,6 +975,38 @@ fn default_state(
         last_attempt_at: None,
         last_attempt_health: None,
         last_attempt_failure_reason: None,
+    }
+}
+
+#[cfg(test)]
+mod language_tests {
+    use super::*;
+
+    #[test]
+    fn doc_language_infers_typescript_from_extension_when_scip_language_is_empty() {
+        let doc = ScipDocument {
+            relative_path: "src/example.ts".to_string(),
+            language: String::new(),
+            occurrences: Vec::new(),
+            symbols: Vec::new(),
+        };
+
+        assert_eq!(doc_language(&doc).unwrap(), LanguageId::TypeScript);
+    }
+
+    #[test]
+    fn doc_language_still_rejects_unknown_empty_language_extensions() {
+        let doc = ScipDocument {
+            relative_path: "src/example.py".to_string(),
+            language: String::new(),
+            occurrences: Vec::new(),
+            symbols: Vec::new(),
+        };
+
+        assert!(matches!(
+            doc_language(&doc),
+            Err(IngestError::UnknownLanguage(_))
+        ));
     }
 }
 

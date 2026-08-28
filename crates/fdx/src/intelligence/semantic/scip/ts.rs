@@ -64,14 +64,28 @@ fn resolve_executable() -> ExecutableResolution {
 }
 
 #[derive(Debug, Default)]
-pub struct ScipTypescriptProvider;
+pub struct ScipTypescriptProvider {
+    #[cfg(test)]
+    resolution_override: Option<ExecutableResolution>,
+}
 
 impl ScipTypescriptProvider {
     pub fn new() -> Self {
-        Self
+        Self::default()
+    }
+
+    #[cfg(test)]
+    fn with_resolution_for_test(resolution: ExecutableResolution) -> Self {
+        Self {
+            resolution_override: Some(resolution),
+        }
     }
 
     fn resolution(&self) -> ExecutableResolution {
+        #[cfg(test)]
+        if let Some(resolution) = &self.resolution_override {
+            return resolution.clone();
+        }
         resolve_executable()
     }
 
@@ -367,8 +381,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("src")).unwrap();
         std::fs::write(dir.path().join("src/a.ts"), "export const a = 1;").unwrap();
-        let p = ScipTypescriptProvider::new();
-        // PATH stripped of everything -> executable must be missing.
+        let p = ScipTypescriptProvider::with_resolution_for_test(ExecutableResolution::NotFound);
+        // Force the resolver's missing-provider branch so this test remains
+        // deterministic even when scip-typescript is installed on the host.
         let discovery = p.discover(dir.path()).unwrap();
         assert!(!discovery.supported);
         assert!(discovery.executable.is_none());
