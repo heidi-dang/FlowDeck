@@ -157,7 +157,10 @@ if [ "$DOCTOR_MODE" = true ]; then
   [ "$NON_INTERACTIVE" = true ] && DOCTOR_ARGS+=(--non-interactive)
   DOCTOR_ARGS+=(--profile "$PROFILE")
 
-  # Run doctor with safe array expansion
+  # Run doctor with safe array expansion. Doctor intentionally returns 1 for
+  # a degraded non-strict environment; capture that result despite errexit so
+  # audit-only mode can report it and retain its documented non-strict exit 0.
+  set +e
   if [ -n "${DOCTOR_SCRIPT:-}" ]; then
     node "$DOCTOR_SCRIPT" "${DOCTOR_ARGS[@]}"
     DOCTOR_EXIT=$?
@@ -168,6 +171,7 @@ if [ "$DOCTOR_MODE" = true ]; then
     npm exec --yes --package="$DOCTOR_NPM_SPEC" -- flowdeck doctor "${DOCTOR_ARGS[@]}"
     DOCTOR_EXIT=$?
   fi
+  set -e
 
   echo ""
   if [ $DOCTOR_EXIT -eq 0 ]; then

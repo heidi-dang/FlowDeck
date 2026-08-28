@@ -1,0 +1,11 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "paths": {
+      "@app/utils": [
+        "./src/utils/math.ts"
+      ]
+    }
+  }
+}

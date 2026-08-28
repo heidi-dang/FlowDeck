@@ -1,0 +1,303 @@
+{
+  "harness": "H41",
+  "purpose": "Strict native-only Heidi–FDX authority qualification",
+  "acceptanceRule": "Every scenario must pass with a real release FDX binary. Fallback, simulation, seeded storage, skipped cases, and unavailable binaries are non-acceptance.",
+  "timestamp": "2026-08-26T10:05:52.876Z",
+  "platform": "linux-x64",
+  "source": {
+    "head": "c95d7ed3beebd600979b46eec7dbde65ca50e81e",
+    "cleanBeforeRun": true,
+    "status": "clean"
+  },
+  "binary": {
+    "path": "/home/ubuntu/FlowDeck/target/release/fdx",
+    "exists": true,
+    "releaseProfilePath": true,
+    "sha256": "ac3dcd591cd9ecca979fcc6aee7d1cce380dd70f95475bbc4b0677337cf45981",
+    "sizeBytes": 18048624,
+    "version": "fdx 0.1.0"
+  },
+  "nativeContract": {
+    "capability_contract_version": 1,
+    "fdx_protocol_version": 2,
+    "graph_schema": {
+      "minimum_readable": 1,
+      "maximum_writable": 10,
+      "can_read": true,
+      "can_write": true,
+      "can_verify": true
+    },
+    "selection_policy_version": 1,
+    "verification_predicate_versions": [
+      "v1",
+      "v2"
+    ],
+    "calibration_contract_versions": [
+      2
+    ],
+    "policy_contract_versions": [
+      1
+    ],
+    "assurance_levels": [
+      "EXACT",
+      "CONSERVATIVE",
+      "UNVERIFIED"
+    ],
+    "scip": {
+      "compiled_in": true,
+      "state": "local_optional"
+    },
+    "tree_sitter": {
+      "compiled_in": true,
+      "state": "local_available"
+    },
+    "native_execution": {
+      "available": true,
+      "mode": "local_process",
+      "limitations": [
+        "native process execution is supported; release qualification applies only to the tested Linux target"
+      ]
+    },
+    "platform": "linux",
+    "platform_limitations": [
+      "native process execution is supported; release qualification applies only to the tested Linux target"
+    ],
+    "network_access": false,
+    "telemetry": false
+  },
+  "scenarios": [
+    {
+      "id": "H41-01",
+      "title": "Release binary and clean-source provenance",
+      "passed": true,
+      "durationMs": 27,
+      "detail": {
+        "path": "/home/ubuntu/FlowDeck/target/release/fdx",
+        "exists": true,
+        "releaseProfilePath": true,
+        "sha256": "ac3dcd591cd9ecca979fcc6aee7d1cce380dd70f95475bbc4b0677337cf45981",
+        "sizeBytes": 18048624,
+        "version": "fdx 0.1.0",
+        "sourceHead": "c95d7ed3beebd600979b46eec7dbde65ca50e81e",
+        "cleanBeforeRun": true
+      }
+    },
+    {
+      "id": "H41-02",
+      "title": "Exact native protocol and schema contract",
+      "passed": true,
+      "durationMs": 4,
+      "detail": {
+        "capability_contract_version": 1,
+        "fdx_protocol_version": 2,
+        "graph_schema": {
+          "minimum_readable": 1,
+          "maximum_writable": 10,
+          "can_read": true,
+          "can_write": true,
+          "can_verify": true
+        },
+        "selection_policy_version": 1,
+        "verification_predicate_versions": [
+          "v1",
+          "v2"
+        ],
+        "calibration_contract_versions": [
+          2
+        ],
+        "policy_contract_versions": [
+          1
+        ],
+        "assurance_levels": [
+          "EXACT",
+          "CONSERVATIVE",
+          "UNVERIFIED"
+        ],
+        "scip": {
+          "compiled_in": true,
+          "state": "local_optional"
+        },
+        "tree_sitter": {
+          "compiled_in": true,
+          "state": "local_available"
+        },
+        "native_execution": {
+          "available": true,
+          "mode": "local_process",
+          "limitations": [
+            "native process execution is supported; release qualification applies only to the tested Linux target"
+          ]
+        },
+        "platform": "linux",
+        "platform_limitations": [
+          "native process execution is supported; release qualification applies only to the tested Linux target"
+        ],
+        "network_access": false,
+        "telemetry": false
+      }
+    },
+    {
+      "id": "H41-03",
+      "title": "Native capability negotiation without fallback",
+      "passed": true,
+      "durationMs": 13,
+      "detail": {
+        "snapshotId": "2e3e21e4-d7e6-433f-b3b2-ddccb975ace6",
+        "capturedAt": "2026-08-26T10:05:53.005Z",
+        "providerState": "native_vci_full",
+        "capabilityContractVersion": 1,
+        "fdxProtocolVersion": 2,
+        "graphSchema": {
+          "minimumReadable": 1,
+          "maximumWritable": 10,
+          "canRead": true,
+          "canWrite": true,
+          "canVerify": true
+        },
+        "selectionPolicyVersion": 1,
+        "verificationPredicateVersions": [
+          "v1",
+          "v2"
+        ],
+        "calibrationContractVersions": [
+          2
+        ],
+        "policyContractVersions": [
+          1
+        ],
+        "assuranceLevels": [
+          "EXACT",
+          "CONSERVATIVE",
+          "UNVERIFIED"
+        ],
+        "networkAccess": false,
+        "telemetry": false,
+        "platform": "linux",
+        "platformLimitations": [
+          "native process execution is supported; release qualification applies only to the tested Linux target"
+        ],
+        "missingCapabilities": [],
+        "binaryPath": "/home/ubuntu/FlowDeck/target/release/fdx",
+        "binaryVersion": "fdx 0.1.0"
+      }
+    },
+    {
+      "id": "H41-04",
+      "title": "M1–M5 native change intelligence",
+      "passed": true,
+      "durationMs": 17,
+      "detail": {
+        "providerState": "native_vci_full",
+        "changedFiles": [
+          "index.ts"
+        ],
+        "stateFingerprint": "186c29cb2754fe667d93970b1883eea4"
+      }
+    },
+    {
+      "id": "H41-05",
+      "title": "M6 native plan with FDX-owned digests",
+      "passed": true,
+      "durationMs": 22,
+      "detail": {
+        "basePlanDigest": "6e0c4217ce7a091d9d60275063e502cdb11a59d5be08926e22f4962ca0b46000",
+        "effectivePlanDigest": "6e0c4217ce7a091d9d60275063e502cdb11a59d5be08926e22f4962ca0b46000",
+        "checks": [
+          "check:pkg:npm:.:lint",
+          "check:pkg:npm:.:test",
+          "check:pkg:npm:.:typecheck"
+        ]
+      }
+    },
+    {
+      "id": "H41-06",
+      "title": "M7 execution and M8 durable native artifact",
+      "passed": true,
+      "durationMs": 493,
+      "detail": {
+        "verificationRunId": "run_1787738753063_7db7031657af8958",
+        "outcome": "passed",
+        "persistedArtifactPath": "/tmp/fdx-h41-native-03f65262-377e-4987-9b7b-27853f30e36e/.fdx/runs/run_1787738753063_7db7031657af8958.json",
+        "evidenceDigest": "1121bc9b41686e87a50f8d61a0335f7bc248dde1b1a57fc2ce3dcbd893aee326",
+        "checkStatuses": [
+          {
+            "checkId": "check:pkg:npm:.:lint",
+            "status": "passed"
+          },
+          {
+            "checkId": "check:pkg:npm:.:test",
+            "status": "passed"
+          },
+          {
+            "checkId": "check:pkg:npm:.:typecheck",
+            "status": "passed"
+          }
+        ]
+      }
+    },
+    {
+      "id": "H41-07",
+      "title": "M9 real v1 attestation and file verification",
+      "passed": true,
+      "durationMs": 18,
+      "detail": {
+        "attestationId": "ee6ef5ce6f1957e19e1424fefe84408f2a423ec4374c83d73b1fa13d7e6e1624",
+        "predicate": "v1",
+        "attestationFilePath": "/tmp/fdx-h41-native-03f65262-377e-4987-9b7b-27853f30e36e/.fdx/attestations/run_1787738753063_7db7031657af8958.ee6ef5ce6f1957e19e1424fefe84408f2a423ec4374c83d73b1fa13d7e6e1624.json",
+        "verified": true,
+        "verifierResult": true
+      }
+    },
+    {
+      "id": "H41-08",
+      "title": "M10 exact native calibration with no synthesized check state",
+      "passed": true,
+      "durationMs": 11,
+      "detail": {
+        "calibrationId": "cal_fe7a3c158a6d31cbe13f7d5d6f9e2978feadd6ed6fc01293112cfe3a46cc3428",
+        "sourceRunId": "run_1787738753063_7db7031657af8958",
+        "status": "complete",
+        "checkCount": 3
+      }
+    },
+    {
+      "id": "H41-09",
+      "title": "M11 native candidate evaluation remains separate from frozen M10",
+      "passed": true,
+      "durationMs": 10,
+      "detail": {
+        "candidateCount": 0,
+        "activePolicyCount": 0,
+        "note": "No candidate was eligible in the real one-run fixture; absence of promotion is the expected native policy result."
+      }
+    },
+    {
+      "id": "H41-10",
+      "title": "Production provider completion requires native M7/M8/M9 evidence",
+      "passed": true,
+      "durationMs": 516,
+      "detail": {
+        "status": "passed",
+        "evidenceIds": [
+          "f32fa0a9ea561104370d455879ec8edd584b7fc99358ba9ee8faede153449a36",
+          "b1af13281a7325e16b047ad006ce9d22fbe4e79a6fe3a90753ad6f69d67b5012"
+        ],
+        "attestationVerified": true
+      }
+    },
+    {
+      "id": "H41-11",
+      "title": "Repository mutation stales previously issued evidence",
+      "passed": true,
+      "durationMs": 9,
+      "detail": {
+        "before": "186c29cb2754fe667d93970b1883eea4",
+        "after": "86e135292fceb954bc377be1a589794e"
+      }
+    }
+  ],
+  "passed": 11,
+  "failed": 0,
+  "score": 10,
+  "status": "ACCEPTED"
+}

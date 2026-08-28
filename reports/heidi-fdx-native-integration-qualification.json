@@ -1,0 +1,85 @@
+{
+  "suite": "heidi-fdx-native-integration-qualification",
+  "timestamp": "2026-08-25T09:25:01.886Z",
+  "platform": "linux-x64",
+  "binaryPath": "/home/shacker/Desktop/flowdeck-heidi/target/release/fdx",
+  "binaryExists": true,
+  "scenarios": [
+    {
+      "id": "S1_CAPABILITY_NEGOTIATION_M12",
+      "title": "M12 Canonical Capability Negotiation",
+      "passed": true,
+      "durationMs": 5
+    },
+    {
+      "id": "S2_SIMPLE_TASK_FAST_BYPASS",
+      "title": "Non-Code & Simple Task Fast Classification",
+      "passed": true,
+      "durationMs": 0
+    },
+    {
+      "id": "S3_NATIVE_PLANNING_M6",
+      "title": "Milestone 6 Native Verification Planning",
+      "passed": true,
+      "durationMs": 25
+    },
+    {
+      "id": "S4_NATIVE_EXECUTION_M7_M8",
+      "title": "Milestones 7 & 8 Native Execution and Persistence",
+      "passed": true,
+      "durationMs": 19
+    },
+    {
+      "id": "S5_ATTESTATION_M9",
+      "title": "Milestone 9 Attestation (v1/v2) & Independent Verification",
+      "passed": true,
+      "durationMs": 15
+    },
+    {
+      "id": "S6_CONTENT_BOUND_FINGERPRINT",
+      "title": "Content-Bound Working-Tree State Fingerprint Invariant",
+      "passed": true,
+      "durationMs": 8
+    },
+    {
+      "id": "S7_M10_EXACT_PER_CHECK_TRUTH",
+      "title": "Exact Per-Check Truth Preservation (M10)",
+      "passed": true,
+      "durationMs": 0
+    },
+    {
+      "id": "S8_FAIL_CLOSED_PERSISTENCE_STALENESS",
+      "title": "Fail-Closed Persistence Blocker & Evidence Staleness",
+      "passed": true,
+      "durationMs": 0
+    },
+    {
+      "id": "S9_RECOVERY_BOUNDS",
+      "title": "Recovery Convergence & Anti-Spin Bounds",
+      "passed": true,
+      "durationMs": 0
+    },
+    {
+      "id": "S10_REPO_MASTER_BRIDGE",
+      "title": "Repo Master Deterministic Fact Bridge",
+      "passed": true,
+      "durationMs": 0
+    },
+    {
+      "id": "S11_IDEMPOTENT_CONCURRENCY",
+      "title": "State Fingerprint Idempotency (50x iterations)",
+      "passed": true,
+      "durationMs": 175
+    },
+    {
+      "id": "S12_PRODUCTION_VERIFICATION_PROVIDER",
+      "title": "Production Verification Provider Wiring",
+      "passed": true,
+      "durationMs": 18
+    }
+  ],
+  "score": 10,
+  "maxScore": 10,
+  "status": "PASS (AUTHORITATIVE NATIVE AUTHORITY)",
+  "totalDurationMs": 323
+}

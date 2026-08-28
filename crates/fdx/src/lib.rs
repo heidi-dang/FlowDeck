@@ -1,8 +1,12 @@
+pub mod cmd_build;
+pub mod cmd_semantic;
 pub mod commands;
+pub mod intelligence;
 pub mod locking;
 pub mod output;
 pub mod paths;
 pub mod pr_monitor;
+pub mod protocol;
 pub mod reader;
 pub mod runner;
 pub mod serve;

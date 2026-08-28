@@ -1,0 +1,80 @@
+{
+  "schemaVersion": 1,
+  "timestamp": "2026-08-21T23:03:03.654Z",
+  "git": {
+    "baseSha": "7cb083ec2260f3efa0135c0dadb1443e8d33ea0d",
+    "measuredSha": "7cb083ec2260f3efa0135c0dadb1443e8d33ea0d",
+    "branch": "feat/fdx-verifiable-change-intelligence"
+  },
+  "environment": {
+    "platform": "linux",
+    "arch": "x64",
+    "node": "v24.19.0",
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+    "cargo": "cargo 1.97.1 (c980f4866 2026-06-30)",
+    "profile": "release",
+    "observationalBinaryPath": "/home/heidi/flowdeck/target/release/fdx"
+  },
+  "workload": {
+    "repository": "FlowDeck",
+    "searchQuery": "Fdx",
+    "searchPath": "src",
+    "outlinePaths": [
+      "src/index.ts"
+    ],
+    "impactPaths": [
+      "src/index.ts"
+    ],
+    "impactDepth": 1
+  },
+  "metrics": {
+    "binaryLaunchMs": {
+      "count": 5,
+      "min": 1.65,
+      "max": 1.87,
+      "mean": 1.74,
+      "median": 1.76,
+      "p95": 1.87
+    },
+    "oneShotReadMs": {
+      "count": 5,
+      "min": 2.63,
+      "max": 3.74,
+      "mean": 2.93,
+      "median": 2.71,
+      "p95": 3.74
+    },
+    "daemonStartupMs": 0.97,
+    "warmSearchMs": {
+      "count": 10,
+      "min": 44.34,
+      "max": 46,
+      "mean": 44.86,
+      "median": 44.71,
+      "p95": 46
+    },
+    "warmOutlineMs": {
+      "count": 10,
+      "min": 0.19,
+      "max": 0.36,
+      "mean": 0.29,
+      "median": 0.29,
+      "p95": 0.36
+    },
+    "warmImpactMs": {
+      "count": 10,
+      "min": 54.22,
+      "max": 57.27,
+      "mean": 55.53,
+      "median": 55.47,
+      "p95": 57.27
+    },
+    "harnessRssBytes": 53215232,
+    "payloadBytes": {
+      "oneShotRead": 995,
+      "warmSearch": 23130,
+      "warmOutline": 810,
+      "warmImpact": 54788
+    }
+  }
+}

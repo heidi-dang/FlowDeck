@@ -1,0 +1,101 @@
+//! Verification run artifact persistence.
+//!
+//! Saves verification execution results to `.fdx/runs/<run_id>.json`.
+//! Completely isolated from M3-M6 semantic, build, and test evidence stores.
+//! Guarantees atomic replacement and strict identifier sanitization.
+
+use crate::intelligence::verify::model::VerificationRun;
+use std::fs::{self, File};
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Path to run artifacts directory.
+pub fn runs_dir(repo_root: &Path) -> PathBuf {
+    repo_root.join(".fdx").join("runs")
+}
+
+/// Path to a specific run artifact.
+pub fn run_artifact_path(repo_root: &Path, run_id: &str) -> PathBuf {
+    runs_dir(repo_root).join(format!("{}.json", run_id))
+}
+
+/// Persist a verification run to `.fdx/runs/<run_id>.json` atomically.
+pub fn persist_verification_run(
+    repo_root: &Path,
+    run: &VerificationRun,
+) -> Result<PathBuf, io::Error> {
+    let dir = runs_dir(repo_root);
+    fs::create_dir_all(&dir)?;
+
+    let target_path = dir.join(format!("{}.json", run.run_id));
+    if target_path.exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!("run artifact already exists: {:?}", target_path),
+        ));
+    }
+
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let temp_path = dir.join(format!(".{}.tmp-{}", run.run_id, nonce));
+
+    let json_content = serde_json::to_string_pretty(run)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+    // Write and sync to temporary file in the same directory
+    let write_res = (|| -> io::Result<()> {
+        let mut file = File::create(&temp_path)?;
+        file.write_all(json_content.as_bytes())?;
+        file.sync_all()?;
+        Ok(())
+    })();
+
+    if let Err(e) = write_res {
+        let _ = fs::remove_file(&temp_path);
+        return Err(e);
+    }
+
+    // Atomic replacement via rename
+    if let Err(e) = fs::rename(&temp_path, &target_path) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(e);
+    }
+
+    Ok(target_path)
+}
+
+/// Load a persisted verification run by ID with strict path safety validation.
+pub fn load_verification_run(repo_root: &Path, run_id: &str) -> Result<VerificationRun, io::Error> {
+    if run_id.is_empty()
+        || run_id.contains('/')
+        || run_id.contains('\\')
+        || run_id.contains("..")
+        || run_id.contains('\0')
+        || run_id.starts_with('.')
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid run_id: path traversal detected: {:?}", run_id),
+        ));
+    }
+
+    let dir = runs_dir(repo_root);
+    let path = dir.join(format!("{}.json", run_id));
+
+    if let Ok(canon_dir) = fs::canonicalize(&dir) {
+        if let Ok(canon_path) = fs::canonicalize(&path) {
+            if !canon_path.starts_with(&canon_dir) {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "run artifact path escapes runs directory",
+                ));
+            }
+        }
+    }
+
+    let content = fs::read_to_string(path)?;
+    serde_json::from_str(&content).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+}

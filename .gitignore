@@ -167,3 +167,5 @@ fd-worktrees/
 .cptr
 job_logs.txt
 release_notes.txt
+.cargo
+.fdx/

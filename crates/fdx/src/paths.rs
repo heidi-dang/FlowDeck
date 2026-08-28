@@ -408,6 +408,57 @@ pub fn is_reserved_planning_entry(name: &str) -> bool {
     RESERVED_PLANNING_ENTRIES.contains(&name)
 }
 
+fn has_git_repository_metadata(directory: &Path) -> bool {
+    let git = directory.join(".git");
+    if git.is_dir() {
+        return git.join("HEAD").is_file();
+    }
+    if git.is_file() {
+        return std::fs::read_to_string(git)
+            .map(|contents| contents.trim_start().starts_with("gitdir:"))
+            .unwrap_or(false);
+    }
+    false
+}
+
+pub fn find_repository_root(current_dir: &Path) -> std::io::Result<PathBuf> {
+    let current = current_dir
+        .canonicalize()
+        .unwrap_or_else(|_| current_dir.to_path_buf());
+
+    // First try git rev-parse
+    if let Ok(output) = std::process::Command::new("git")
+        .arg("rev-parse")
+        .arg("--show-toplevel")
+        .current_dir(&current)
+        .output()
+    {
+        if output.status.success() {
+            if let Ok(git_root) = String::from_utf8(output.stdout) {
+                let trimmed = git_root.trim();
+                if !trimmed.is_empty() {
+                    return Ok(PathBuf::from(trimmed));
+                }
+            }
+        }
+    }
+
+    // Fallback: search upward for valid-looking Git metadata. Merely finding an
+    // empty/stale `.git` path must not change repository identity.
+    let mut search = current.clone();
+    loop {
+        if has_git_repository_metadata(&search) {
+            return Ok(search);
+        }
+        if !search.pop() {
+            break;
+        }
+    }
+
+    // If no git root, just use current canonical dir
+    Ok(current)
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -429,6 +480,34 @@ mod tests {
         let long = "a".repeat(100);
         let result = slugify_topic(&long);
         assert_eq!(result.len(), SLUG_MAX_LEN);
+    }
+
+    #[test]
+    fn repository_root_ignores_empty_git_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let nested = temp.path().join("repo").join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::create_dir(temp.path().join(".git")).unwrap();
+
+        assert_eq!(
+            find_repository_root(&nested).unwrap(),
+            nested.canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn repository_root_accepts_git_directory_with_head() {
+        let temp = tempfile::tempdir().unwrap();
+        let nested = temp.path().join("nested");
+        let git = temp.path().join(".git");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::create_dir(&git).unwrap();
+        std::fs::write(git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+
+        assert_eq!(
+            find_repository_root(&nested).unwrap(),
+            temp.path().canonicalize().unwrap()
+        );
     }
 
     #[test]

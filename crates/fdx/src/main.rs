@@ -20,7 +20,257 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+pub enum HistoryAction {
+    /// List historical verification runs
+    Runs {
+        /// Maximum number of runs to return (default: 50)
+        #[arg(long, default_value = "50")]
+        limit: usize,
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+    /// Show details for a specific historical verification run
+    Show {
+        /// Run identifier
+        run_id: String,
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+    /// Show historical statistics and flake signal for a check ID
+    Stats {
+        /// Check identifier
+        check_id: String,
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+    /// Show changed entities that co-occurred with a check ID
+    Cooccurrences {
+        /// Check identifier
+        check_id: String,
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+    /// Reconcile .fdx/runs/*.json artifacts into SQLite history
+    Reconcile {
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum AttestAction {
+    /// Create a deterministic verification attestation for a qualified verification run
+    Create {
+        /// Verification run identifier
+        #[arg(long)]
+        run: String,
+        /// Predicate version: v1 preserves the frozen default; v2 binds M11 application provenance.
+        #[arg(long, default_value = "v1")]
+        predicate_version: String,
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+    /// Verify an in-toto attestation against source run artifact and M8 runtime history
+    Verify {
+        /// Path to attestation JSON file
+        file: PathBuf,
+        /// Expected SHA-256 digest of attestation (required for non-content-addressed external files)
+        #[arg(long)]
+        expected_sha256: Option<String>,
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+    /// Inspect an in-toto attestation file
+    Show {
+        /// Path to attestation JSON file
+        file: PathBuf,
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+    /// List all attestations in .fdx/attestations/
+    List {
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum CalibrateAction {
+    /// Run shadow calibration for a verification run
+    Run {
+        /// Verification run identifier
+        #[arg(long)]
+        run: String,
+        /// Maximum shadow checks to execute (default: 50)
+        #[arg(long, default_value = "50")]
+        max_checks: usize,
+        /// Maximum total duration in milliseconds (default: 60000)
+        #[arg(long, default_value = "60000")]
+        max_duration_ms: u64,
+        /// Per-check timeout in milliseconds (default: 10000)
+        #[arg(long, default_value = "10000")]
+        per_check_timeout_ms: u64,
+        /// Reference scope policy: affected or workspace (default: affected)
+        #[arg(long, default_value = "affected")]
+        scope: String,
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+    /// Show details for a specific calibration run
+    Show {
+        /// Calibration identifier
+        calibration_id: String,
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+    /// List historical calibration runs
+    List {
+        /// Maximum number of runs to return (default: 50)
+        #[arg(long, default_value = "50")]
+        limit: usize,
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+    /// Show calibration statistics across historical runs
+    Stats {
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum PolicyCommand {
+    /// Generate descriptive candidates from qualified M10 evidence only.
+    GenerateCandidates {
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+    /// List persisted descriptive candidates; this has no planner authority.
+    ListCandidates {
+        /// Maximum number of candidates to return (default: 50)
+        #[arg(long, default_value = "50")]
+        limit: u32,
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+    /// Show one persisted policy candidate.
+    ShowCandidate {
+        /// Candidate identifier
+        candidate_id: String,
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+    /// Explicitly promote one eligible policy candidate.
+    PromoteCandidate {
+        /// Candidate identifier
+        candidate_id: String,
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+    /// List active promoted policies.
+    ListActive {
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+    /// Revoke one promoted policy while preserving history.
+    RevokePolicy {
+        /// Policy identifier
+        policy_id: String,
+        /// Human-readable revocation reason
+        #[arg(long)]
+        reason: String,
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum BuildAction {
+    /// Show build provider status / freshness / topology stats
+    Status,
+    /// Refresh build providers (bounded, read-only discovery)
+    Refresh,
+    /// Output build graph in JSON format
+    Graph {
+        #[arg(long, default_value = "json")]
+        format: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum SemanticAction {
+    /// Show provider health/freshness/fingerprint/scope/last run/reason
+    Status,
+    /// Refresh semantic providers (bounded, no downloads)
+    Refresh {
+        /// Refresh only this provider id
+        #[arg(long)]
+        provider: Option<String>,
+    },
+    /// Decode an SCIP index file and report bounded statistics
+    Decode {
+        /// Path to the .scip file
+        file: PathBuf,
+    },
+    /// Reference query with explicit provenance and completeness
+    References {
+        /// Symbol name or SCIP canonical symbol
+        symbol: String,
+        /// Language: rust, typescript, javascript
+        #[arg(long, default_value = "rust")]
+        lang: String,
+        /// Intent: localize, reference_complete, rename, impact_seed, context
+        #[arg(long, default_value = "reference_complete")]
+        intent: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum Commands {
+    /// Native EvidenceGraph index management
+    ///
+    /// Example: fdx index status
+    Index {
+        /// Action: "status", or none to run index
+        action: Option<String>,
+
+        /// Force refresh existing files
+        #[arg(long)]
+        refresh: bool,
+    },
+    /// Semantic provider diagnostics and refresh (SCIP evidence)
+    ///
+    /// Example: fdx semantic status
+    Semantic {
+        #[command(subcommand)]
+        action: SemanticAction,
+    },
+    /// Build/config provider diagnostics, refresh, and graph query (Milestone 5)
+    ///
+    /// Example: fdx build status
+    Build {
+        #[command(subcommand)]
+        action: BuildAction,
+    },
     /// Read a file with token-optimized output
     ///
     /// Example: fdx read src/main.rs --mode prototype
@@ -357,6 +607,144 @@ enum Commands {
         /// Who made the decision (defaults to "orchestrator")
         #[arg(long)]
         made_by: Option<String>,
+    },
+
+    /// Verifiable transitive impact analysis (Milestone 4)
+    ///
+    /// Example: fdx impact-v2 --base HEAD~1 --depth 3
+    #[command(name = "impact-v2")]
+    ImpactV2 {
+        /// Base Git ref (e.g. HEAD, HEAD~1, main)
+        #[arg(long)]
+        base: Option<String>,
+
+        /// Head Git ref (defaults to working tree)
+        #[arg(long)]
+        head: Option<String>,
+
+        /// Maximum traversal depth (default: 3)
+        #[arg(long, default_value = "3")]
+        depth: usize,
+
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+
+    /// Explain why a target is impacted by semantic changes
+    ///
+    /// Example: fdx why src/api.ts --base HEAD~1
+    Why {
+        /// Target file or symbol path to explain
+        target: String,
+
+        /// Base Git ref (e.g. HEAD, HEAD~1, main)
+        #[arg(long)]
+        base: Option<String>,
+
+        /// Head Git ref (defaults to working tree)
+        #[arg(long)]
+        head: Option<String>,
+
+        /// Maximum traversal depth (default: 3)
+        #[arg(long, default_value = "3")]
+        depth: usize,
+
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+
+    /// Deterministic test and verification check planner (Milestone 6)
+    ///
+    /// Example: fdx plan --base HEAD~1 --format json
+    Plan {
+        /// Base Git ref (e.g. HEAD, HEAD~1, main)
+        #[arg(long)]
+        base: Option<String>,
+
+        /// Head Git ref (defaults to working tree)
+        #[arg(long)]
+        head: Option<String>,
+
+        /// Apply the additive learned policy overlay after the frozen M6 planner.
+        #[arg(long, default_value_t = false)]
+        policy_overlay: bool,
+
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+
+    /// Bounded verification plan execution (Milestone 7)
+    ///
+    /// Example: fdx verify --base HEAD~1 --format json
+    Verify {
+        /// Base Git ref (e.g. HEAD, HEAD~1, main)
+        #[arg(long)]
+        base: Option<String>,
+
+        /// Head Git ref (defaults to working tree)
+        #[arg(long)]
+        head: Option<String>,
+
+        /// Apply the additive learned policy overlay after the frozen M6 planner.
+        #[arg(long, default_value_t = false)]
+        policy_overlay: bool,
+
+        /// Stop execution immediately upon the first failure
+        #[arg(long)]
+        fail_fast: bool,
+
+        /// Do not persist execution run artifact to .fdx/runs/
+        #[arg(long)]
+        no_persist: bool,
+
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+
+    /// Historical verification run observations and statistics (Milestone 8)
+    ///
+    /// Example: fdx history runs --limit 20
+    History {
+        #[command(subcommand)]
+        action: HistoryAction,
+    },
+
+    /// Verification attestation and cryptographic evidence binding (Milestone 9)
+    ///
+    /// Example: fdx attest create --run run-123
+    Attest {
+        #[command(subcommand)]
+        action: AttestAction,
+    },
+
+    /// Shadow calibration and verification planner accuracy measurement (Milestone 10)
+    ///
+    /// Example: fdx calibrate run --run run-123
+    Calibrate {
+        #[command(subcommand)]
+        action: CalibrateAction,
+    },
+
+    /// Report the deterministic local M12 capability contract without network access or telemetry.
+    Capabilities {
+        /// Capability contract version required by the caller.
+        #[arg(long, default_value_t = 1)]
+        contract_version: u32,
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+
+    /// Additive-only learned verification policy (Milestone 11)
+    ///
+    /// Candidate operations remain separate from frozen M10 calibration behavior.
+    Policy {
+        #[command(subcommand)]
+        action: PolicyCommand,
     },
 }
 
@@ -990,7 +1378,10 @@ fn main() {
                     process::exit(1);
                 }
             };
-            let cwd = std::path::Path::new(".");
+            let cwd_path = std::path::Path::new(".");
+            let repo_root = fdx::paths::find_repository_root(cwd_path)
+                .unwrap_or_else(|_| cwd_path.to_path_buf());
+            let cwd = repo_root.as_path();
             let legacy_name = cwd
                 .canonicalize()
                 .ok()
@@ -1023,6 +1414,180 @@ fn main() {
                 Err(e) => {
                     eprintln!("{}", e);
                     process::exit(1);
+                }
+            }
+        }
+
+        Commands::Index { action, refresh } => {
+            let cwd_path = std::path::Path::new(".");
+            let repo_root = fdx::paths::find_repository_root(cwd_path)
+                .unwrap_or_else(|_| cwd_path.to_path_buf());
+            let repo_root_ref = repo_root.as_path();
+
+            let action_str = action.as_deref().unwrap_or("run");
+            let open_mode = if refresh || action_str == "run" {
+                fdx::intelligence::db::DatabaseOpenMode::ReadWrite
+            } else {
+                fdx::intelligence::db::DatabaseOpenMode::ReadOnly
+            };
+
+            let db_result = fdx::intelligence::db::EvidenceDatabase::open(repo_root_ref, open_mode);
+
+            if action_str == "run" && db_result.is_err() {
+                eprintln!("Error: {}", db_result.err().unwrap());
+                process::exit(1);
+            }
+
+            match action_str {
+                "status" => {
+                    let db_ref = match &db_result {
+                        Ok(db) => Ok(db),
+                        Err(e) => Err(e),
+                    };
+                    let report = fdx::intelligence::status::evaluate_index_status(
+                        repo_root_ref,
+                        db_ref,
+                        &fdx::protocol::GraphCompatibility::default(),
+                    );
+                    println!("INDEX {}", report.state);
+                    if !report.reasons.is_empty() {
+                        println!("reason={}", report.reasons.join(","));
+                    }
+                    println!("schema={}", report.schema_version);
+                    println!("generation={}", report.generation);
+                    println!("files={}", report.files);
+                    println!("nodes={}", report.nodes);
+                    println!("edges={}", report.edges);
+                    println!("journal={}", report.journal_mode);
+                    println!("foreign_keys={}", report.foreign_keys);
+                    println!("busy_timeout={}", report.busy_timeout);
+                }
+                "run" => {
+                    match fdx::intelligence::engine::run_incremental_index(repo_root_ref, refresh) {
+                        Ok(report) => {
+                            println!("INDEX {}", report.state.to_string());
+                            if !report.reasons.is_empty() {
+                                println!("reason={}", report.reasons.join(","));
+                            }
+                            if report.skipped > 0 {
+                                println!("skipped={}", report.skipped);
+                            }
+                            println!("files={}", report.files);
+                            println!("changed={}", report.changed);
+                            println!("generation={}", report.generation);
+                        }
+                        Err(e) => {
+                            eprintln!("INDEX failed");
+                            eprintln!("Error: {}", e);
+                            process::exit(1);
+                        }
+                    }
+                }
+                other => {
+                    eprintln!("Unknown index action: {}", other);
+                    process::exit(1);
+                }
+            }
+        }
+        Commands::Build { action } => {
+            let cwd_path = std::path::Path::new(".");
+            let repo_root = fdx::paths::find_repository_root(cwd_path)
+                .unwrap_or_else(|_| cwd_path.to_path_buf());
+            match action {
+                BuildAction::Status => match fdx::cmd_build::build_status(&repo_root) {
+                    Ok(s) => print!("{}", s),
+                    Err(e) => {
+                        eprintln!("Error: {}", e);
+                        process::exit(1);
+                    }
+                },
+                BuildAction::Refresh => match fdx::cmd_build::build_refresh(&repo_root) {
+                    Ok((out, failed)) => {
+                        print!("{}", out);
+                        if failed {
+                            process::exit(1);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Error: {}", e);
+                        process::exit(1);
+                    }
+                },
+                BuildAction::Graph { format: _ } => {
+                    match fdx::cmd_build::build_graph_json(&repo_root) {
+                        Ok(s) => println!("{}", s),
+                        Err(e) => {
+                            eprintln!("Error: {}", e);
+                            process::exit(1);
+                        }
+                    }
+                }
+            }
+        }
+
+        Commands::Semantic { action } => {
+            use fdx::intelligence::semantic::router::IntelligenceIntent;
+            use fdx::intelligence::semantic::LanguageId;
+            let cwd_path = std::path::Path::new(".");
+            let repo_root = fdx::paths::find_repository_root(cwd_path)
+                .unwrap_or_else(|_| cwd_path.to_path_buf());
+            match action {
+                SemanticAction::Status => match fdx::cmd_semantic::semantic_status(&repo_root) {
+                    Ok(s) => print!("{}", s),
+                    Err(e) => {
+                        eprintln!("Error: {}", e);
+                        process::exit(1);
+                    }
+                },
+                SemanticAction::Refresh { provider } => {
+                    match fdx::cmd_semantic::semantic_refresh(&repo_root, provider.as_deref()) {
+                        Ok((out, failed)) => {
+                            print!("{}", out);
+                            if failed {
+                                process::exit(1);
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Error: {}", e);
+                            process::exit(1);
+                        }
+                    }
+                }
+                SemanticAction::Decode { file } => {
+                    match fdx::cmd_semantic::semantic_decode(&repo_root, &file) {
+                        Ok(s) => print!("{}", s),
+                        Err(e) => {
+                            eprintln!("Error: {}", e);
+                            process::exit(1);
+                        }
+                    }
+                }
+                SemanticAction::References {
+                    symbol,
+                    lang,
+                    intent,
+                } => {
+                    let language = match LanguageId::from_str_opt(&lang) {
+                        Some(l) => l,
+                        None => {
+                            eprintln!("Error: unsupported language: {}", lang);
+                            process::exit(1);
+                        }
+                    };
+                    let intent_parsed = IntelligenceIntent::parse(&intent)
+                        .unwrap_or(IntelligenceIntent::ReferenceComplete);
+                    match fdx::cmd_semantic::semantic_references(
+                        &repo_root,
+                        language,
+                        &symbol,
+                        intent_parsed,
+                    ) {
+                        Ok(s) => print!("{}", s),
+                        Err(e) => {
+                            eprintln!("Error: {}", e);
+                            process::exit(1);
+                        }
+                    }
                 }
             }
         }
@@ -1073,6 +1638,1716 @@ fn main() {
                 Err(e) => {
                     eprintln!("{}", e);
                     process::exit(1);
+                }
+            }
+        }
+
+        Commands::ImpactV2 {
+            base,
+            head,
+            depth,
+            format,
+        } => {
+            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let repo_root = fdx::paths::find_repository_root(&cwd).unwrap_or(cwd);
+            let format = parse_format(&format);
+
+            match fdx::intelligence::change::analyze_impact_v2(
+                &repo_root,
+                base.as_deref(),
+                head.as_deref(),
+                Some(depth),
+            ) {
+                Ok(result) => match format {
+                    OutputFormat::Json => {
+                        if let Ok(json_str) = serde_json::to_string_pretty(&result) {
+                            println!("{}", json_str);
+                        }
+                    }
+                    OutputFormat::Text => {
+                        println!("Assurance: {:?}", result.assurance);
+                        println!("Changes ({}):", result.changes.len());
+                        for c in &result.changes {
+                            if let Some(ref sym) = c.symbol {
+                                println!("  - [{:?}] {}::{}", c.change_kind, c.file, sym);
+                            } else {
+                                println!("  - [{:?}] {}", c.change_kind, c.file);
+                            }
+                        }
+                        println!("Impacted Targets ({}):", result.impacted.len());
+                        for t in &result.impacted {
+                            let strength_str = format!("{:?}", t.strength).to_lowercase();
+                            if let Some(ref p) = t.primary_path {
+                                println!("  - [{}] (depth {}) {}", strength_str, t.depth, t.target);
+                                println!("    Reason: {}", p.explanation);
+                            } else if let Some(ref w) = t.widening_reason {
+                                println!("  - [{}] (depth {}) {}", strength_str, t.depth, t.target);
+                                println!("    Widening: {}", w);
+                            } else {
+                                println!("  - [{}] (depth {}) {}", strength_str, t.depth, t.target);
+                            }
+                        }
+                        if !result.uncertainty.is_empty() {
+                            println!("Uncertainties ({}):", result.uncertainty.len());
+                            for u in &result.uncertainty {
+                                println!("  - [{}] {:?}", u.code(), u);
+                            }
+                        }
+                    }
+                },
+                Err(e) => {
+                    eprintln!("Error in impact analysis: {}", e);
+                    process::exit(1);
+                }
+            }
+        }
+
+        Commands::Why {
+            target,
+            base,
+            head,
+            depth,
+            format,
+        } => {
+            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let repo_root = fdx::paths::find_repository_root(&cwd).unwrap_or(cwd);
+            let format = parse_format(&format);
+
+            match fdx::intelligence::change::explain_why_target(
+                &repo_root,
+                &target,
+                base.as_deref(),
+                head.as_deref(),
+                Some(depth),
+            ) {
+                Ok(Some(target_info)) => match format {
+                    OutputFormat::Json => {
+                        if let Ok(json_str) = serde_json::to_string_pretty(&target_info) {
+                            println!("{}", json_str);
+                        }
+                    }
+                    OutputFormat::Text => {
+                        println!("Target: {}", target_info.target);
+                        println!("Kind: {:?}", target_info.target_kind);
+                        println!("Depth: {}", target_info.depth);
+                        println!("Strength: {:?}", target_info.strength);
+                        if let Some(ref p) = target_info.primary_path {
+                            println!(
+                                "Primary Explanation:
+  {}",
+                                p.explanation
+                            );
+                            if !p.steps.is_empty() {
+                                println!("Evidence Steps:");
+                                for (i, s) in p.steps.iter().enumerate() {
+                                    println!(
+                                        "  {}. {} -> {:?} -> {} (provider: {}, strength: {:?})",
+                                        i + 1,
+                                        s.from_node,
+                                        s.edge_kind,
+                                        s.to_node,
+                                        s.provider,
+                                        s.strength
+                                    );
+                                }
+                            }
+                        }
+                        if !target_info.alternate_paths.is_empty() {
+                            println!(
+                                "Alternate Paths ({} of {} total):",
+                                target_info.alternate_paths.len(),
+                                target_info.alternate_path_count
+                            );
+                            for (i, p) in target_info.alternate_paths.iter().enumerate() {
+                                println!("  Alt {}: {}", i + 1, p.explanation);
+                            }
+                        }
+                        if let Some(ref w) = target_info.widening_reason {
+                            println!("Widening Reason: {}", w);
+                        }
+                    }
+                },
+                Ok(None) => match format {
+                    OutputFormat::Json => {
+                        println!("null");
+                    }
+                    OutputFormat::Text => {
+                        println!("Target '{}' is not impacted by detected changes.", target);
+                    }
+                },
+                Err(e) => {
+                    eprintln!("Error explaining target: {}", e);
+                    process::exit(1);
+                }
+            }
+        }
+
+        Commands::Plan {
+            base,
+            head,
+            policy_overlay,
+            format,
+        } => {
+            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let repo_root = fdx::paths::find_repository_root(&cwd).unwrap_or(cwd);
+            let format = parse_format(&format);
+
+            if policy_overlay {
+                let db = match fdx::intelligence::db::EvidenceDatabase::open(
+                    &repo_root,
+                    fdx::intelligence::db::DatabaseOpenMode::ReadOnly,
+                ) {
+                    Ok(db) => db,
+                    Err(error) => {
+                        eprintln!("Error opening policy evidence database: {error}");
+                        process::exit(1);
+                    }
+                };
+                match fdx::intelligence::policy::plan_with_policy_overlay(
+                    &repo_root,
+                    &db.conn,
+                    base.as_deref(),
+                    head.as_deref(),
+                ) {
+                    Ok(effective) => match format {
+                        OutputFormat::Json => {
+                            let mut val = match serde_json::to_value(&effective) {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    eprintln!("Error serializing effective plan: {e}");
+                                    process::exit(1);
+                                }
+                            };
+                            if let Some(obj) = val.as_object_mut() {
+                                obj.insert(
+                                    "base_plan_digest".to_string(),
+                                    serde_json::Value::String(
+                                        effective.application.base_plan_digest.clone(),
+                                    ),
+                                );
+                                obj.insert(
+                                    "effective_plan_digest".to_string(),
+                                    serde_json::Value::String(
+                                        effective.application.effective_plan_digest.clone(),
+                                    ),
+                                );
+                                obj.insert(
+                                    "policy_snapshot_digest".to_string(),
+                                    serde_json::Value::String(
+                                        effective.application.policy_snapshot_digest.clone(),
+                                    ),
+                                );
+                                obj.insert(
+                                    "policy_application_digest".to_string(),
+                                    serde_json::Value::String(
+                                        effective.application.application_digest.clone(),
+                                    ),
+                                );
+                            }
+                            if let Ok(json_str) = serde_json::to_string_pretty(&val) {
+                                println!("{}", json_str);
+                            }
+                        }
+                        OutputFormat::Text => {
+                            let text =
+                                fdx::intelligence::testplan::explain::format_verification_plan_text(
+                                    &effective.plan,
+                                );
+                            print!("{}", text);
+                            if !effective.added_check_ids.is_empty() {
+                                println!(
+                                    "\nM11 additive policy checks: {}",
+                                    effective.added_check_ids.join(", ")
+                                );
+                            }
+                        }
+                    },
+                    Err(error) => {
+                        eprintln!("Error creating policy-overlaid verification plan: {error}");
+                        process::exit(1);
+                    }
+                }
+            } else {
+                match fdx::intelligence::testplan::planner::plan_verification(
+                    &repo_root,
+                    base.as_deref(),
+                    head.as_deref(),
+                    None,
+                ) {
+                    Ok(plan) => {
+                        match format {
+                            OutputFormat::Json => {
+                                let base_plan_digest = match fdx::intelligence::policy::compute_verification_plan_digest(&plan) {
+                                Ok(d) => d,
+                                Err(e) => {
+                                    eprintln!("Error computing verification plan digest: {e}");
+                                    process::exit(1);
+                                }
+                            };
+                                let mut val = match serde_json::to_value(&plan) {
+                                    Ok(v) => v,
+                                    Err(e) => {
+                                        eprintln!("Error serializing verification plan: {e}");
+                                        process::exit(1);
+                                    }
+                                };
+                                if let Some(obj) = val.as_object_mut() {
+                                    obj.insert(
+                                        "base_plan_digest".to_string(),
+                                        serde_json::Value::String(base_plan_digest.clone()),
+                                    );
+                                    obj.insert(
+                                        "effective_plan_digest".to_string(),
+                                        serde_json::Value::String(base_plan_digest),
+                                    );
+                                }
+                                if let Ok(json_str) = serde_json::to_string_pretty(&val) {
+                                    println!("{}", json_str);
+                                }
+                            }
+                            OutputFormat::Text => {
+                                let text =
+                                fdx::intelligence::testplan::explain::format_verification_plan_text(
+                                    &plan,
+                                );
+                                print!("{}", text);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Error creating verification plan: {}", e);
+                        process::exit(1);
+                    }
+                }
+            }
+        }
+
+        Commands::Verify {
+            base,
+            head,
+            policy_overlay,
+            fail_fast,
+            no_persist,
+            format,
+        } => {
+            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let repo_root = fdx::paths::find_repository_root(&cwd).unwrap_or(cwd);
+            let format = parse_format(&format);
+
+            let (plan, maybe_effective_application) = if policy_overlay {
+                let db = match fdx::intelligence::db::EvidenceDatabase::open(
+                    &repo_root,
+                    fdx::intelligence::db::DatabaseOpenMode::ReadWrite,
+                ) {
+                    Ok(db) => db,
+                    Err(error) => {
+                        eprintln!("Error opening policy evidence database: {error}");
+                        process::exit(1);
+                    }
+                };
+                let effective = match fdx::intelligence::policy::plan_with_policy_overlay(
+                    &repo_root,
+                    &db.conn,
+                    base.as_deref(),
+                    head.as_deref(),
+                ) {
+                    Ok(plan) => plan,
+                    Err(error) => {
+                        eprintln!("Error creating policy-overlaid verification plan: {error}");
+                        process::exit(1);
+                    }
+                };
+                if !no_persist {
+                    let applied_at_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+                    if let Err(error) = fdx::intelligence::policy::persist_policy_application(
+                        &db.conn,
+                        &effective.application,
+                        applied_at_ms,
+                    ) {
+                        eprintln!("Error persisting policy application: {error}");
+                        process::exit(1);
+                    }
+                }
+                (effective.plan, Some(effective.application))
+            } else {
+                let p = match fdx::intelligence::testplan::planner::plan_verification(
+                    &repo_root,
+                    base.as_deref(),
+                    head.as_deref(),
+                    None,
+                ) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        eprintln!("Error creating verification plan: {}", e);
+                        process::exit(1);
+                    }
+                };
+                (p, None)
+            };
+
+            let options = fdx::intelligence::verify::VerificationExecutorOptions {
+                bounds: fdx::intelligence::verify::ProcessBounds::default(),
+                fail_fast,
+                persist: !no_persist,
+                base: base.clone(),
+                head: head.clone(),
+            };
+
+            match fdx::intelligence::verify::execute_verification_plan(&repo_root, &plan, &options)
+            {
+                Ok(run) => {
+                    match format {
+                        OutputFormat::Json => {
+                            let mut val = match serde_json::to_value(&run) {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    eprintln!("Error serializing verification run: {e}");
+                                    process::exit(1);
+                                }
+                            };
+                            if let Some(obj) = val.as_object_mut() {
+                                if let Some(ref app) = maybe_effective_application {
+                                    obj.insert(
+                                        "base_plan_digest".to_string(),
+                                        serde_json::Value::String(app.base_plan_digest.clone()),
+                                    );
+                                    obj.insert(
+                                        "effective_plan_digest".to_string(),
+                                        serde_json::Value::String(
+                                            app.effective_plan_digest.clone(),
+                                        ),
+                                    );
+                                    obj.insert(
+                                        "policy_snapshot_digest".to_string(),
+                                        serde_json::Value::String(
+                                            app.policy_snapshot_digest.clone(),
+                                        ),
+                                    );
+                                    obj.insert(
+                                        "policy_application_digest".to_string(),
+                                        serde_json::Value::String(app.application_digest.clone()),
+                                    );
+                                    obj.insert(
+                                        "added_check_ids".to_string(),
+                                        serde_json::to_value(&app.added_check_ids)
+                                            .unwrap_or_default(),
+                                    );
+                                } else if let Ok(digest) =
+                                    fdx::intelligence::policy::compute_verification_plan_digest(
+                                        &plan,
+                                    )
+                                {
+                                    obj.insert(
+                                        "base_plan_digest".to_string(),
+                                        serde_json::Value::String(digest.clone()),
+                                    );
+                                    obj.insert(
+                                        "effective_plan_digest".to_string(),
+                                        serde_json::Value::String(digest),
+                                    );
+                                }
+                            }
+                            if let Ok(json_str) = serde_json::to_string_pretty(&val) {
+                                println!("{}", json_str);
+                            }
+                        }
+                        OutputFormat::Text => {
+                            let text =
+                                fdx::intelligence::verify::format_verification_run_text(&run);
+                            print!("{}", text);
+                        }
+                    }
+                    // Optional M8 history ingestion: failure never alters M7 verification truth
+                    // Only ingest if M7 persisted the artifact to disk, establishing exact artifact bytes
+                    if let fdx::intelligence::verify::model::PersistenceStatus::Persisted {
+                        ref path,
+                    } = run.persistence_status
+                    {
+                        let artifact_path = repo_root.join(path);
+                        if let Ok(raw_bytes) = std::fs::read(&artifact_path) {
+                            if let Ok(mut db) = fdx::intelligence::db::EvidenceDatabase::open(
+                                &repo_root,
+                                fdx::intelligence::db::DatabaseOpenMode::ReadWrite,
+                            ) {
+                                let _ = fdx::intelligence::runtime::ingest_verification_artifact(
+                                    &mut db.conn,
+                                    &raw_bytes,
+                                );
+                            }
+                        }
+                    }
+
+                    if run.outcome != fdx::intelligence::verify::VerificationOutcome::Passed {
+                        process::exit(1);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error executing verification plan: {}", e);
+                    process::exit(1);
+                }
+            }
+        }
+
+        Commands::History { action } => {
+            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let repo_root = fdx::paths::find_repository_root(&cwd).unwrap_or(cwd);
+
+            match action {
+                HistoryAction::Runs { limit, format } => {
+                    let format = parse_format(&format);
+                    let db = match fdx::intelligence::db::EvidenceDatabase::open(
+                        &repo_root,
+                        fdx::intelligence::db::DatabaseOpenMode::ReadOnly,
+                    ) {
+                        Ok(d) => d,
+                        Err(e) => {
+                            eprintln!("Error opening history database: {}", e);
+                            process::exit(1);
+                        }
+                    };
+                    match fdx::intelligence::runtime::list_historical_runs(&db.conn, limit) {
+                        Ok(runs) => match format {
+                            OutputFormat::Json => {
+                                if let Ok(s) = serde_json::to_string_pretty(&runs) {
+                                    println!("{}", s);
+                                }
+                            }
+                            OutputFormat::Text => {
+                                println!("Historical Verification Runs (showing up to {}):", limit);
+                                for r in &runs {
+                                    println!("- Run: {} | Outcome: {:?} | Assurance: {:?} | Executed: {} | Duration: {}ms",
+                                        r.run_id, r.outcome, r.assurance, r.executed_at_ms, r.duration_ms);
+                                }
+                            }
+                        },
+                        Err(e) => {
+                            eprintln!("Error querying historical runs: {}", e);
+                            process::exit(1);
+                        }
+                    }
+                }
+                HistoryAction::Show { run_id, format } => {
+                    let format = parse_format(&format);
+                    let db = match fdx::intelligence::db::EvidenceDatabase::open(
+                        &repo_root,
+                        fdx::intelligence::db::DatabaseOpenMode::ReadOnly,
+                    ) {
+                        Ok(d) => d,
+                        Err(e) => {
+                            eprintln!("Error opening history database: {}", e);
+                            process::exit(1);
+                        }
+                    };
+                    match fdx::intelligence::runtime::get_historical_run(&db.conn, &run_id) {
+                        Ok(Some((run, executions, checks))) => match format {
+                            OutputFormat::Json => {
+                                let obj = serde_json::json!({
+                                    "run": run,
+                                    "executions": executions,
+                                    "checks": checks,
+                                });
+                                if let Ok(s) = serde_json::to_string_pretty(&obj) {
+                                    println!("{}", s);
+                                }
+                            }
+                            OutputFormat::Text => {
+                                println!("Run ID: {}", run.run_id);
+                                println!("Outcome: {:?}", run.outcome);
+                                println!("Assurance: {:?}", run.assurance);
+                                println!("Duration: {}ms", run.duration_ms);
+                                println!("Executions ({} total):", executions.len());
+                                for e in &executions {
+                                    println!(
+                                        "  - {} (status: {:?}, exit: {:?}, dur: {}ms)",
+                                        e.execution_id, e.status, e.exit_code, e.duration_ms
+                                    );
+                                }
+                                println!("Checks ({} total):", checks.len());
+                                for c in &checks {
+                                    println!(
+                                        "  - {} -> exec: {} (status: {:?}, reused: {})",
+                                        c.check_id, c.execution_id, c.status, c.reused_execution
+                                    );
+                                }
+                            }
+                        },
+                        Ok(None) => {
+                            eprintln!("Run '{}' not found in history database.", run_id);
+                            process::exit(1);
+                        }
+                        Err(e) => {
+                            eprintln!("Error querying run details: {}", e);
+                            process::exit(1);
+                        }
+                    }
+                }
+                HistoryAction::Stats { check_id, format } => {
+                    let format = parse_format(&format);
+                    let db = match fdx::intelligence::db::EvidenceDatabase::open(
+                        &repo_root,
+                        fdx::intelligence::db::DatabaseOpenMode::ReadOnly,
+                    ) {
+                        Ok(d) => d,
+                        Err(e) => {
+                            eprintln!("Error opening history database: {}", e);
+                            process::exit(1);
+                        }
+                    };
+                    match fdx::intelligence::runtime::query_check_statistics(&db.conn, &check_id) {
+                        Ok(Some(stats)) => match format {
+                            OutputFormat::Json => {
+                                if let Ok(s) = serde_json::to_string_pretty(&stats) {
+                                    println!("{}", s);
+                                }
+                            }
+                            OutputFormat::Text => {
+                                println!("Historical Statistics for Check: {}", stats.check_id);
+                                println!("Total Observations: {}", stats.total_observations);
+                                println!("Unique Executions: {}", stats.unique_executions);
+                                println!("Pass Count: {}", stats.pass_count);
+                                println!("Failure Count: {}", stats.real_failure_count);
+                                println!("Incomplete Count: {}", stats.incomplete_count);
+                                if let Some(m) = stats.median_duration_ms {
+                                    println!("Median Duration: {:.2}ms", m);
+                                }
+                                if let Some(p) = stats.p95_duration_ms {
+                                    println!("P95 Duration: {:.2}ms", p);
+                                }
+                                println!(
+                                    "Flake Signal Present: {}",
+                                    stats.flake_signal.is_flake_signal_present
+                                );
+                            }
+                        },
+                        Ok(None) => {
+                            eprintln!("No historical observations found for check '{}'.", check_id);
+                            process::exit(1);
+                        }
+                        Err(e) => {
+                            eprintln!("Error querying check statistics: {}", e);
+                            process::exit(1);
+                        }
+                    }
+                }
+                HistoryAction::Cooccurrences { check_id, format } => {
+                    let format = parse_format(&format);
+                    let db = match fdx::intelligence::db::EvidenceDatabase::open(
+                        &repo_root,
+                        fdx::intelligence::db::DatabaseOpenMode::ReadOnly,
+                    ) {
+                        Ok(d) => d,
+                        Err(e) => {
+                            eprintln!("Error opening history database: {}", e);
+                            process::exit(1);
+                        }
+                    };
+                    match fdx::intelligence::runtime::query_check_cooccurrences(&db.conn, &check_id)
+                    {
+                        Ok(obs) => match format {
+                            OutputFormat::Json => {
+                                if let Ok(s) = serde_json::to_string_pretty(&obs) {
+                                    println!("{}", s);
+                                }
+                            }
+                            OutputFormat::Text => {
+                                println!(
+                                    "Co-occurring Changed Entities with Check '{}':",
+                                    check_id
+                                );
+                                for o in &obs {
+                                    println!(
+                                        "- Entity: {} ({}) | Runs: {} | Last Seen: {}",
+                                        o.entity_id,
+                                        o.entity_kind,
+                                        o.run_count,
+                                        o.last_observed_at_ms
+                                    );
+                                }
+                            }
+                        },
+                        Err(e) => {
+                            eprintln!("Error querying co-occurrences: {}", e);
+                            process::exit(1);
+                        }
+                    }
+                }
+                HistoryAction::Reconcile { format } => {
+                    let format = parse_format(&format);
+                    let mut db = match fdx::intelligence::db::EvidenceDatabase::open(
+                        &repo_root,
+                        fdx::intelligence::db::DatabaseOpenMode::ReadWrite,
+                    ) {
+                        Ok(d) => d,
+                        Err(e) => {
+                            eprintln!("Error opening history database for write: {}", e);
+                            process::exit(1);
+                        }
+                    };
+                    match fdx::intelligence::runtime::reconcile_runs_directory(
+                        &mut db.conn,
+                        &repo_root,
+                    ) {
+                        Ok(report) => {
+                            match format {
+                                OutputFormat::Json => {
+                                    if let Ok(s) = serde_json::to_string_pretty(&report) {
+                                        println!("{}", s);
+                                    }
+                                }
+                                OutputFormat::Text => {
+                                    println!("History Reconciliation Report:");
+                                    println!("Discovered: {}", report.artifacts_discovered);
+                                    println!("Imported: {}", report.artifacts_imported);
+                                    println!(
+                                        "Already Present: {}",
+                                        report.artifacts_already_present
+                                    );
+                                    println!("Conflicted: {}", report.artifacts_conflicted);
+                                    println!("Failed: {}", report.artifacts_failed);
+                                    println!("Complete: {}", report.is_complete);
+                                    for err in &report.errors {
+                                        eprintln!("  Error: {}", err);
+                                    }
+                                }
+                            }
+                            if !report.is_complete {
+                                process::exit(1);
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Error during reconciliation: {}", e);
+                            process::exit(1);
+                        }
+                    }
+                }
+            }
+        }
+
+        Commands::Attest { action } => {
+            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let repo_root = fdx::paths::find_repository_root(&cwd).unwrap_or(cwd);
+
+            match action {
+                AttestAction::Create {
+                    run,
+                    predicate_version,
+                    format,
+                } => {
+                    let format = parse_format(&format);
+                    let db = match fdx::intelligence::db::EvidenceDatabase::open(
+                        &repo_root,
+                        fdx::intelligence::db::DatabaseOpenMode::ReadOnly,
+                    ) {
+                        Ok(d) => d,
+                        Err(e) => {
+                            eprintln!("Error opening history database: {}", e);
+                            process::exit(1);
+                        }
+                    };
+
+                    let (path, sha256, artifact_sha256, outcome, assurance, statement) =
+                        match predicate_version.as_str() {
+                            "v1" => {
+                                let attestation = match fdx::intelligence::attestation::build_verification_attestation(
+                                    &repo_root, &run, &db.conn,
+                                ) {
+                                    Ok(a) => a,
+                                    Err(e) => {
+                                        eprintln!("Error building verification attestation: {}", e);
+                                        process::exit(1);
+                                    }
+                                };
+                                let (path, sha256) =
+                                    match fdx::intelligence::attestation::persist_attestation(
+                                        &repo_root,
+                                        &attestation,
+                                    ) {
+                                        Ok(saved) => saved,
+                                        Err(e) => {
+                                            eprintln!("Error persisting attestation: {}", e);
+                                            process::exit(1);
+                                        }
+                                    };
+                                let statement =
+                                    serde_json::to_value(&attestation).unwrap_or_else(|e| {
+                                        eprintln!(
+                                            "Error serializing verification attestation: {}",
+                                            e
+                                        );
+                                        process::exit(1);
+                                    });
+                                (
+                                    path,
+                                    sha256,
+                                    attestation.predicate.run.artifact_sha256,
+                                    format!("{:?}", attestation.predicate.result.outcome),
+                                    format!("{:?}", attestation.predicate.result.assurance),
+                                    statement,
+                                )
+                            }
+                            "v2" => {
+                                let attestation = match fdx::intelligence::attestation::build_verification_attestation_v2(
+                                    &repo_root, &run, &db.conn,
+                                ) {
+                                    Ok(a) => a,
+                                    Err(e) => {
+                                        eprintln!("Error building v2 verification attestation: {}", e);
+                                        process::exit(1);
+                                    }
+                                };
+                                let (path, sha256) =
+                                    match fdx::intelligence::attestation::persist_attestation_v2(
+                                        &repo_root,
+                                        &attestation,
+                                    ) {
+                                        Ok(saved) => saved,
+                                        Err(e) => {
+                                            eprintln!("Error persisting v2 attestation: {}", e);
+                                            process::exit(1);
+                                        }
+                                    };
+                                let statement =
+                                    serde_json::to_value(&attestation).unwrap_or_else(|e| {
+                                        eprintln!(
+                                            "Error serializing v2 verification attestation: {}",
+                                            e
+                                        );
+                                        process::exit(1);
+                                    });
+                                (
+                                    path,
+                                    sha256,
+                                    attestation.predicate.run.artifact_sha256,
+                                    format!("{:?}", attestation.predicate.result.outcome),
+                                    format!("{:?}", attestation.predicate.result.assurance),
+                                    statement,
+                                )
+                            }
+                            unsupported => {
+                                eprintln!(
+                                    "Unsupported predicate version '{}'; expected v1 or v2",
+                                    unsupported
+                                );
+                                process::exit(1);
+                            }
+                        };
+
+                    match format {
+                        OutputFormat::Json => {
+                            let obj = serde_json::json!({
+                                "status": "created",
+                                "run_id": run,
+                                "predicate_version": predicate_version,
+                                "path": path,
+                                "attestation_sha256": sha256,
+                                "artifact_sha256": artifact_sha256,
+                                "statement": statement,
+                            });
+                            if let Ok(s) = serde_json::to_string_pretty(&obj) {
+                                println!("{}", s);
+                            }
+                        }
+                        OutputFormat::Text => {
+                            println!("Verification Attestation Created:");
+                            println!("  Run ID: {}", run);
+                            println!("  Predicate version: {}", predicate_version);
+                            println!("  Attestation SHA-256: {}", sha256);
+                            println!("  Artifact SHA-256: {}", artifact_sha256);
+                            println!("  Outcome: {}", outcome);
+                            println!("  Assurance: {}", assurance);
+                            println!("  Path: {:?}", path);
+                        }
+                    }
+                }
+                AttestAction::Verify {
+                    file,
+                    expected_sha256,
+                    format,
+                } => {
+                    let format = parse_format(&format);
+                    let db = match fdx::intelligence::db::EvidenceDatabase::open(
+                        &repo_root,
+                        fdx::intelligence::db::DatabaseOpenMode::ReadOnly,
+                    ) {
+                        Ok(d) => d,
+                        Err(e) => {
+                            eprintln!("Error opening history database: {}", e);
+                            process::exit(1);
+                        }
+                    };
+
+                    let loaded =
+                        match fdx::intelligence::attestation::load_attestation_document_from_path(
+                            &repo_root,
+                            &file,
+                            expected_sha256.as_deref(),
+                        ) {
+                            Ok(loaded) => loaded,
+                            Err(e) => {
+                                eprintln!("Error loading attestation file: {}", e);
+                                process::exit(1);
+                            }
+                        };
+                    let predicate_type = loaded.document.predicate_type().to_string();
+                    let verification = match loaded.document {
+                        fdx::intelligence::attestation::AttestationDocument::V1(statement) => {
+                            fdx::intelligence::attestation::verify_attestation(
+                                &repo_root,
+                                &statement,
+                                Some(&loaded.bytes),
+                                expected_sha256.as_deref(),
+                                &db.conn,
+                            )
+                        }
+                        fdx::intelligence::attestation::AttestationDocument::V2(statement) => {
+                            fdx::intelligence::attestation::verify_attestation_v2(
+                                &repo_root,
+                                &statement,
+                                Some(&loaded.bytes),
+                                expected_sha256.as_deref(),
+                                &db.conn,
+                            )
+                        }
+                    };
+
+                    match verification {
+                        Ok(report) => match format {
+                            OutputFormat::Json => {
+                                if let Ok(s) = serde_json::to_string_pretty(&report) {
+                                    println!("{}", s);
+                                }
+                            }
+                            OutputFormat::Text => {
+                                println!("Verification Attestation Verified:");
+                                println!("  Predicate Type: {}", predicate_type);
+                                println!("  Valid: {}", report.valid);
+                                println!("  Run ID: {}", report.run_id);
+                                println!("  Attestation SHA-256: {}", report.attestation_sha256);
+                                println!("  Artifact SHA-256: {}", report.artifact_sha256);
+                                println!("  Outcome: {:?}", report.outcome);
+                                println!("  Assurance: {:?}", report.assurance);
+                                println!("  Checks Verified: {}", report.checks_verified);
+                                println!("  Executions Verified: {}", report.executions_verified);
+                                println!(
+                                    "  Global History Complete at Generation: {}",
+                                    report.global_history_complete_at_generation
+                                );
+                            }
+                        },
+                        Err(e) => {
+                            eprintln!("Attestation verification failed: {}", e);
+                            process::exit(1);
+                        }
+                    }
+                }
+                AttestAction::Show { file, format } => {
+                    let format = parse_format(&format);
+                    let loaded =
+                        match fdx::intelligence::attestation::load_attestation_document_from_path(
+                            &repo_root, &file, None,
+                        ) {
+                            Ok(loaded) => loaded,
+                            Err(e) => {
+                                eprintln!("Error loading attestation file: {}", e);
+                                process::exit(1);
+                            }
+                        };
+
+                    match format {
+                        OutputFormat::Json => {
+                            let rendered = match &loaded.document {
+                                fdx::intelligence::attestation::AttestationDocument::V1(
+                                    statement,
+                                ) => serde_json::to_string_pretty(statement),
+                                fdx::intelligence::attestation::AttestationDocument::V2(
+                                    statement,
+                                ) => serde_json::to_string_pretty(statement),
+                            };
+                            match rendered {
+                                Ok(rendered) => println!("{}", rendered),
+                                Err(error) => {
+                                    eprintln!("Error serializing attestation: {}", error);
+                                    process::exit(1);
+                                }
+                            }
+                        }
+                        OutputFormat::Text => {
+                            println!("Verification Attestation Statement:");
+                            println!("  Predicate Type: {}", loaded.document.predicate_type());
+                            println!("  File SHA-256: {}", loaded.sha256);
+                            match &loaded.document {
+                                fdx::intelligence::attestation::AttestationDocument::V1(
+                                    statement,
+                                ) => {
+                                    println!("  Type: {}", statement.statement_type);
+                                    println!("  Run ID: {}", statement.predicate.run.run_id);
+                                    println!(
+                                        "  Artifact SHA-256: {}",
+                                        statement.predicate.run.artifact_sha256
+                                    );
+                                    println!(
+                                        "  Plan SHA-256: {}",
+                                        statement.predicate.run.plan_sha256
+                                    );
+                                    println!("  Outcome: {:?}", statement.predicate.result.outcome);
+                                    println!(
+                                        "  Assurance: {:?}",
+                                        statement.predicate.result.assurance
+                                    );
+                                    println!(
+                                        "  Total Obligations: {}",
+                                        statement.predicate.plan.total_obligations
+                                    );
+                                    println!(
+                                        "  Checks: {} | Executions: {} | Uncertainty: {}",
+                                        statement.predicate.checks.len(),
+                                        statement.predicate.executions.len(),
+                                        statement.predicate.uncertainty.len()
+                                    );
+                                }
+                                fdx::intelligence::attestation::AttestationDocument::V2(
+                                    statement,
+                                ) => {
+                                    println!("  Type: {}", statement.statement_type);
+                                    println!("  Run ID: {}", statement.predicate.run.run_id);
+                                    println!(
+                                        "  Artifact SHA-256: {}",
+                                        statement.predicate.run.artifact_sha256
+                                    );
+                                    println!(
+                                        "  Plan SHA-256: {}",
+                                        statement.predicate.run.plan_sha256
+                                    );
+                                    println!("  Outcome: {:?}", statement.predicate.result.outcome);
+                                    println!(
+                                        "  Assurance: {:?}",
+                                        statement.predicate.result.assurance
+                                    );
+                                    println!(
+                                        "  Total Obligations: {}",
+                                        statement.predicate.plan.total_obligations
+                                    );
+                                    println!(
+                                        "  Checks: {} | Executions: {} | Uncertainty: {}",
+                                        statement.predicate.checks.len(),
+                                        statement.predicate.executions.len(),
+                                        statement.predicate.uncertainty.len()
+                                    );
+                                    match &statement.predicate.policy_context {
+                                        Some(context) => println!(
+                                            "  Policy Context: application={} snapshot={} added_checks={}",
+                                            context.policy_application_digest,
+                                            context.policy_snapshot_digest,
+                                            context.added_check_ids.len(),
+                                        ),
+                                        None => println!("  Policy Context: none (base-only run)"),
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                AttestAction::List { format } => {
+                    let format = parse_format(&format);
+                    match fdx::intelligence::attestation::list_attestations(&repo_root) {
+                        Ok(list) => match format {
+                            OutputFormat::Json => {
+                                if let Ok(s) = serde_json::to_string_pretty(&list) {
+                                    println!("{}", s);
+                                }
+                            }
+                            OutputFormat::Text => {
+                                println!("Discovered Attestations ({}):", list.len());
+                                for a in &list {
+                                    println!(
+                                        "- Run: {} | Outcome: {:?} | Assurance: {:?} | Attestation SHA: {} | Path: {:?}",
+                                        a.run_id, a.outcome, a.assurance, a.attestation_sha256, a.path
+                                    );
+                                }
+                            }
+                        },
+                        Err(e) => {
+                            eprintln!("Error listing attestations: {}", e);
+                            process::exit(1);
+                        }
+                    }
+                }
+            }
+        }
+
+        Commands::Calibrate { action } => {
+            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let repo_root = fdx::paths::find_repository_root(&cwd).unwrap_or(cwd);
+
+            match action {
+                CalibrateAction::Run {
+                    run,
+                    max_checks,
+                    max_duration_ms,
+                    per_check_timeout_ms,
+                    scope,
+                    format,
+                } => {
+                    let format = parse_format(&format);
+                    let artifact_path = repo_root
+                        .join(".fdx")
+                        .join("runs")
+                        .join(format!("{}.json", run));
+                    if !artifact_path.exists() {
+                        eprintln!(
+                            "Error: verification run artifact not found: {:?}",
+                            artifact_path
+                        );
+                        process::exit(1);
+                    }
+
+                    let raw_bytes = match std::fs::read(&artifact_path) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            eprintln!("Error reading verification run artifact: {}", e);
+                            process::exit(1);
+                        }
+                    };
+
+                    let source_run: fdx::intelligence::verify::VerificationRun =
+                        match serde_json::from_slice(&raw_bytes) {
+                            Ok(r) => r,
+                            Err(e) => {
+                                eprintln!("Error parsing verification run artifact: {}", e);
+                                process::exit(1);
+                            }
+                        };
+
+                    let reference_scope = match scope.as_str() {
+                        "workspace" => fdx::intelligence::calibration::ReferenceScope::Workspace,
+                        _ => fdx::intelligence::calibration::ReferenceScope::AffectedPackage,
+                    };
+
+                    let policy = fdx::intelligence::calibration::CalibrationPolicy {
+                        scope: reference_scope,
+                        max_shadow_checks: max_checks,
+                        max_total_duration_ms: max_duration_ms,
+                        per_check_timeout_ms,
+                        max_output_bytes: 16 * 1024 * 1024,
+                    };
+
+                    let source_artifact_sha256 =
+                        fdx::intelligence::runtime::sha256_bytes(&raw_bytes);
+                    let candidate_plan_digest =
+                        match fdx::intelligence::runtime::compute_plan_digest(&source_run.plan) {
+                            Ok(digest) => digest,
+                            Err(e) => {
+                                eprintln!("Error computing candidate plan digest: {}", e);
+                                process::exit(1);
+                            }
+                        };
+                    let policy_digest =
+                        match fdx::intelligence::calibration::compute_policy_digest(&policy) {
+                            Ok(digest) => digest,
+                            Err(e) => {
+                                eprintln!("Error computing calibration policy digest: {}", e);
+                                process::exit(1);
+                            }
+                        };
+                    let calibration_id = fdx::intelligence::calibration::generate_calibration_id(
+                        &source_run.run_id,
+                        &candidate_plan_digest,
+                        &policy_digest,
+                        fdx::intelligence::schema::CURRENT_SCHEMA_VERSION,
+                    );
+
+                    // A qualified deterministic key is reusable evidence, not an invitation to
+                    // rerun shadow processes under the same calibration identity.
+                    let mut writable_db = fdx::intelligence::db::EvidenceDatabase::open(
+                        &repo_root,
+                        fdx::intelligence::db::DatabaseOpenMode::ReadWrite,
+                    )
+                    .ok();
+                    if let Some(db) = writable_db.as_mut() {
+                        let _ = fdx::intelligence::runtime::ingest_verification_artifact(
+                            &mut db.conn,
+                            &raw_bytes,
+                        );
+                        match fdx::intelligence::calibration::get_calibration_run(
+                            &db.conn,
+                            &calibration_id,
+                        ) {
+                            Ok(Some((summary, metrics, checks, executions))) => {
+                                match format {
+                                    OutputFormat::Json => println!(
+                                        "{}",
+                                        serde_json::json!({
+                                            "summary": summary,
+                                            "metrics": metrics,
+                                            "checks": checks,
+                                            "executions": executions,
+                                            "reused_qualified_calibration": true,
+                                        })
+                                    ),
+                                    OutputFormat::Text => println!(
+                                        "Reused qualified calibration {} without rerunning shadow processes.",
+                                        calibration_id
+                                    ),
+                                }
+                                return;
+                            }
+                            Ok(None) => {}
+                            Err(e) => {
+                                eprintln!(
+                                    "Error reading existing calibration evidence; refusing to rerun: {}",
+                                    e
+                                );
+                                process::exit(1);
+                            }
+                        }
+                    }
+
+                    let cal_run =
+                        match fdx::intelligence::calibration::run_calibration_with_source_artifact(
+                            &repo_root,
+                            &source_run,
+                            &policy,
+                            &source_artifact_sha256,
+                        ) {
+                            Ok(c) => c,
+                            Err(e) => {
+                                eprintln!("Error executing shadow calibration: {}", e);
+                                process::exit(1);
+                            }
+                        };
+
+                    if let Some(db) = writable_db.as_mut() {
+                        if let Err(e) = fdx::intelligence::calibration::persist_calibration_run(
+                            &mut db.conn,
+                            &cal_run,
+                        ) {
+                            eprintln!(
+                                "Warning: could not persist calibration run to database: {}",
+                                e
+                            );
+                        }
+                    }
+
+                    match format {
+                        OutputFormat::Json => {
+                            if let Ok(s) = serde_json::to_string_pretty(&cal_run) {
+                                println!("{}", s);
+                            }
+                        }
+                        OutputFormat::Text => {
+                            print!(
+                                "{}",
+                                fdx::intelligence::calibration::format_calibration_run_text(
+                                    &cal_run
+                                )
+                            );
+                        }
+                    }
+                }
+                CalibrateAction::Show {
+                    calibration_id,
+                    format,
+                } => {
+                    let format = parse_format(&format);
+                    let db = match fdx::intelligence::db::EvidenceDatabase::open(
+                        &repo_root,
+                        fdx::intelligence::db::DatabaseOpenMode::ReadOnly,
+                    ) {
+                        Ok(d) => d,
+                        Err(e) => {
+                            eprintln!("Error opening history database: {}", e);
+                            process::exit(1);
+                        }
+                    };
+
+                    match fdx::intelligence::calibration::get_calibration_run(
+                        &db.conn,
+                        &calibration_id,
+                    ) {
+                        Ok(Some((summary, metrics, checks, executions))) => match format {
+                            OutputFormat::Json => {
+                                let obj = serde_json::json!({
+                                    "summary": summary,
+                                    "metrics": metrics,
+                                    "checks": checks,
+                                    "executions": executions,
+                                });
+                                if let Ok(s) = serde_json::to_string_pretty(&obj) {
+                                    println!("{}", s);
+                                }
+                            }
+                            OutputFormat::Text => {
+                                println!("Shadow Calibration Run: {}", summary.calibration_id);
+                                println!("  Source Run ID: {}", summary.source_run_id);
+                                println!("  Status: {:?}", summary.status);
+                                println!("  Reference Scope: {}", summary.reference_scope);
+                                println!(
+                                    "  Candidate Plan Digest: {}",
+                                    summary.candidate_plan_digest
+                                );
+                                println!("  Policy Digest: {}", summary.policy_digest);
+                                println!("  Duration: {}ms", summary.duration_ms);
+                                println!(
+                                    "
+Metrics:"
+                                );
+                                println!(
+                                    "  Candidate Selected: {}",
+                                    metrics.candidate_selected_count
+                                );
+                                println!("  Shadow Reference: {}", metrics.shadow_reference_count);
+                                println!("  Shadow Executed: {}", metrics.shadow_executed_count);
+                                println!(
+                                    "  Selected Failing Signals: {}",
+                                    metrics.selected_failure_count
+                                );
+                                println!(
+                                    "  Observed Shadow Misses: {}",
+                                    metrics.observed_shadow_miss_count
+                                );
+                                println!(
+                                    "  Shadow Incomplete: {}",
+                                    metrics.shadow_incomplete_count
+                                );
+                                if let Some(sr) = metrics.selection_ratio {
+                                    println!("  Selection Ratio: {:.4}", sr);
+                                }
+                                if let Some(cr) = metrics.runtime_cost_ratio {
+                                    println!("  Runtime Cost Ratio: {:.4}", cr);
+                                }
+                                if let Some(rc) = metrics.signal_recall {
+                                    println!("  Signal Recall: {:.2}%", rc * 100.0);
+                                } else {
+                                    println!("  Signal Recall: N/A");
+                                }
+                                println!(
+                                    "
+Checks ({}):",
+                                    checks.len()
+                                );
+                                for c in &checks {
+                                    let tag = if c.candidate_selected {
+                                        "[SELECTED]"
+                                    } else {
+                                        "[SHADOW]  "
+                                    };
+                                    let miss_tag = if c.is_observed_shadow_miss {
+                                        " ** OBSERVED MISS **"
+                                    } else {
+                                        ""
+                                    };
+                                    println!(
+                                        "  {} {} -> {:?} ({}ms, signal: {:?}){}",
+                                        tag,
+                                        c.check_id,
+                                        c.execution_status,
+                                        c.duration_ms,
+                                        c.signal_class,
+                                        miss_tag
+                                    );
+                                }
+                            }
+                        },
+                        Ok(None) => {
+                            eprintln!("Error: calibration run '{}' not found", calibration_id);
+                            process::exit(1);
+                        }
+                        Err(e) => {
+                            eprintln!("Error querying calibration run: {}", e);
+                            process::exit(1);
+                        }
+                    }
+                }
+                CalibrateAction::List { limit, format } => {
+                    let format = parse_format(&format);
+                    let db = match fdx::intelligence::db::EvidenceDatabase::open(
+                        &repo_root,
+                        fdx::intelligence::db::DatabaseOpenMode::ReadOnly,
+                    ) {
+                        Ok(d) => d,
+                        Err(e) => {
+                            eprintln!("Error opening history database: {}", e);
+                            process::exit(1);
+                        }
+                    };
+
+                    match fdx::intelligence::calibration::list_calibration_runs(&db.conn, limit) {
+                        Ok(runs) => match format {
+                            OutputFormat::Json => {
+                                if let Ok(s) = serde_json::to_string_pretty(&runs) {
+                                    println!("{}", s);
+                                }
+                            }
+                            OutputFormat::Text => {
+                                println!(
+                                    "Historical Shadow Calibration Runs (showing up to {}):",
+                                    limit
+                                );
+                                for r in &runs {
+                                    let recall_str = r
+                                        .signal_recall
+                                        .map(|rc| format!("{:.2}%", rc * 100.0))
+                                        .unwrap_or_else(|| "N/A".to_string());
+                                    println!(
+                                        "- Cal: {} | Run: {} | Status: {:?} | Scope: {} | Misses: {} | Recall: {} | Dur: {}ms",
+                                        r.calibration_id, r.source_run_id, r.status, r.reference_scope, r.observed_shadow_miss_count, recall_str, r.duration_ms
+                                    );
+                                }
+                            }
+                        },
+                        Err(e) => {
+                            eprintln!("Error listing calibration runs: {}", e);
+                            process::exit(1);
+                        }
+                    }
+                }
+                CalibrateAction::Stats { format } => {
+                    let format = parse_format(&format);
+                    let db = match fdx::intelligence::db::EvidenceDatabase::open(
+                        &repo_root,
+                        fdx::intelligence::db::DatabaseOpenMode::ReadOnly,
+                    ) {
+                        Ok(d) => d,
+                        Err(e) => {
+                            eprintln!("Error opening history database: {}", e);
+                            process::exit(1);
+                        }
+                    };
+
+                    match fdx::intelligence::calibration::get_calibration_stats(&db.conn) {
+                        Ok(stats) => {
+                            match format {
+                                OutputFormat::Json => {
+                                    if let Ok(s) = serde_json::to_string_pretty(&stats) {
+                                        println!("{}", s);
+                                    }
+                                }
+                                OutputFormat::Text => {
+                                    print!("{}", fdx::intelligence::calibration::format_calibration_stats_text(&stats));
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Error querying calibration statistics: {}", e);
+                            process::exit(1);
+                        }
+                    }
+                }
+            }
+        }
+
+        Commands::Capabilities {
+            contract_version,
+            format,
+        } => {
+            let format = parse_format(&format);
+            let capabilities =
+                match fdx::intelligence::capabilities::require_supported_capability_contract(
+                    contract_version,
+                ) {
+                    Ok(capabilities) => capabilities,
+                    Err(error) => {
+                        eprintln!("Error reporting capabilities: {error}");
+                        process::exit(1);
+                    }
+                };
+            match format {
+                OutputFormat::Json => match serde_json::to_string_pretty(&capabilities) {
+                    Ok(rendered) => println!("{rendered}"),
+                    Err(error) => {
+                        eprintln!("Error serializing capabilities: {error}");
+                        process::exit(1);
+                    }
+                },
+                OutputFormat::Text => {
+                    println!(
+                        "FlowDeck Local Capabilities (contract v{}):",
+                        capabilities.capability_contract_version
+                    );
+                    println!(
+                        "  Protocol: v{} | graph read {}..{} | write max {}",
+                        capabilities.fdx_protocol_version,
+                        capabilities.graph_schema.minimum_readable,
+                        capabilities.graph_schema.maximum_writable,
+                        capabilities.graph_schema.maximum_writable,
+                    );
+                    println!(
+                        "  Predicates: {}",
+                        capabilities.verification_predicate_versions.join(", ")
+                    );
+                    println!(
+                        "  Calibration contracts: {:?}",
+                        capabilities.calibration_contract_versions
+                    );
+                    println!(
+                        "  Policy contracts: {:?}",
+                        capabilities.policy_contract_versions
+                    );
+                    println!(
+                        "  Network access: {} | telemetry: {}",
+                        capabilities.network_access, capabilities.telemetry
+                    );
+                    println!("  Platform: {}", capabilities.platform);
+                }
+            }
+        }
+        Commands::Policy { action } => {
+            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let repo_root = fdx::paths::find_repository_root(&cwd).unwrap_or(cwd);
+            match action {
+                PolicyCommand::GenerateCandidates { format } => {
+                    let format = parse_format(&format);
+                    let mut db = match fdx::intelligence::db::EvidenceDatabase::open(
+                        &repo_root,
+                        fdx::intelligence::db::DatabaseOpenMode::ReadWrite,
+                    ) {
+                        Ok(db) => db,
+                        Err(error) => {
+                            eprintln!("Error opening policy evidence database: {error}");
+                            process::exit(1);
+                        }
+                    };
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+                    match fdx::intelligence::policy::generate_candidates(
+                        &mut db.conn,
+                        &fdx::intelligence::policy::PromotionPolicy::default(),
+                        now_ms,
+                    ) {
+                        Ok(candidates) => match format {
+                            OutputFormat::Json => println!(
+                                "{}",
+                                serde_json::to_string_pretty(&candidates)
+                                    .unwrap_or_else(|_| "[]".to_string())
+                            ),
+                            OutputFormat::Text => {
+                                println!(
+                                    "Generated {} descriptive M11 policy candidate(s).",
+                                    candidates.len()
+                                );
+                                for candidate in candidates {
+                                    println!(
+                                        "- {} | scope={} | check={} | support={} | state={}",
+                                        candidate.candidate_id,
+                                        candidate.trigger.scope,
+                                        candidate.check_id,
+                                        candidate.support_count,
+                                        candidate.state.as_str(),
+                                    );
+                                }
+                            }
+                        },
+                        Err(error) => {
+                            eprintln!("Error generating policy candidates: {error}");
+                            process::exit(1);
+                        }
+                    }
+                }
+                PolicyCommand::ListCandidates { limit, format } => {
+                    let format = parse_format(&format);
+                    let db = match fdx::intelligence::db::EvidenceDatabase::open(
+                        &repo_root,
+                        fdx::intelligence::db::DatabaseOpenMode::ReadOnly,
+                    ) {
+                        Ok(db) => db,
+                        Err(error) => {
+                            eprintln!("Error opening policy evidence database: {error}");
+                            process::exit(1);
+                        }
+                    };
+                    match fdx::intelligence::policy::list_candidates(&db.conn, limit) {
+                        Ok(candidates) => match format {
+                            OutputFormat::Json => println!(
+                                "{}",
+                                serde_json::to_string_pretty(&candidates)
+                                    .unwrap_or_else(|_| "[]".to_string())
+                            ),
+                            OutputFormat::Text => {
+                                println!("Policy candidates (showing up to {limit}):");
+                                for candidate in candidates {
+                                    println!(
+                                        "- {} | scope={} | check={} | support={} | state={}",
+                                        candidate.candidate_id,
+                                        candidate.trigger.scope,
+                                        candidate.check_id,
+                                        candidate.support_count,
+                                        candidate.state.as_str(),
+                                    );
+                                }
+                            }
+                        },
+                        Err(error) => {
+                            eprintln!("Error listing policy candidates: {error}");
+                            process::exit(1);
+                        }
+                    }
+                }
+                PolicyCommand::ShowCandidate {
+                    candidate_id,
+                    format,
+                } => {
+                    let format = parse_format(&format);
+                    let db = match fdx::intelligence::db::EvidenceDatabase::open(
+                        &repo_root,
+                        fdx::intelligence::db::DatabaseOpenMode::ReadOnly,
+                    ) {
+                        Ok(db) => db,
+                        Err(error) => {
+                            eprintln!("Error opening policy evidence database: {error}");
+                            process::exit(1);
+                        }
+                    };
+                    match fdx::intelligence::policy::get_candidate(&db.conn, &candidate_id) {
+                        Ok(Some(candidate)) => match format {
+                            OutputFormat::Json => println!(
+                                "{}",
+                                serde_json::to_string_pretty(&candidate)
+                                    .unwrap_or_else(|_| "{}".to_string())
+                            ),
+                            OutputFormat::Text => println!(
+                                "{}\nscope: {}\ncheck: {}\nsupport: {}\nstate: {}\ndigest: {}",
+                                candidate.candidate_id,
+                                candidate.trigger.scope,
+                                candidate.check_id,
+                                candidate.support_count,
+                                candidate.state.as_str(),
+                                candidate.candidate_digest,
+                            ),
+                        },
+                        Ok(None) => {
+                            eprintln!("Error: policy candidate '{}' not found", candidate_id);
+                            process::exit(1);
+                        }
+                        Err(error) => {
+                            eprintln!("Error reading policy candidate: {error}");
+                            process::exit(1);
+                        }
+                    }
+                }
+                PolicyCommand::PromoteCandidate {
+                    candidate_id,
+                    format,
+                } => {
+                    let format = parse_format(&format);
+                    let mut db = match fdx::intelligence::db::EvidenceDatabase::open(
+                        &repo_root,
+                        fdx::intelligence::db::DatabaseOpenMode::ReadWrite,
+                    ) {
+                        Ok(db) => db,
+                        Err(error) => {
+                            eprintln!("Error opening policy evidence database: {error}");
+                            process::exit(1);
+                        }
+                    };
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+                    match fdx::intelligence::policy::promote_candidate_with_template(
+                        &repo_root,
+                        &mut db.conn,
+                        &candidate_id,
+                        &fdx::intelligence::policy::PromotionPolicy::default(),
+                        now_ms,
+                    ) {
+                        Ok(policy) => match format {
+                            OutputFormat::Json => println!(
+                                "{}",
+                                serde_json::to_string_pretty(&policy)
+                                    .unwrap_or_else(|_| "{}".to_string())
+                            ),
+                            OutputFormat::Text => println!(
+                                "{} | scope={} | check={} | state={}",
+                                policy.policy_id,
+                                policy.trigger.scope,
+                                policy.check_id,
+                                policy.state.as_str()
+                            ),
+                        },
+                        Err(error) => {
+                            eprintln!("Error promoting policy candidate: {error}");
+                            process::exit(1);
+                        }
+                    }
+                }
+                PolicyCommand::ListActive { format } => {
+                    let format = parse_format(&format);
+                    let db = match fdx::intelligence::db::EvidenceDatabase::open(
+                        &repo_root,
+                        fdx::intelligence::db::DatabaseOpenMode::ReadOnly,
+                    ) {
+                        Ok(db) => db,
+                        Err(error) => {
+                            eprintln!("Error opening policy evidence database: {error}");
+                            process::exit(1);
+                        }
+                    };
+                    match fdx::intelligence::policy::active_policy_snapshot(&db.conn) {
+                        Ok(snapshot) => match format {
+                            OutputFormat::Json => println!(
+                                "{}",
+                                serde_json::to_string_pretty(&snapshot)
+                                    .unwrap_or_else(|_| "{}".to_string())
+                            ),
+                            OutputFormat::Text => {
+                                println!("Active policies: {}", snapshot.policies.len());
+                                for policy in snapshot.policies {
+                                    println!(
+                                        "- {} | scope={} | check={}",
+                                        policy.policy_id, policy.trigger.scope, policy.check_id
+                                    );
+                                }
+                            }
+                        },
+                        Err(error) => {
+                            eprintln!("Error listing active policies: {error}");
+                            process::exit(1);
+                        }
+                    }
+                }
+                PolicyCommand::RevokePolicy {
+                    policy_id,
+                    reason,
+                    format,
+                } => {
+                    let format = parse_format(&format);
+                    let mut db = match fdx::intelligence::db::EvidenceDatabase::open(
+                        &repo_root,
+                        fdx::intelligence::db::DatabaseOpenMode::ReadWrite,
+                    ) {
+                        Ok(db) => db,
+                        Err(error) => {
+                            eprintln!("Error opening policy evidence database: {error}");
+                            process::exit(1);
+                        }
+                    };
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+                    match fdx::intelligence::policy::revoke_policy(
+                        &mut db.conn,
+                        &policy_id,
+                        &reason,
+                        now_ms,
+                    ) {
+                        Ok(()) => match format {
+                            OutputFormat::Json => println!(
+                                "{}",
+                                serde_json::json!({"policy_id": policy_id, "state": "revoked"})
+                            ),
+                            OutputFormat::Text => println!("Revoked policy {policy_id}."),
+                        },
+                        Err(error) => {
+                            eprintln!("Error revoking policy: {error}");
+                            process::exit(1);
+                        }
+                    }
                 }
             }
         }

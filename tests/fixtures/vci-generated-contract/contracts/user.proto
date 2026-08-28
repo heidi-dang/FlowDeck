@@ -1,0 +1,5 @@
+syntax = "proto3";
+message UserProfile {
+  string id = 1;
+  string email = 2;
+}

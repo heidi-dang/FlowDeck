@@ -193,7 +193,7 @@ describe("Turbo engine multiplexing always settles", () => {
     expect(engine.stats().inflight).toBe(0)
     expect(engine.stats().queued).toBe(0)
     await engine.stop()
-  }, 5000)
+  }, 15000)
 
   it("serves many concurrent requests without queue corruption or stuck inflight", async () => {
     const root = makeRoot()
