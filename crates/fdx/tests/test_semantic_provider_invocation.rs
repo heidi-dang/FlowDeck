@@ -414,11 +414,9 @@ echo 0.1.0
     make_executable(&exe_file);
 
     let orig_path = std::env::var_os("PATH").unwrap_or_default();
-    let mut new_path = bin_dir.path().to_path_buf().into_os_string();
-    new_path.push(if cfg!(windows) { ";" } else { ":" });
-    new_path.push(&orig_path);
-
-    std::env::set_var("PATH", &new_path);
+    // Isolate PATH so a globally installed native scip-typescript cannot mask
+    // the command-shim classification this test is specifically exercising.
+    std::env::set_var("PATH", bin_dir.path());
     std::env::remove_var("SCIP_TYPESCRIPT_BIN");
     std::env::remove_var("SCIP_RUST_BIN");
 

@@ -11,6 +11,11 @@ use tempfile::tempdir;
 fn test_attest_create_show_verify_roundtrip() {
     let tmp = tempdir().unwrap();
     let repo_root = tmp.path();
+    // Give the spawned CLI an explicit repository boundary so its Git-aware
+    // root discovery resolves to the same temporary root used by the library setup.
+    let git = repo_root.join(".git");
+    std::fs::create_dir(&git).unwrap();
+    std::fs::write(git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
     let run_id = "run-cli-roundtrip";
 
     let planned = PlannedCheck {
@@ -98,7 +103,11 @@ fn test_attest_create_show_verify_roundtrip() {
         .args(["attest", "create", "--run", run_id, "--format", "json"])
         .output()
         .unwrap();
-    assert!(v1_output.status.success());
+    assert!(
+        v1_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&v1_output.stderr)
+    );
     let v1: serde_json::Value = serde_json::from_slice(&v1_output.stdout).unwrap();
     assert_eq!(v1["predicate_version"], "v1");
     assert_eq!(

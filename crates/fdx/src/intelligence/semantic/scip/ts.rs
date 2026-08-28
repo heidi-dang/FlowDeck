@@ -47,12 +47,13 @@ fn executable_override() -> Option<PathBuf> {
 
 fn resolve_executable() -> ExecutableResolution {
     if let Some(bin) = executable_override() {
-        if bin.is_file() {
-            if is_command_shim(&bin) {
-                return ExecutableResolution::CommandShim(bin);
-            }
-            return ExecutableResolution::Native(bin);
+        if !bin.is_file() {
+            return ExecutableResolution::NotFound;
         }
+        if is_command_shim(&bin) {
+            return ExecutableResolution::CommandShim(bin);
+        }
+        return ExecutableResolution::Native(bin);
     }
     for name in EXECUTABLE_CANDIDATES {
         let res = find_executable_resolved(name);

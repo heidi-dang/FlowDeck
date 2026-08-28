@@ -26,8 +26,28 @@ function safeExecFileSync(file, args, opts = {}) {
 }
 
 import { existsSync } from "node:fs"
-import { join, resolve } from "node:path"
+import { delimiter, join, resolve } from "node:path"
 import { resolveRustToolchain } from "./rust-toolchain.mjs"
+
+function resolveBunExecutable(env = process.env, platform = process.platform) {
+  const executable = platform === "win32" ? "bun.exe" : "bun"
+  const candidates = []
+  if (env.BUN_BIN) candidates.push(env.BUN_BIN)
+  if (env.FLOWDECK_BUN_BIN) candidates.push(env.FLOWDECK_BUN_BIN)
+  const home = env.USERPROFILE || env.HOME
+  if (home) candidates.push(join(home, ".bun", "bin", executable))
+
+  for (const candidate of candidates) {
+    if (candidate && existsSync(candidate)) return candidate
+  }
+
+  for (const directory of (env.PATH || "").split(delimiter).filter(Boolean)) {
+    const candidate = join(directory, executable)
+    if (existsSync(candidate)) return candidate
+  }
+
+  throw new Error("Bun executable not found; install Bun or set BUN_BIN/FLOWDECK_BUN_BIN")
+}
 
 const ROOT = resolve(import.meta.dirname, "..")
 const MANIFEST_PATH = join(ROOT, "crates", "fdx", "Cargo.toml")
@@ -55,6 +75,15 @@ try {
 } catch (error) {
   console.error(`ERROR: ${error.message}`)
   console.error("  Install Rust via https://rustup.rs and try again.")
+  process.exit(1)
+}
+
+let bun
+try {
+  bun = resolveBunExecutable()
+  console.log(`  Bun: ${safeExecFileSync(bun, ["--version"], { timeout: 5000 }).trim()} (${bun})`)
+} catch (error) {
+  console.error(`ERROR: ${error.message}`)
   process.exit(1)
 }
 
@@ -103,7 +132,7 @@ for (const testFile of parityTests) {
     continue
   }
   try {
-    safeExecFileSync("bun", ["test", fullPath], {
+    safeExecFileSync(bun, ["test", fullPath], {
       stdio: "inherit",
       env: { ...process.env, FDX_DISABLE_FALLBACK: "1", FDX_BINARY_PATH: BINARY_PATH },
       timeout: 60000,

@@ -120,8 +120,13 @@ fn cli_semantic_refresh_runs_fake_provider_and_status_reports_it() {
     assert!(status.contains("scope_root="), "got: {}", status);
     assert!(status.contains("reason=none"), "got: {}", status);
 
-    // Without provider binary in env/PATH, status accurately reports effective missing/stale
-    let (code3, status3, _e3) = run(repo.path(), &["semantic", "status"], &[]);
+    // With an explicit missing override, status accurately reports effective missing/stale
+    // even when scip-typescript is installed elsewhere on the host PATH.
+    let (code3, status3, _e3) = run(
+        repo.path(),
+        &["semantic", "status"],
+        &[("SCIP_TYPESCRIPT_BIN", "/nonexistent/scip-typescript")],
+    );
     assert_eq!(code3, 0);
     assert!(status3.contains("health=missing"), "got: {}", status3);
     assert!(status3.contains("freshness=stale"), "got: {}", status3);
@@ -137,7 +142,11 @@ fn cli_semantic_refresh_missing_provider_is_truthful() {
         &[("SCIP_TYPESCRIPT_BIN", "/nonexistent/scip-typescript")],
     );
     assert_ne!(code, 0, "missing provider refresh must fail truthfully");
-    let (code2, status, _e2) = run(repo.path(), &["semantic", "status"], &[]);
+    let (code2, status, _e2) = run(
+        repo.path(),
+        &["semantic", "status"],
+        &[("SCIP_TYPESCRIPT_BIN", "/nonexistent/scip-typescript")],
+    );
     assert_eq!(code2, 0);
     assert!(status.contains("health=missing"), "got: {}", status);
     assert!(status.contains("freshness=absent"), "got: {}", status);
