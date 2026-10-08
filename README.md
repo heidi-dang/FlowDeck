@@ -9,6 +9,21 @@
 
 ---
 
+## Try FlowDeck in 60 seconds
+
+FlowDeck adds evidence-oriented coding-agent orchestration to **OpenCode**. Install the plugin, verify it, then run a coding task in your own repository:
+
+```bash
+npm install -g @heidi-dang/flowdeck
+flowdeck install
+flowdeck verify
+opencode
+```
+
+In OpenCode, try a bounded task such as **“Review this repository's test setup and propose the smallest missing regression test.”** You can explore its routing, specialist coordination, and verification workflows without committing to a large migration.
+
+Read the full [installation guide](#installation), [quick start](#quick-start), and [architecture](#core-design) before using it in a sensitive repository. If this solves a problem for you, [star FlowDeck](https://github.com/heidi-dang/FlowDeck) or [follow the maintainer](https://github.com/heidi-dang) for updates.
+
 ## What FlowDeck Is
 
 FlowDeck extends OpenCode with deterministic orchestration and repository intelligence. Rather than attempting to replace OpenCode's execution environment or inventing a competing model sandbox, FlowDeck acts as an intelligent governor and coordinator. It classifies developer requests, consults bounded repository evidence, creates dependency-ordered specialist plans, dispatches work through OpenCode's native subagent Task lifecycle, and strictly validates evidence before allowing any run to terminate.
